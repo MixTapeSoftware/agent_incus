@@ -1,0 +1,162 @@
+#!/bin/bash
+set -euo pipefail
+
+# init-incus-claude
+# Creates a lightweight Alpine container with Claude Code and mounted workspace
+
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
+
+usage() {
+    cat << EOF
+Usage: $(basename "$0") [OPTIONS] <container-name>
+
+Create an Incus container with Claude Code and mounted workspace.
+
+Optional:
+    -p, --path PATH         Host directory to mount (default: current directory)
+    -m, --mount-path PATH   Container mount point (default: /workspace)
+    -i, --image IMAGE       Base image (default: images:alpine/3.21)
+    -h, --help              Show this help message
+
+Examples:
+    # Mount current directory
+    $(basename "$0") my-project-claude
+    
+    # Mount a specific directory
+    $(basename "$0") -p ~/code/other-project other-claude
+EOF
+    exit 1
+}
+
+log() { echo -e "${GREEN}[+]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+
+# Defaults
+WORKSPACE_PATH="$PWD"
+MOUNT_PATH="/workspace"
+BASE_IMAGE="images:alpine/3.21"
+CONTAINER_NAME=""
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        -p|--path)
+            WORKSPACE_PATH="$2"
+            shift 2
+            ;;
+        -m|--mount-path)
+            MOUNT_PATH="$2"
+            shift 2
+            ;;
+        -i|--image)
+            BASE_IMAGE="$2"
+            shift 2
+            ;;
+        -h|--help)
+            usage
+            ;;
+        -*)
+            error "Unknown option: $1"
+            ;;
+        *)
+            CONTAINER_NAME="$1"
+            shift
+            ;;
+    esac
+done
+
+# Validate
+if [[ -z "$CONTAINER_NAME" ]]; then
+    warn "Container name is required"
+    echo ""
+    usage
+fi
+
+# Expand tilde and resolve to absolute path
+WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
+WORKSPACE_PATH=$(realpath "$WORKSPACE_PATH")
+
+[[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
+
+# Get host user info
+HOST_USER=$(whoami)
+HOST_UID=$(id -u)
+HOST_GID=$(id -g)
+
+log "Creating container: $CONTAINER_NAME"
+incus launch "$BASE_IMAGE" "$CONTAINER_NAME"
+
+log "Waiting for container to start..."
+sleep 3
+
+log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
+incus config device add "$CONTAINER_NAME" workspace disk \
+    source="$WORKSPACE_PATH" \
+    path="$MOUNT_PATH"
+
+log "Installing base packages..."
+incus exec "$CONTAINER_NAME" -- sh -c '
+    apk update
+    apk add --no-cache \
+        bash curl git wget \
+        build-base \
+        ca-certificates \
+        sudo \
+        nodejs npm
+'
+
+log "Setting bash as default shell..."
+incus exec "$CONTAINER_NAME" -- sed -i 's|/bin/ash|/bin/bash|' /etc/passwd
+
+log "Creating user $HOST_USER with UID:$HOST_UID GID:$HOST_GID..."
+incus exec "$CONTAINER_NAME" -- sh -c "
+    # Create group with matching GID
+    addgroup -g $HOST_GID $HOST_USER 2>/dev/null || true
+    
+    # Create user with matching UID/GID
+    adduser -D -u $HOST_UID -G $HOST_USER -s /bin/bash $HOST_USER
+    
+    # Give user sudo access (no password)
+    echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
+    chmod 0440 /etc/sudoers.d/$HOST_USER
+"
+
+log "Installing asdf for $HOST_USER..."
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c '
+    git clone https://github.com/asdf-vm/asdf.git ~/.asdf --branch v0.16.0
+    cat >> ~/.bashrc << "BASHRC"
+
+# asdf
+. "$HOME/.asdf/asdf.sh"
+. "$HOME/.asdf/completions/asdf.bash"
+BASHRC
+'
+
+log "Installing Claude Code..."
+incus exec "$CONTAINER_NAME" -- npm install -g @anthropic-ai/claude-code
+
+log "Container ready!"
+echo ""
+echo "========================================"
+echo "Container: $CONTAINER_NAME"
+echo "User: $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
+echo "Workspace: $WORKSPACE_PATH"
+echo "Mounted at: $MOUNT_PATH"
+echo "========================================"
+echo ""
+echo "Start coding with Claude:"
+echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER -c 'cd $MOUNT_PATH && claude'"
+echo ""
+echo "Access the container:"
+echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER"
+echo ""
+echo "asdf is installed - Claude can add languages as needed:"
+echo "  asdf plugin add python && asdf install python 3.12"
+echo "  asdf plugin add nodejs && asdf install nodejs 20.0.0"
+echo ""
+echo "Note: Files created will be owned by $HOST_USER on the host"
