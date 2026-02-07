@@ -6,6 +6,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 
 ## Prerequisites
 
+- Linux (Incus requires a Linux host; on macOS see [Incus on macOS with Colima](https://discuss.linuxcontainers.org/t/easy-way-to-try-incus-on-macos-with-colima/21153))
 - [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
 - `~/.local/bin` in your `PATH`
 
