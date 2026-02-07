@@ -19,7 +19,6 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Files to link
 FILES=(
-  "incus.claude"
   "incus.shell"
   "incus.init"
 )

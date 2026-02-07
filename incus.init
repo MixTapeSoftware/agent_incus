@@ -42,6 +42,7 @@ Options:
   --proxy                   Enable HTTP(S) proxy env vars
   --proxy-port PORT         REQUIRED when --proxy is set
   --proxy-ip IP             Optional proxy IP override
+  --dev-tools               Install Oh My Zsh, fzf, bat, and shell aliases
   --1pass                   Install 1Password CLI
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
@@ -236,6 +237,7 @@ MOUNT_PATH="/workspace"
 BASE_IMAGE="images:alpine/3.23"
 CONTAINER_NAME=""
 INSTALL_DOCKER=0
+DEV_TOOLS=0
 USE_PROXY=0
 PROXY_PORT=""
 PROXY_IP=""
@@ -250,14 +252,15 @@ IDMAP_METHOD=""
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -p|--path)       WORKSPACE_PATH="${2:-}"; shift 2 ;;
-    -m|--mount-path) MOUNT_PATH="${2:-}"; shift 2 ;;
-    -i|--image)      BASE_IMAGE="${2:-}"; shift 2 ;;
+    -p|--path)       [[ $# -lt 2 ]] && error "$1 requires an argument"; WORKSPACE_PATH="$2"; shift 2 ;;
+    -m|--mount-path) [[ $# -lt 2 ]] && error "$1 requires an argument"; MOUNT_PATH="$2"; shift 2 ;;
+    -i|--image)      [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="$2"; shift 2 ;;
     --ubuntu)        BASE_IMAGE="images:ubuntu/24.04"; shift ;;
     --docker)        INSTALL_DOCKER=1; shift ;;
+    --dev-tools)     DEV_TOOLS=1; shift ;;
     --proxy)         USE_PROXY=1; shift ;;
-    --proxy-port)    PROXY_PORT="${2:-}"; shift 2 ;;
-    --proxy-ip)      PROXY_IP="${2:-}"; shift 2 ;;
+    --proxy-port)    [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_PORT="$2"; shift 2 ;;
+    --proxy-ip)      [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_IP="$2"; shift 2 ;;
     --1pass)         USE_1PASSWORD=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
@@ -272,7 +275,10 @@ done
 require_commands incus curl sudo realpath
 
 [[ -z "$CONTAINER_NAME" ]] && { warn "Container name required"; echo ""; usage; }
+[[ ! "$CONTAINER_NAME" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] && error "Invalid container name: must start with a letter, only letters/digits/hyphens"
+incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAME' already exists"
 [[ "$USE_PROXY" == "1" && -z "$PROXY_PORT" ]] && error "Proxy enabled but no port provided"
+[[ -n "$PROXY_PORT" && ! "$PROXY_PORT" =~ ^[0-9]+$ ]] && error "Proxy port must be numeric"
 
 WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
 WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
@@ -316,6 +322,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
   echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
   echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
+  echo "Dev tools:   $( [[ "$DEV_TOOLS" == "1" ]] && echo "yes (Oh My Zsh, fzf, bat)" || echo no )"
   echo "Docker:      $( [[ "$INSTALL_DOCKER" == "1" ]] && echo yes || echo no )"
   echo "Proxy:       $( [[ "$USE_PROXY" == "1" ]] && echo "${PROXY_IP:-auto}:$PROXY_PORT" || echo no )"
   echo "1Password:   $( [[ "$USE_1PASSWORD" == "1" ]] && echo yes || echo no )"
@@ -328,7 +335,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "  Create user $HOST_USER inside container"
   echo "  Mount $WORKSPACE_PATH -> $MOUNT_PATH"
   [[ "$MAP_USER" == "1" ]] && echo "  Map UID/GID (try shift, fallback to raw.idmap)"
-  echo "  Install: Oh My Zsh, mise, fzf, bat, Claude Code"
+  echo "  Install: mise, Claude Code"
+  [[ "$DEV_TOOLS" == "1" ]] && echo "  Install: Oh My Zsh, fzf, bat, shell aliases"
   [[ "$INSTALL_DOCKER" == "1" ]] && echo "  Install Docker"
   [[ "$USE_1PASSWORD" == "1" ]] && echo "  Install 1Password CLI (token via incus config env var)"
   [[ "$USE_PROXY" == "1" ]] && echo "  Configure proxy"
@@ -451,19 +459,13 @@ incus exec "$CONTAINER_NAME" -- id "$HOST_USER" >/dev/null 2>&1 \
   || error "User $HOST_USER does not exist. User creation may have failed."
 
 wait_for_network "$CONTAINER_NAME"
-log "Installing Oh My Zsh..."
+
+# ---------------------------------------------------------------------------
+# Shell setup — auto-cd is always configured; dev tools are opt-in
+# ---------------------------------------------------------------------------
+log "Configuring zsh..."
 incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'ZSHEOF'
   set -e
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-
-  sed -i 's/^ZSH_THEME=".*"/ZSH_THEME="dpoggi"/' ~/.zshrc
-
-  # Add [incus] prefix to prompt
-  cat >> ~/.zshrc <<'RCBLOCK'
-
-# [incus] prompt prefix
-PROMPT='%{$fg[cyan]%}[incus]%{$reset_color%} '$PROMPT
-RCBLOCK
 
   # Auto-cd to /workspace on login
   cat >> ~/.zprofile <<'WORKSPACE'
@@ -471,18 +473,29 @@ if [[ -d /workspace ]]; then
     cd /workspace
 fi
 WORKSPACE
-
-  # Plugins
-  git clone https://github.com/zsh-users/zsh-autosuggestions \
-    ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
-  sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions)/' ~/.zshrc
-
-  # Ensure zsh is default shell
-  ZSH_PATH=$(command -v zsh)
-  if [ -n "$ZSH_PATH" ] && [ "$(getent passwd $(whoami) | cut -d: -f7)" != "$ZSH_PATH" ]; then
-    sudo chsh -s "$ZSH_PATH" $(whoami)
-  fi
 ZSHEOF
+
+if [[ "$DEV_TOOLS" == "1" ]]; then
+  log "Installing Oh My Zsh..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'ZSHEOF'
+    set -e
+    sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+
+    sed -i 's/^ZSH_THEME=".*"/ZSH_THEME="dpoggi"/' ~/.zshrc
+
+    # Add [incus] prefix to prompt
+    cat >> ~/.zshrc <<'RCBLOCK'
+
+# [incus] prompt prefix
+PROMPT='%{$fg[cyan]%}[incus]%{$reset_color%} '$PROMPT
+RCBLOCK
+
+    # Plugins
+    git clone https://github.com/zsh-users/zsh-autosuggestions \
+      ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+    sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions)/' ~/.zshrc
+ZSHEOF
+fi
 
 # ---------------------------------------------------------------------------
 # Docker (optional)
@@ -524,36 +537,37 @@ if [[ -f "$HOME/.local/bin/mise" ]]; then
 fi
 MISEZSH
 
-  # In a container there's only one user — disable trust checks globally.
-  # MISE_TRUSTED_CONFIG_PATHS is set in .zshenv (earliest shell init) so
-  # it's available in all contexts: interactive shells, login shells, scripts.
-  echo 'export MISE_TRUSTED_CONFIG_PATHS="/"' >> ~/.zshenv
+  # Trust mise configs under /workspace so `mise install` works without prompts.
+  # Set in .zshenv (earliest shell init) so it's available in all contexts.
+  echo 'export MISE_TRUSTED_CONFIG_PATHS="/workspace"' >> ~/.zshenv
 EOF
 
 # ---------------------------------------------------------------------------
-# fzf + bat (interactive search)
+# fzf + bat (interactive search, --dev-tools only)
 # ---------------------------------------------------------------------------
-log "Installing fzf and bat via mise..."
-incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-  set -e
-  export MISE_TRUSTED_CONFIG_PATHS="/"
-  ~/.local/bin/mise use -g fzf@latest bat@latest
+if [[ "$DEV_TOOLS" == "1" ]]; then
+  log "Installing fzf and bat via mise..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    export MISE_TRUSTED_CONFIG_PATHS="/workspace"
+    ~/.local/bin/mise use -g fzf@latest bat@latest
 
-  cat >> ~/.zshrc <<'FZF'
+    cat >> ~/.zshrc <<'FZF'
 
 # fzf + bat aliases
 alias f="fzf --preview 'bat {-1} --color=always'"
-fd() {
+gdiff() {
   local preview="git diff $@ --color=always -- {-1}"
   git diff $@ --name-only | fzf -m --ansi --preview $preview
 }
 FZF
 EOF
+fi
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
   log "Running mise install for workspace..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "export MISE_TRUSTED_CONFIG_PATHS=/; cd $MOUNT_PATH && ~/.local/bin/mise install"
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "export MISE_TRUSTED_CONFIG_PATHS=/workspace; cd $MOUNT_PATH && ~/.local/bin/mise install"
 fi
 
 # ---------------------------------------------------------------------------
@@ -572,6 +586,7 @@ if [[ "$USE_1PASSWORD" == "1" ]]; then
   '
   log "Setting 1Password token via container environment..."
   incus config set "$CONTAINER_NAME" environment.OP_SERVICE_ACCOUNT_TOKEN="$ONEPASSWORD_SERVICE_KEY"
+  unset ONEPASSWORD_SERVICE_KEY
 fi
 
 # ---------------------------------------------------------------------------
@@ -611,6 +626,7 @@ echo "Image:       $BASE_IMAGE"
 echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
 echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
 echo "Write access: ${IDMAP_METHOD:-none}"
+[[ "$DEV_TOOLS" == "1" ]]    && echo "Dev tools:   Oh My Zsh, fzf, bat"
 [[ "$INSTALL_DOCKER" == "1" ]] && echo "Docker:      installed"
 [[ "$USE_PROXY" == "1" ]]     && echo "Proxy:       http://$PROXY_IP:$PROXY_PORT"
 [[ "$USE_1PASSWORD" == "1" ]] && echo "1Password:   installed (token in container env)"
