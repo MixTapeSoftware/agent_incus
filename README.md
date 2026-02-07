@@ -117,6 +117,16 @@ incus.init --ubuntu --docker --1pass --dev-tools project-dev
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
 
+### Expose Container Ports
+
+To access a service running inside a container from your host (e.g. a web app you want to view in your browser):
+
+```bash
+incus config device add project-dev web proxy \
+  listen=tcp:0.0.0.0:4000 \
+  connect=tcp:127.0.0.1:4000
+```
+
 ### Snapshots
 
 Capture environment state for rollback:
