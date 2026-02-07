@@ -1,0 +1,623 @@
+#!/bin/bash
+set -euo pipefail
+
+# init-incus-claude
+# Creates an Incus container with Claude Code and a mounted workspace.
+#
+# Default: Alpine (lightweight, fast, small attack surface)
+# Optional: Ubuntu 24.04 via --ubuntu (required for ML/AI workloads needing glibc)
+
+# ---------------------------------------------------------------------------
+# Colors
+# ---------------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# ---------------------------------------------------------------------------
+# Logging helpers
+# ---------------------------------------------------------------------------
+log()  { echo -e "${GREEN}[+]${NC} $1"; }
+warn() { echo -e "${YELLOW}[!]${NC} $1"; }
+error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
+usage() {
+  cat << EOF
+Usage: $(basename "$0") [OPTIONS] <container-name>
+
+Create an Incus container with Claude Code and mounted workspace.
+Default image is Alpine (fast, lightweight). Use --ubuntu for ML/AI workloads.
+
+Options:
+  -p, --path PATH           Host directory to mount (default: current directory)
+  -m, --mount-path PATH     Container mount point (default: /workspace)
+  -i, --image IMAGE         Base image override (ignores --ubuntu)
+  --ubuntu                  Use Ubuntu 24.04 (required for glibc-dependent
+                            workloads like XLA, CUDA, and most ML/AI libraries)
+  --docker                  Install Docker inside the container
+  --proxy                   Enable HTTP(S) proxy env vars
+  --proxy-port PORT         REQUIRED when --proxy is set
+  --proxy-ip IP             Optional proxy IP override
+  --1pass                   Install 1Password CLI
+  --dry-run                 Show what would be done without doing it
+  -h, --help                Show this help
+EOF
+  exit 1
+}
+
+# ---------------------------------------------------------------------------
+# Packages — grouped by purpose for readability
+# ---------------------------------------------------------------------------
+
+# --- Alpine (apk) ---
+APK_CORE="vim neovim bash curl git wget sudo unzip tmux zsh shadow"
+APK_BUILD="build-base pkgconf autoconf automake bison re2c cmake"
+APK_DEVLIBS="openssl-dev ncurses-dev readline-dev zlib-dev bzip2-dev sqlite-dev libffi-dev xz-dev yaml-dev libxml2-dev libxslt-dev curl-dev oniguruma-dev libzip-dev libpng-dev jpeg-dev freetype-dev gd-dev lksctp-tools-dev unixodbc-dev tk-dev"
+APK_RUNTIME="ca-certificates fontconfig freetype python3 python3-dev py3-pip nodejs npm"
+
+# --- Ubuntu/Debian (apt) ---
+APT_CORE="bash curl git wget sudo unzip tmux zsh"
+APT_BUILD="build-essential pkg-config autoconf automake bison cmake"
+APT_DEVLIBS="libssl-dev libncurses-dev libreadline-dev zlib1g-dev libbz2-dev libsqlite3-dev libffi-dev liblzma-dev libyaml-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev libonig-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libgd-dev unixodbc-dev"
+APT_RUNTIME="ca-certificates psmisc fontconfig fzf bat python3 python3-dev python3-pip python3-venv nodejs npm"
+
+# ---------------------------------------------------------------------------
+# Dependency checks
+# ---------------------------------------------------------------------------
+require_commands() {
+  local missing=()
+  for cmd in "$@"; do
+    command -v "$cmd" >/dev/null 2>&1 || missing+=("$cmd")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    error "Missing required commands: ${missing[*]}"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Container readiness polling (replaces fragile sleep)
+# ---------------------------------------------------------------------------
+wait_for_container() {
+  local name="$1" timeout="${2:-30}" elapsed=0
+  local ready=0
+  while [[ $elapsed -lt $timeout ]]; do
+    if incus exec "$name" -- true >/dev/null 2>&1; then
+      ready=1
+      break
+    fi
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if [[ $ready -eq 0 ]]; then
+    error "Container $name not ready after ${timeout}s"
+  fi
+  return 0
+}
+
+# Wait for networking inside the container (can lag behind boot/restart)
+wait_for_network() {
+  local name="$1" timeout="${2:-30}" elapsed=0
+  log "Waiting for container networking..."
+  local ready=0
+  while [[ $elapsed -lt $timeout ]]; do
+    if incus exec "$name" -- sh -c "getent hosts github.com >/dev/null 2>&1"; then
+      ready=1
+      break
+    fi
+    sleep 2
+    elapsed=$((elapsed + 2))
+  done
+  if [[ $ready -eq 0 ]]; then
+    error "Container $name has no network after ${timeout}s"
+  fi
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# subuid / subgid helpers (internal plumbing for raw.idmap fallback)
+# ---------------------------------------------------------------------------
+id_in_subid_file() {
+  local id=$1 file=$2
+  [[ ! -f "$file" ]] && return 1
+  while IFS=: read -r name start count || [[ -n "$name" ]]; do
+    [[ -z "$name" || "$name" == \#* || "$name" != "root" ]] && continue
+    local end=$((start + count - 1))
+    [[ $id -ge $start && $id -le $end ]] && return 0
+  done < "$file"
+  return 1
+}
+
+entry_exists_in_file() {
+  local entry=$1 file=$2
+  [[ ! -f "$file" ]] && return 1
+  grep -qxF "$entry" "$file" 2>/dev/null
+}
+
+ensure_subid_entries() {
+  local uid="$1" gid="$2"
+  local subuid_ok=0 subgid_ok=0
+
+  id_in_subid_file "$uid" /etc/subuid && subuid_ok=1
+  id_in_subid_file "$gid" /etc/subgid && subgid_ok=1
+
+  [[ "$subuid_ok" == "1" && "$subgid_ok" == "1" ]] && return 0
+
+  echo ""
+  echo "Your UID/GID must be in /etc/subuid and /etc/subgid for write access."
+  local entries=()
+  [[ "$subuid_ok" == "0" ]] && ! entry_exists_in_file "root:$uid:1" /etc/subuid && \
+    entries+=("/etc/subuid: root:$uid:1")
+  [[ "$subgid_ok" == "0" ]] && ! entry_exists_in_file "root:$gid:1" /etc/subgid && \
+    entries+=("/etc/subgid: root:$gid:1")
+
+  [[ ${#entries[@]} -eq 0 ]] && return 0
+
+  echo "Need to add (requires sudo):"
+  printf '  %s\n' "${entries[@]}"
+  read -rp "Add these entries? [Y/n] " reply
+  [[ "$reply" =~ ^[Nn]$ ]] && return 1
+
+  [[ "$subuid_ok" == "0" ]] && ! entry_exists_in_file "root:$uid:1" /etc/subuid && \
+    echo "root:$uid:1" | sudo tee -a /etc/subuid > /dev/null
+  [[ "$subgid_ok" == "0" ]] && ! entry_exists_in_file "root:$gid:1" /etc/subgid && \
+    echo "root:$gid:1" | sudo tee -a /etc/subgid > /dev/null
+}
+
+# ---------------------------------------------------------------------------
+# Mount workspace with user mapping
+#
+# Tries shift=true first (clean, kernel-level, no config needed).
+# Falls back to raw.idmap (broader compat, needs subuid/subgid).
+# If both fail, mounts without mapping (read-only for container user).
+# ---------------------------------------------------------------------------
+mount_workspace() {
+  local container="$1" source="$2" target="$3" uid="$4" gid="$5"
+
+  # Attempt 1: shift=true (kernel idmapped mounts, 5.12+)
+  log "Trying shift=true mount..."
+  if incus config device add "$container" workspace disk \
+      source="$source" path="$target" shift=true 2>/dev/null; then
+    log "Mounted with shift=true"
+    return 0
+  fi
+
+  # shift failed, clean up
+  incus config device remove "$container" workspace 2>/dev/null || true
+
+  # Attempt 2: raw.idmap
+  log "shift=true not supported, trying raw.idmap..."
+  if ensure_subid_entries "$uid" "$gid"; then
+    incus config device add "$container" workspace disk \
+      source="$source" path="$target"
+    incus config set "$container" raw.idmap "both $uid $uid"
+    log "Restarting container for raw.idmap..."
+    incus restart "$container"
+    wait_for_container "$container"
+    wait_for_network "$container"
+    log "Mounted with raw.idmap"
+    IDMAP_METHOD="raw"
+    return 0
+  fi
+
+  # Attempt 3: no mapping
+  warn "Could not configure user mapping. Mounting without write access."
+  incus config device add "$container" workspace disk \
+    source="$source" path="$target"
+  IDMAP_METHOD="none"
+  return 0
+}
+
+# ---------------------------------------------------------------------------
+# Cleanup trap — offer to delete container on failure
+# ---------------------------------------------------------------------------
+cleanup_on_failure() {
+  if [[ -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
+    echo ""
+    warn "Script failed. Container '$CONTAINER_NAME' was partially created."
+    read -rp "Delete it? [Y/n] " reply
+    if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+      incus delete --force "$CONTAINER_NAME" 2>/dev/null || true
+      log "Deleted $CONTAINER_NAME"
+    else
+      warn "Container left in place. Clean up manually with: incus delete --force $CONTAINER_NAME"
+    fi
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
+WORKSPACE_PATH="$PWD"
+MOUNT_PATH="/workspace"
+BASE_IMAGE="images:alpine/3.23"
+CONTAINER_NAME=""
+INSTALL_DOCKER=0
+USE_PROXY=0
+PROXY_PORT=""
+PROXY_IP=""
+USE_1PASSWORD=0
+ONEPASSWORD_SERVICE_KEY=""
+DRY_RUN=0
+MAP_USER=0
+IDMAP_METHOD=""
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -p|--path)       WORKSPACE_PATH="${2:-}"; shift 2 ;;
+    -m|--mount-path) MOUNT_PATH="${2:-}"; shift 2 ;;
+    -i|--image)      BASE_IMAGE="${2:-}"; shift 2 ;;
+    --ubuntu)        BASE_IMAGE="images:ubuntu/24.04"; shift ;;
+    --docker)        INSTALL_DOCKER=1; shift ;;
+    --proxy)         USE_PROXY=1; shift ;;
+    --proxy-port)    PROXY_PORT="${2:-}"; shift 2 ;;
+    --proxy-ip)      PROXY_IP="${2:-}"; shift 2 ;;
+    --1pass)         USE_1PASSWORD=1; shift ;;
+    --dry-run)       DRY_RUN=1; shift ;;
+    -h|--help)       usage ;;
+    -*)              error "Unknown option: $1" ;;
+    *)               CONTAINER_NAME="$1"; shift ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Validate
+# ---------------------------------------------------------------------------
+require_commands incus curl sudo realpath
+
+[[ -z "$CONTAINER_NAME" ]] && { warn "Container name required"; echo ""; usage; }
+[[ "$USE_PROXY" == "1" && -z "$PROXY_PORT" ]] && error "Proxy enabled but no port provided"
+
+WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
+WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
+[[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
+
+HOST_USER="$(whoami)"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+
+# ---------------------------------------------------------------------------
+# User mapping prompt — simple yes/no, implementation details are hidden
+# ---------------------------------------------------------------------------
+echo ""
+read -rp "Map host user into container for workspace write access? [Y/n] " MAP_CHOICE
+if [[ ! "${MAP_CHOICE:-Y}" =~ ^[Nn]$ ]]; then
+  MAP_USER=1
+fi
+
+# ---------------------------------------------------------------------------
+# 1Password token prompt
+# ---------------------------------------------------------------------------
+if [[ "$USE_1PASSWORD" == "1" ]]; then
+  echo ""
+  log "1Password CLI requires a service account token"
+  echo "Create one at: https://start.1password.com/settings/automation"
+  read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
+  echo ""
+  [[ -z "$ONEPASSWORD_SERVICE_KEY" ]] && error "Token required"
+fi
+
+# ---------------------------------------------------------------------------
+# Dry-run summary
+# ---------------------------------------------------------------------------
+if [[ "$DRY_RUN" == "1" ]]; then
+  echo ""
+  echo "========================================"
+  echo "DRY RUN — nothing will be created"
+  echo "========================================"
+  echo "Container:   $CONTAINER_NAME"
+  echo "Image:       $BASE_IMAGE"
+  echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
+  echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+  echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
+  echo "Docker:      $( [[ "$INSTALL_DOCKER" == "1" ]] && echo yes || echo no )"
+  echo "Proxy:       $( [[ "$USE_PROXY" == "1" ]] && echo "${PROXY_IP:-auto}:$PROXY_PORT" || echo no )"
+  echo "1Password:   $( [[ "$USE_1PASSWORD" == "1" ]] && echo yes || echo no )"
+  echo "========================================"
+  echo ""
+  echo "Would run:"
+  echo "  incus launch $BASE_IMAGE $CONTAINER_NAME"
+  [[ "$INSTALL_DOCKER" == "1" ]] && echo "  Enable container nesting for Docker"
+  echo "  Install packages ($(echo "$BASE_IMAGE" | grep -q alpine && echo apk || echo apt))"
+  echo "  Create user $HOST_USER inside container"
+  echo "  Mount $WORKSPACE_PATH -> $MOUNT_PATH"
+  [[ "$MAP_USER" == "1" ]] && echo "  Map UID/GID (try shift, fallback to raw.idmap)"
+  echo "  Install: Oh My Zsh, mise, fzf, bat, Claude Code"
+  [[ "$INSTALL_DOCKER" == "1" ]] && echo "  Install Docker"
+  [[ "$USE_1PASSWORD" == "1" ]] && echo "  Install 1Password CLI (token via incus config env var)"
+  [[ "$USE_PROXY" == "1" ]] && echo "  Configure proxy"
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# From here on, real work — set up cleanup trap
+# ---------------------------------------------------------------------------
+trap cleanup_on_failure ERR
+
+# ---------------------------------------------------------------------------
+# Create container
+# ---------------------------------------------------------------------------
+log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
+incus launch "$BASE_IMAGE" "$CONTAINER_NAME"
+
+if [[ "$INSTALL_DOCKER" == "1" ]]; then
+  log "Enabling container nesting for Docker..."
+  incus config set "$CONTAINER_NAME" security.nesting=true
+  incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
+  incus config set "$CONTAINER_NAME" security.syscalls.intercept.setxattr=true
+
+  # Incus 6.19+ fixed the AppArmor/runc bug (CVE-2025-52881) via PR #2624.
+  # Older versions need lxc.apparmor.profile=unconfined as a workaround.
+  INCUS_VERSION="$(incus --version 2>/dev/null || echo "0.0.0")"
+  INCUS_MAJOR="${INCUS_VERSION%%.*}"
+  INCUS_MINOR="${INCUS_VERSION#*.}"; INCUS_MINOR="${INCUS_MINOR%%.*}"
+  if [[ "$INCUS_MAJOR" -lt 6 ]] || [[ "$INCUS_MAJOR" -eq 6 && "$INCUS_MINOR" -lt 19 ]]; then
+    echo ""
+    warn "Incus $INCUS_VERSION detected. Versions before 6.19 have an AppArmor bug"
+    warn "that breaks Docker-in-Incus (CVE-2025-52881)."
+    echo "  Workaround: set lxc.apparmor.profile=unconfined"
+    echo "  The Incus container itself remains the security boundary."
+    echo "  Details: https://github.com/lxc/incus/pull/2624"
+    read -rp "Disable AppArmor inside container? [Y/n] " APPARMOR_CHOICE
+    if [[ "${APPARMOR_CHOICE:-Y}" =~ ^[Nn]$ ]]; then
+      warn "Skipping. Docker may fail with 'ip_unprivileged_port_start' errors."
+    else
+      incus config set "$CONTAINER_NAME" raw.lxc "lxc.apparmor.profile=unconfined"
+      log "AppArmor disabled inside container."
+    fi
+  fi
+fi
+
+wait_for_container "$CONTAINER_NAME"
+wait_for_network "$CONTAINER_NAME"
+
+# ---------------------------------------------------------------------------
+# Install packages
+# ---------------------------------------------------------------------------
+log "Installing packages..."
+incus exec "$CONTAINER_NAME" -- sh -c "
+  if command -v apk >/dev/null 2>&1; then
+    # Ensure community repo is enabled (some Incus images only ship main)
+    if ! grep -q '/community' /etc/apk/repositories 2>/dev/null; then
+      MAIN_REPO=\$(grep '/main' /etc/apk/repositories | head -1)
+      echo \"\${MAIN_REPO%/main}/community\" >> /etc/apk/repositories
+    fi
+    apk update && apk add --no-cache $APK_CORE $APK_BUILD $APK_DEVLIBS $APK_RUNTIME
+  elif command -v apt-get >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update
+    apt-get install -y $APT_CORE $APT_BUILD $APT_DEVLIBS $APT_RUNTIME
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+  else
+    echo 'Unsupported package manager' >&2; exit 1
+  fi
+"
+
+# ---------------------------------------------------------------------------
+# Create user
+# ---------------------------------------------------------------------------
+log "Creating user $HOST_USER..."
+incus exec "$CONTAINER_NAME" -- sh -c "
+  ZSH_PATH=\$(command -v zsh || echo /bin/bash)
+
+  # Remove conflicting UID/GID owners
+  EXISTING_USER=\$(getent passwd $HOST_UID | cut -d: -f1 || true)
+  EXISTING_GROUP=\$(getent group $HOST_GID | cut -d: -f1 || true)
+
+  if [ -n \"\$EXISTING_USER\" ] && [ \"\$EXISTING_USER\" != \"$HOST_USER\" ]; then
+    userdel -r \"\$EXISTING_USER\" 2>/dev/null || userdel \"\$EXISTING_USER\" 2>/dev/null || true
+  fi
+  if [ -n \"\$EXISTING_GROUP\" ] && [ \"\$EXISTING_GROUP\" != \"$HOST_USER\" ]; then
+    groupdel \"\$EXISTING_GROUP\" 2>/dev/null || true
+  fi
+
+  # Create group + user
+  if command -v useradd >/dev/null 2>&1; then
+    groupadd -g $HOST_GID $HOST_USER 2>/dev/null || true
+    useradd -m -u $HOST_UID -g $HOST_GID -s \"\$ZSH_PATH\" $HOST_USER || exit 1
+  else
+    addgroup -g $HOST_GID $HOST_USER 2>/dev/null || true
+    adduser -D -u $HOST_UID -G $HOST_USER -s \"\$ZSH_PATH\" $HOST_USER || exit 1
+  fi
+
+  echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
+  chmod 0440 /etc/sudoers.d/$HOST_USER
+
+  id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
+"
+
+# ---------------------------------------------------------------------------
+# Mount workspace
+# ---------------------------------------------------------------------------
+log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
+
+if [[ "$MAP_USER" == "1" ]]; then
+  mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH" "$HOST_UID" "$HOST_GID"
+else
+  incus config device add "$CONTAINER_NAME" workspace disk \
+    source="$WORKSPACE_PATH" path="$MOUNT_PATH"
+  IDMAP_METHOD="none"
+fi
+
+# Final readiness check
+wait_for_container "$CONTAINER_NAME"
+incus exec "$CONTAINER_NAME" -- id "$HOST_USER" >/dev/null 2>&1 \
+  || error "User $HOST_USER does not exist. User creation may have failed."
+
+wait_for_network "$CONTAINER_NAME"
+log "Installing Oh My Zsh..."
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'ZSHEOF'
+  set -e
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+
+  sed -i 's/^ZSH_THEME=".*"/ZSH_THEME="dpoggi"/' ~/.zshrc
+
+  # Add [incus] prefix to prompt
+  cat >> ~/.zshrc <<'RCBLOCK'
+
+# [incus] prompt prefix
+PROMPT='%{$fg[cyan]%}[incus]%{$reset_color%} '$PROMPT
+RCBLOCK
+
+  # Auto-cd to /workspace on login
+  cat >> ~/.zprofile <<'WORKSPACE'
+if [[ -d /workspace ]]; then
+    cd /workspace
+fi
+WORKSPACE
+
+  # Plugins
+  git clone https://github.com/zsh-users/zsh-autosuggestions \
+    ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+  sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions)/' ~/.zshrc
+
+  # Ensure zsh is default shell
+  ZSH_PATH=$(command -v zsh)
+  if [ -n "$ZSH_PATH" ] && [ "$(getent passwd $(whoami) | cut -d: -f7)" != "$ZSH_PATH" ]; then
+    sudo chsh -s "$ZSH_PATH" $(whoami)
+  fi
+ZSHEOF
+
+# ---------------------------------------------------------------------------
+# Docker (optional)
+# ---------------------------------------------------------------------------
+if [[ "$INSTALL_DOCKER" == "1" ]]; then
+  log "Installing Docker..."
+  incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'DOCKER_EOF'
+    if command -v apt-get >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update && apt-get install -y ca-certificates curl gnupg
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+      apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      systemctl enable docker && systemctl start docker
+    else
+      apk add --no-cache docker docker-cli-compose
+      rc-update add docker boot && service docker start
+    fi
+DOCKER_EOF
+  incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER 2>/dev/null || addgroup $HOST_USER docker 2>/dev/null || true"
+  wait_for_container "$CONTAINER_NAME"
+fi
+
+# ---------------------------------------------------------------------------
+# mise (runtime version manager)
+# ---------------------------------------------------------------------------
+log "Installing mise..."
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+  set -e
+  curl https://mise.run | sh
+
+  cat >> ~/.zshrc <<'MISEZSH'
+
+# mise — runtime version manager
+if [[ -f "$HOME/.local/bin/mise" ]]; then
+    eval "$($HOME/.local/bin/mise activate zsh)"
+fi
+MISEZSH
+
+  # In a container there's only one user — disable trust checks globally.
+  # MISE_TRUSTED_CONFIG_PATHS is set in .zshenv (earliest shell init) so
+  # it's available in all contexts: interactive shells, login shells, scripts.
+  echo 'export MISE_TRUSTED_CONFIG_PATHS="/"' >> ~/.zshenv
+EOF
+
+# ---------------------------------------------------------------------------
+# fzf + bat (interactive search)
+# ---------------------------------------------------------------------------
+log "Installing fzf and bat via mise..."
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+  set -e
+  export MISE_TRUSTED_CONFIG_PATHS="/"
+  ~/.local/bin/mise use -g fzf@latest bat@latest
+
+  cat >> ~/.zshrc <<'FZF'
+
+# fzf + bat aliases
+alias f="fzf --preview 'bat {-1} --color=always'"
+fd() {
+  local preview="git diff $@ --color=always -- {-1}"
+  git diff $@ --name-only | fzf -m --ansi --preview $preview
+}
+FZF
+EOF
+
+# Run mise install if the workspace has a config
+if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
+  log "Running mise install for workspace..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "export MISE_TRUSTED_CONFIG_PATHS=/; cd $MOUNT_PATH && ~/.local/bin/mise install"
+fi
+
+# ---------------------------------------------------------------------------
+# 1Password CLI (optional)
+#
+# The service account token is stored as a container-level environment
+# variable via `incus config set`. This avoids writing it to disk or
+# shell history inside the container. It is visible to anyone who can
+# run `incus config show <container>` on the host.
+# ---------------------------------------------------------------------------
+if [[ "$USE_1PASSWORD" == "1" ]]; then
+  log "Installing 1Password CLI..."
+  incus exec "$CONTAINER_NAME" -- sh -c '
+    wget -q https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_amd64_v2.30.0.zip -O /tmp/op.zip
+    unzip -q /tmp/op.zip -d /tmp/ && mv /tmp/op /usr/local/bin/ && chmod +x /usr/local/bin/op && rm /tmp/op.zip
+  '
+  log "Setting 1Password token via container environment..."
+  incus config set "$CONTAINER_NAME" environment.OP_SERVICE_ACCOUNT_TOKEN="$ONEPASSWORD_SERVICE_KEY"
+fi
+
+# ---------------------------------------------------------------------------
+# Claude Code
+# ---------------------------------------------------------------------------
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
+  curl -fsSL https://claude.ai/install.sh | bash
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+CLAUDE
+# ---------------------------------------------------------------------------
+# Proxy (optional)
+# ---------------------------------------------------------------------------
+if [[ "$USE_PROXY" == "1" ]]; then
+  [[ -z "$PROXY_IP" ]] && PROXY_IP="$(incus exec "$CONTAINER_NAME" -- sh -c "ip route | awk '/default/ {print \$3}'")"
+  log "Configuring proxy: $PROXY_IP:$PROXY_PORT"
+  incus exec "$CONTAINER_NAME" -- sh -c "cat >/etc/profile.d/claude-proxy.sh <<PROXYEOF
+export HTTP_PROXY='http://$PROXY_IP:$PROXY_PORT'
+export HTTPS_PROXY='http://$PROXY_IP:$PROXY_PORT'
+export NO_PROXY='localhost,127.0.0.1'
+PROXYEOF
+chmod 644 /etc/profile.d/claude-proxy.sh"
+fi
+
+# ---------------------------------------------------------------------------
+# Disable cleanup trap on success
+# ---------------------------------------------------------------------------
+trap - ERR
+
+# ---------------------------------------------------------------------------
+# Done
+# ---------------------------------------------------------------------------
+log "Container ready!"
+echo ""
+echo "========================================"
+echo "Container:   $CONTAINER_NAME"
+echo "Image:       $BASE_IMAGE"
+echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
+echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+echo "Write access: ${IDMAP_METHOD:-none}"
+[[ "$INSTALL_DOCKER" == "1" ]] && echo "Docker:      installed"
+[[ "$USE_PROXY" == "1" ]]     && echo "Proxy:       http://$PROXY_IP:$PROXY_PORT"
+[[ "$USE_1PASSWORD" == "1" ]] && echo "1Password:   installed (token in container env)"
+echo "========================================"
+echo ""
+echo "Shell in:"
+echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER"
+echo ""
+echo "Start Claude Code:"
+echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER -c 'cd $MOUNT_PATH && claude'"

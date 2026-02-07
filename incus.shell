@@ -1,0 +1,16 @@
+#!/bin/bash
+set -euo pipefail
+CONTAINER_NAME="${1:-${CLAUDE_CONTAINER:-}}"
+COMMAND="${2:-}"
+
+if [[ -z "$CONTAINER_NAME" ]]; then
+  echo "Usage: $(basename "$0") <container-name> [command]"
+  exit 1
+fi
+
+if [[ -n "$COMMAND" ]]; then
+  exec incus exec "$CONTAINER_NAME" -- \
+    su - "$(id -un)" -c "cd /workspace && exec zsh -ic '$COMMAND'"
+else
+  exec incus exec "$CONTAINER_NAME" -- sh -c "exec login -f $(id -un)"
+fi
