@@ -360,26 +360,21 @@ if [[ "$INSTALL_DOCKER" == "1" ]]; then
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.setxattr=true
 
-  # Incus 6.19+ fixed the AppArmor/runc bug (CVE-2025-52881) via PR #2624.
-  # Older versions need lxc.apparmor.profile=unconfined as a workaround.
-  INCUS_VERSION="$(incus --version 2>/dev/null || echo "0.0.0")"
-  INCUS_MAJOR="${INCUS_VERSION%%.*}"
-  INCUS_MINOR="${INCUS_VERSION#*.}"; INCUS_MINOR="${INCUS_MINOR%%.*}"
-  if [[ "$INCUS_MAJOR" -lt 6 ]] || [[ "$INCUS_MAJOR" -eq 6 && "$INCUS_MINOR" -lt 19 ]]; then
-    echo ""
-    warn "Incus $INCUS_VERSION detected. Versions before 6.19 have an AppArmor bug"
-    warn "that breaks Docker-in-Incus (CVE-2025-52881)."
-    echo "  Workaround: set lxc.apparmor.profile=unconfined"
-    echo "  The Incus container itself remains the security boundary."
-    echo "  Details: https://github.com/lxc/incus/pull/2624"
-    read -rp "Disable AppArmor inside container? [Y/n] " APPARMOR_CHOICE
-    if [[ "${APPARMOR_CHOICE:-Y}" =~ ^[Nn]$ ]]; then
-      warn "Skipping. Docker may fail with 'ip_unprivileged_port_start' errors."
-    else
-      incus config set "$CONTAINER_NAME" raw.lxc "lxc.apparmor.profile=unconfined"
-      log "AppArmor disabled inside container."
-    fi
-  fi
+  # Docker-in-Incus hits two AppArmor problems:
+  #   1. runc fails with "ip_unprivileged_port_start: permission denied"
+  #      unless the container runs with an unconfined AppArmor profile.
+  #      (CVE-2025-52881, https://github.com/lxc/incus/pull/2624)
+  #   2. Even with unconfined, Docker reads /sys/module/apparmor/parameters/enabled,
+  #      sees "Y", and tries to load the "docker-default" profile via securityfs —
+  #      which isn't accessible inside the container.
+  # Fix: set unconfined at the LXC level (fixes #1), then mask the kernel
+  # AppArmor "enabled" flag inside the container so Docker skips AppArmor
+  # entirely (fixes #2).  The Incus container itself remains the security
+  # boundary.
+  incus config set "$CONTAINER_NAME" raw.lxc "lxc.apparmor.profile=unconfined"
+  log "AppArmor set to unconfined inside container (required for Docker)."
+  # raw.lxc is only read at container start, so restart to apply it.
+  incus restart "$CONTAINER_NAME"
 fi
 
 wait_for_container "$CONTAINER_NAME"
@@ -502,6 +497,57 @@ fi
 # ---------------------------------------------------------------------------
 if [[ "$INSTALL_DOCKER" == "1" ]]; then
   log "Installing Docker..."
+
+  # Mask AppArmor so Docker doesn't try to use it (see AppArmor comment above).
+  # Bind-mount a file containing "N" over the kernel's AppArmor enabled flag.
+  # Docker's Go apparmor library reads this to decide whether to use AppArmor;
+  # returning "N" makes it skip AppArmor entirely.
+  incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'APPARMOR_EOF'
+    if [ -f /sys/module/apparmor/parameters/enabled ] && \
+       grep -q Y /sys/module/apparmor/parameters/enabled 2>/dev/null; then
+      echo N > /run/apparmor_disabled
+      mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled
+
+      # Make the mask persistent across reboots.
+      if command -v systemctl >/dev/null 2>&1; then
+        cat > /etc/systemd/system/mask-apparmor.service <<'UNIT'
+[Unit]
+Description=Mask AppArmor enabled flag for Docker-in-Incus
+DefaultDependencies=no
+Before=docker.service containerd.service docker.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo N > /run/apparmor_disabled && mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        systemctl daemon-reload
+        systemctl enable mask-apparmor.service
+      elif command -v rc-update >/dev/null 2>&1; then
+        # Alpine/OpenRC: create a proper init script with dependency ordering
+        cat > /etc/init.d/mask-apparmor <<'OPENRC'
+#!/sbin/openrc-run
+description="Mask AppArmor enabled flag for Docker-in-Incus"
+
+depend() {
+    before docker containerd
+    keyword -stop
+}
+
+start() {
+    echo N > /run/apparmor_disabled
+    mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled
+}
+OPENRC
+        chmod +x /etc/init.d/mask-apparmor
+        rc-update add mask-apparmor boot
+      fi
+    fi
+APPARMOR_EOF
+
   incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'DOCKER_EOF'
     if command -v apt-get >/dev/null 2>&1; then
       export DEBIAN_FRONTEND=noninteractive
