@@ -613,7 +613,11 @@ fi
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
   log "Running mise install for workspace..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "export MISE_TRUSTED_CONFIG_PATHS=/workspace; cd $MOUNT_PATH && ~/.local/bin/mise install"
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    export MISE_TRUSTED_CONFIG_PATHS=/workspace; 
+    export MISE_NODE_COMPILE=0;
+    cd $MOUNT_PATH && ~/.local/bin/mise install
+EOF
 fi
 
 # ---------------------------------------------------------------------------
