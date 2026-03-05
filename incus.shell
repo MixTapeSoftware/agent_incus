@@ -2,21 +2,17 @@
 set -euo pipefail
 
 CONTAINER="${1:-${CLAUDE_CONTAINER:-}}"
-
 if [[ -z "$CONTAINER" ]]; then
   echo "Usage: $(basename "$0") <container> [command...]"
   exit 1
 fi
 
 HOST_USER="$(id -un)"
+HOST_UID="$(id -u "$HOST_USER")"
 
 if [[ $# -gt 1 ]]; then
   shift
-  # printf %q safely escapes the command string for the su -c -> zsh -ic chain.
-  # Embedded quotes in individual args won't round-trip perfectly — open a shell
-  # for anything complex.
-  exec incus exec "$CONTAINER" -- \
-    su - "$HOST_USER" -c "cd /workspace && exec zsh -ic $(printf '%q' "$*")"
+  exec incus exec "$CONTAINER" --user "$HOST_UID" --cwd /workspace -- zsh -ic "$*"
 else
-  exec incus exec "$CONTAINER" -- su - "$HOST_USER"
+  exec incus exec "$CONTAINER" --user "$HOST_UID" --cwd /workspace -- zsh -i
 fi
