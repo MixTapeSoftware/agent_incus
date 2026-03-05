@@ -74,6 +74,7 @@ Options:
   --proxy-port PORT         Required when --proxy is set
   --proxy-ip IP             Proxy IP override (default: container gateway)
   --1pass                   Install 1Password CLI (prompts for service account token)
+  --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
   --dry-run                 Show what would be done without doing it
 ```
 
@@ -85,7 +86,7 @@ Options:
 4. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
 5. Installs mise (runtime version manager) and Claude Code
 6. With `--dev-tools`: adds Oh My Zsh, fzf, bat, and shell aliases
-7. Optionally installs Docker, 1Password CLI, and/or proxy configuration
+7. Optionally installs Docker, 1Password CLI, GitHub auth, and/or proxy configuration
 
 ## The Development Workflow
 
@@ -112,7 +113,7 @@ A recommended setup uses two containers sharing the same workspace:
 incus.init project-agent
 
 # Dev container — the works
-incus.init --ubuntu --docker --1pass --dev-tools project-dev
+incus.init --ubuntu --docker --1pass --gh-token --dev-tools project-dev
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
