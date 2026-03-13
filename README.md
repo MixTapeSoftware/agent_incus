@@ -32,7 +32,7 @@ Without this, containers get an IPv6 address from Incus and prefer it (per RFC 6
 ```bash
 git clone <repo-url> agentincus
 cd agentincus
-./incus_agent_init.sh
+./install_shortcuts
 ```
 
 This symlinks the helper scripts into `~/.local/bin`.
@@ -44,7 +44,7 @@ This symlinks the helper scripts into `~/.local/bin`.
 | `incus.init` | `inci` | Create and provision a container |
 | `incus.shell` | `incs` | Open a login shell (or run a command) in a container |
 | `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
-| `incus_agent_init.sh` | — | Symlink helpers and aliases into `~/.local/bin` |
+| `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin` |
 
 ## Quick Start
 
