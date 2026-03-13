@@ -673,7 +673,7 @@ if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     export MISE_TRUSTED_CONFIG_PATHS=/workspace;
     export MISE_NODE_COMPILE=0;
-    cd $MOUNT_PATH && ~/.local/bin/mise install
+    cd $MOUNT_PATH && mise install
 EOF
 fi
 
