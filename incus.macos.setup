@@ -1,63 +1,125 @@
 #!/bin/bash
-# incus.macos.setup
-# Bootstraps Incus on macOS via Colima.
-# Called from incus.init — exits silently on non-macOS systems.
-# On macOS, ensures colima + incus CLI are installed and the
-# "agentincus" Colima profile is running before incus.init continues.
+set -euo pipefail
 
-# Skip entirely on non-macOS
-[[ "$(uname -s)" != "Darwin" ]] && return 0 2>/dev/null || [[ "$(uname -s)" != "Darwin" ]] && exit 0
-
-COLIMA_PROFILE="agentincus"
+# incus.preflight
+# macOS pre-flight: ensures Colima + Incus are installed and running.
+# Skips entirely on Linux.
 
 # ---------------------------------------------------------------------------
-# Check: colima installed
+# Colors / logging
+# ---------------------------------------------------------------------------
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()   { echo -e "${GREEN}[+]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+
+# ---------------------------------------------------------------------------
+# Skip on Linux
+# ---------------------------------------------------------------------------
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
+CPUS=4
+MEMORY=8
+DISK=100
+PROFILE="agent-incus"
+
+# ---------------------------------------------------------------------------
+# Parse arguments
+# ---------------------------------------------------------------------------
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --cpus)    [[ $# -lt 2 ]] && error "$1 requires an argument"; CPUS="$2"; shift 2 ;;
+    --memory)  [[ $# -lt 2 ]] && error "$1 requires an argument"; MEMORY="$2"; shift 2 ;;
+    --disk)    [[ $# -lt 2 ]] && error "$1 requires an argument"; DISK="$2"; shift 2 ;;
+    --profile) [[ $# -lt 2 ]] && error "$1 requires an argument"; PROFILE="$2"; shift 2 ;;
+    -h|--help)
+      echo "Usage: $(basename "$0") [OPTIONS]"
+      echo ""
+      echo "macOS pre-flight: ensures Colima + Incus are installed and running."
+      echo "Skips entirely on Linux."
+      echo ""
+      echo "Options:"
+      echo "  --cpus N       VM CPUs (default: 4)"
+      echo "  --memory N     VM memory in GB (default: 8)"
+      echo "  --disk N       VM disk in GB (default: 100)"
+      echo "  --profile NAME Colima profile name (default: agentincus)"
+      echo "  -h, --help     Show this help"
+      exit 0
+      ;;
+    -*) error "Unknown option: $1" ;;
+    *)  error "Unexpected argument: $1" ;;
+  esac
+done
+
+# ---------------------------------------------------------------------------
+# Check Colima
 # ---------------------------------------------------------------------------
 if ! command -v colima >/dev/null 2>&1; then
-  warn "Colima is not installed."
-  read -rp "Install with 'brew install colima'? [Y/n] " reply
+  echo ""
+  warn "Colima is required to run Incus on macOS."
+  read -rp "Install Colima via brew? [Y/n] " reply
   if [[ "${reply:-Y}" =~ ^[Nn]$ ]]; then
-    error "Colima is required on macOS. Install it and try again."
+    error "Colima is required on macOS. Install it with: brew install colima"
   fi
-  log "Installing colima..."
+  log "Installing Colima..."
   brew install colima
 fi
 
 # ---------------------------------------------------------------------------
-# Check: incus CLI installed
+# Check Incus CLI
 # ---------------------------------------------------------------------------
 if ! command -v incus >/dev/null 2>&1; then
-  warn "Incus CLI is not installed."
-  read -rp "Install with 'brew install incus'? [Y/n] " reply
+  echo ""
+  warn "Incus CLI is required."
+  read -rp "Install Incus via brew? [Y/n] " reply
   if [[ "${reply:-Y}" =~ ^[Nn]$ ]]; then
-    error "Incus CLI is required. Install it and try again."
+    error "Incus CLI is required. Install it with: brew install incus"
   fi
-  log "Installing incus..."
+  log "Installing Incus CLI..."
   brew install incus
 fi
 
 # ---------------------------------------------------------------------------
-# Check: Colima "agentincus" profile
+# Check Colima profile
 # ---------------------------------------------------------------------------
-PROFILE_STATUS="$(colima list --json 2>/dev/null \
-  | grep -o "\"name\":\"$COLIMA_PROFILE\"[^}]*\"status\":\"[^\"]*\"" \
-  | sed 's/.*"status":"\([^"]*\)"/\1/' || true)"
+PROFILE_EXISTS=0
+PROFILE_RUNNING=0
 
-if [[ -z "$PROFILE_STATUS" ]]; then
-  log "Creating Colima profile '$COLIMA_PROFILE' with Incus runtime..."
-  colima start --runtime incus --profile "$COLIMA_PROFILE"
-elif [[ "$PROFILE_STATUS" != "Running" ]]; then
-  log "Starting existing Colima profile '$COLIMA_PROFILE'..."
-  colima start --profile "$COLIMA_PROFILE"
+if colima list 2>/dev/null | grep -q "$PROFILE"; then
+  PROFILE_EXISTS=1
+  if colima list 2>/dev/null | grep "$PROFILE" | grep -q "Running"; then
+    PROFILE_RUNNING=1
+  fi
+fi
+
+if [[ "$PROFILE_EXISTS" == "0" ]]; then
+  log "Creating Colima profile '${PROFILE}' with Incus runtime..."
+  log "Resources: ${CPUS} CPUs, ${MEMORY}GB memory, ${DISK}GB disk"
+  colima start --runtime incus --profile "$PROFILE" \
+    --cpu "$CPUS" --memory "$MEMORY" --disk "$DISK"
+
+elif [[ "$PROFILE_RUNNING" == "0" ]]; then
+  log "Starting Colima profile '${PROFILE}'..."
+  colima start --profile "$PROFILE"
+
 else
-  log "Colima profile '$COLIMA_PROFILE' is already running."
+  log "Colima profile '${PROFILE}' is running."
 fi
 
 # ---------------------------------------------------------------------------
-# Verify incus connectivity
+# Verify Incus connectivity
 # ---------------------------------------------------------------------------
-log "Verifying incus connectivity..."
 if ! incus list >/dev/null 2>&1; then
-  error "Cannot reach Incus. 'incus list' failed. Check that Colima profile '$COLIMA_PROFILE' is running and the Incus remote is configured."
+  error "Incus CLI cannot connect. Check 'incus remote list' and ensure a local remote is configured."
 fi
-log "Incus is reachable."
+
+log "Incus is ready."

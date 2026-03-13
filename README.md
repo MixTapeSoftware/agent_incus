@@ -81,8 +81,7 @@ Options:
 
 ### What incus.init does
 
-1. On macOS, bootstraps Colima with the Incus runtime (skipped on Linux)
-2. Launches an Alpine 3.23 container (or Ubuntu 24.04 with `--ubuntu`)
+1. Launches an Alpine 3.23 container (or Ubuntu 24.04 with `--ubuntu`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID with passwordless sudo
 5. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
