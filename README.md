@@ -133,6 +133,35 @@ incus config device add project-dev web proxy \
   connect=tcp:127.0.0.1:4000
 ```
 
+**On Linux**, the container gets a bridge IP — find it with `incus list` and open `http://<container-ip>:4000`.
+
+**On macOS (Colima)**, the Colima VM gets a routable IP on a private network between your Mac and the VM. Find it with:
+
+```bash
+colima list
+```
+
+Look for the IP in the output (e.g. `192.168.64.6`), then open `http://192.168.64.6:4000`. This IP is only accessible from your Mac, not from other machines on your network.
+
+**Important: bind to 0.0.0.0** — most dev servers bind to `localhost` by default, which blocks access from outside the container. You need to bind to all interfaces:
+
+```bash
+# Astro
+npm run dev -- --host 0.0.0.0
+
+# Next.js
+npm run dev -- -H 0.0.0.0
+
+# Rails
+bin/rails server -b 0.0.0.0
+
+# Phoenix
+mix phx.server  # binds 0.0.0.0 by default, but check config/dev.exs for ip: {127, 0, 0, 1}
+
+# Vite (Vue, Svelte, etc.)
+npm run dev -- --host 0.0.0.0
+```
+
 ### Snapshots
 
 Capture environment state for rollback:
