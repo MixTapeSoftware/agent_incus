@@ -68,8 +68,6 @@ Options:
   -m, --mount-path PATH     Container mount point (default: /workspace)
   -i, --image IMAGE         Base image override
   --ubuntu                  Use Ubuntu 24.04 instead of Alpine 3.23
-  --dev-tools               Install Oh My Zsh, fzf, bat, and shell aliases
-  --docker                  Install Docker inside the container
   --proxy                   Enable HTTP(S) proxy env vars
   --proxy-port PORT         Required when --proxy is set
   --proxy-ip IP             Proxy IP override (default: container gateway)
@@ -85,8 +83,9 @@ Options:
 3. Creates a user matching your host UID/GID with passwordless sudo
 4. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
 5. Installs mise (runtime version manager) and Claude Code
-6. With `--dev-tools`: adds Oh My Zsh, fzf, bat, and shell aliases
-7. Optionally installs Docker, 1Password CLI, GitHub auth, and/or proxy configuration
+6. Installs Oh My Zsh, fzf, bat, and shell aliases
+7. Installs Docker and Chromium (Playwright)
+8. Optionally installs 1Password CLI, GitHub auth, and/or proxy configuration
 
 ## The Development Workflow
 
@@ -97,13 +96,13 @@ A recommended setup uses two containers sharing the same workspace:
  ├── Editor open on ./project
  ├── Git credentials stay here
  │
- ├── Agent Container (Alpine, minimal)
+ ├── Agent Container (Alpine, batteries included)
  │   ├── Claude Code + API key only
- │   ├── No other credentials
+ │   ├── Docker, Chromium, dev tools
  │   └── /workspace ──┐
  │                     ├── shared directory
  └── Dev Container (Ubuntu, full)
-     ├── API keys, dev tools, Docker
+     ├── API keys, 1Password, GitHub auth
      ├── Port forwarded to host
      └── /workspace ──┘
 ```
@@ -112,8 +111,8 @@ A recommended setup uses two containers sharing the same workspace:
 # Agent container — lean, secure default
 incus.init project-agent
 
-# Dev container — the works
-incus.init --ubuntu --docker --1pass --gh-token --dev-tools project-dev
+# Dev container — with credentials
+incus.init --ubuntu --1pass --gh-token project-dev
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
