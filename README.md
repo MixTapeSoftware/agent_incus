@@ -158,6 +158,9 @@ bin/rails server -b 0.0.0.0
 # Phoenix
 mix phx.server  # binds 0.0.0.0 by default, but check config/dev.exs for ip: {127, 0, 0, 1}
 
+# FastAPI
+uvicorn main:app --host 0.0.0.0
+
 # Vite (Vue, Svelte, etc.)
 npm run dev -- --host 0.0.0.0
 ```
