@@ -675,8 +675,10 @@ if [[ "$USE_ENTIRE" == "1" ]]; then
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
     eval "$(mise activate bash)"
-    go install github.com/entireio/cli@latest
-    entire enable
+    go install github.com/entireio/cli/cmd/entire@latest
+    if [[ -d /workspace/.git ]]; then
+      cd /workspace && entire enable --telemetry=false
+    fi
 EOF
 fi
 
