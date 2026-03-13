@@ -10,41 +10,15 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 - **macOS**: [Homebrew](https://brew.sh/) installed — `incus.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
 - `~/.local/bin` in your `PATH`
 
-## Firewall (UFW)
-
-If UFW is enabled on the host, its default DROP policy will block traffic on the Incus bridge. See the [Incus firewall documentation](https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge) for setup instructions. The things you'll need to allow:
-
-- **DHCP + DNS** — containers need these to get an IP address and resolve names
-- **Outbound forwarding** — containers need a route through the host to reach the internet. Optionally, if you use `--proxy`, the proxy port on the host must also accept connections from the bridge
-
-### IPv6 gotcha
-
-If your host doesn't have IPv6 internet, [disable it on the bridge](https://linuxcontainers.org/incus/docs/main/reference/network_bridge/):
-
-```bash
-incus network set incusbr0 ipv6.address none
-```
-
-Without this, containers get an IPv6 address from Incus and prefer it (per RFC 6724). The symptom is confusing: `ping` works (resolves to IPv4) but `apt-get update` hangs trying to reach mirrors over IPv6.
-
 ## Install
 
 ```bash
-git clone <repo-url> agentincus
-cd agentincus
+git clone <repo-url> agent_incus
+cd agent_incus
 ./install_shortcuts
 ```
 
 This symlinks the helper scripts into `~/.local/bin`.
-
-## Scripts
-
-| Script | Alias | Purpose |
-|---|---|---|
-| `incus.init` | `inci` | Create and provision a container |
-| `incus.shell` | `incs` | Open a login shell (or run a command) in a container |
-| `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
-| `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin` |
 
 ## Quick Start
 
@@ -59,6 +33,17 @@ incs my-project
 incs my-project claude
 ```
 
+## Scripts
+
+| Script | Alias | Purpose |
+|---|---|---|
+| `incus.init` | `inci` | Create and provision a container |
+| `incus.shell` | `incs` | Open a login shell (or run a command) in a container |
+| `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
+| `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin` |
+
+
+
 The full names (`incus.init`, `incus.shell`) also work.
 
 ## incus.init Options
@@ -71,7 +56,7 @@ Options:
   -m, --mount-path PATH     Container mount point (default: /workspace)
   -i, --image IMAGE         Base image override
   --ubuntu                  Use Ubuntu 24.04 instead of Alpine 3.23
-  --proxy                   Enable HTTP(S) proxy env vars
+  --proxy                   Route container traffic through a proxy (advanced)
   --proxy-port PORT         Required when --proxy is set
   --proxy-ip IP             Proxy IP override (default: container gateway)
   --1pass                   Install 1Password CLI (prompts for service account token)
@@ -177,3 +162,22 @@ mise use python@3.12 node@20
 ```
 
 Or add a `mise.toml` to your project — `incus.init` runs `mise install` automatically if one exists.
+
+## Linux Gotchas
+
+### Firewall (UFW)
+
+If UFW is enabled on the host, its default DROP policy will block traffic on the Incus bridge. See the [Incus firewall documentation](https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge) for setup instructions. The things you'll need to allow:
+
+- **DHCP + DNS** — containers need these to get an IP address and resolve names
+- **Outbound forwarding** — containers need a route through the host to reach the internet. Optionally, if you use `--proxy`, the proxy port on the host must also accept connections from the bridge
+
+### IPv6
+
+If your host doesn't have IPv6 internet, [disable it on the bridge](https://linuxcontainers.org/incus/docs/main/reference/network_bridge/):
+
+```bash
+incus network set incusbr0 ipv6.address none
+```
+
+Without this, containers get an IPv6 address from Incus and prefer it (per RFC 6724). The symptom is confusing: `ping` works (resolves to IPv4) but `apt-get update` hangs trying to reach mirrors over IPv6.
