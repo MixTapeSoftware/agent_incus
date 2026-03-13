@@ -528,6 +528,9 @@ if [[ -d /workspace ]]; then
     cd /workspace
 fi
 WORKSPACE
+
+  # Activate mise in zsh
+  echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
 ZSHEOF
 
 log "Installing Oh My Zsh..."
