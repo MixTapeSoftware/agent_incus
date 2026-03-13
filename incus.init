@@ -44,6 +44,9 @@ Options:
   --proxy-ip IP             Optional proxy IP override
   --1pass                   Install 1Password CLI
   --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
+  --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
+  --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
+  --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
 EOF
@@ -269,6 +272,9 @@ while [[ $# -gt 0 ]]; do
     --proxy-ip)      [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_IP="$2"; shift 2 ;;
     --1pass)         USE_1PASSWORD=1; shift ;;
     --gh-token)      USE_GH_TOKEN=1; shift ;;
+    --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
+    --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
+    --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
     -*)              error "Unknown option: $1" ;;
