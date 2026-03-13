@@ -21,7 +21,12 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FILES=(
   "incus.shell"
   "incus.init"
+  "incus.macos.setup"
 )
+
+# Short aliases: alias_name:target_file
+ALIAS_NAMES=("incs" "inci")
+ALIAS_TARGETS=("incus.shell" "incus.init")
 
 # Ensure ~/.local/bin exists
 mkdir -p ~/.local/bin
@@ -60,6 +65,36 @@ for file in "${FILES[@]}"; do
   # Create symlink
   ln -s "$SOURCE" "$TARGET"
   log "Linked: $file -> $TARGET"
+done
+
+# Create short alias symlinks
+for i in "${!ALIAS_NAMES[@]}"; do
+  alias_name="${ALIAS_NAMES[$i]}"
+  TARGET_FILE="${ALIAS_TARGETS[$i]}"
+  ALIAS_TARGET="$HOME/.local/bin/$alias_name"
+  LINK_DEST="$SCRIPT_DIR/$TARGET_FILE"
+
+  if [[ ! -f "$LINK_DEST" ]]; then
+    warn "Alias target not found: $LINK_DEST (skipping $alias_name)"
+    continue
+  fi
+
+  if [[ -L "$ALIAS_TARGET" ]]; then
+    rm "$ALIAS_TARGET"
+  elif [[ -f "$ALIAS_TARGET" ]]; then
+    warn "File exists (not a symlink): $ALIAS_TARGET"
+    read -p "Overwrite? [y/N] " -n 1 -r
+    echo
+    if [[ $REPLY =~ ^[Yy]$ ]]; then
+      rm "$ALIAS_TARGET"
+    else
+      warn "Skipping alias $alias_name"
+      continue
+    fi
+  fi
+
+  ln -s "$LINK_DEST" "$ALIAS_TARGET"
+  log "Alias: $alias_name -> $TARGET_FILE"
 done
 
 echo ""

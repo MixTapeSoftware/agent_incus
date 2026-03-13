@@ -6,8 +6,8 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 
 ## Prerequisites
 
-- Linux (Incus requires a Linux host; on macOS see [Incus on macOS with Colima](https://discuss.linuxcontainers.org/t/easy-way-to-try-incus-on-macos-with-colima/21153))
-- [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
+- **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
+- **macOS**: [Homebrew](https://brew.sh/) installed — `incus.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
 - `~/.local/bin` in your `PATH`
 
 ## Firewall (UFW)
@@ -39,24 +39,27 @@ This symlinks the helper scripts into `~/.local/bin`.
 
 ## Scripts
 
-| Script | Purpose |
-|---|---|
-| `incus.init` | Create and provision a container |
-| `incus.shell` | Open a login shell (or run a command) in a container |
-| `incus_agent_init.sh` | Symlink helpers into `~/.local/bin` |
+| Script | Alias | Purpose |
+|---|---|---|
+| `incus.init` | `inci` | Create and provision a container |
+| `incus.shell` | `incs` | Open a login shell (or run a command) in a container |
+| `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
+| `incus_agent_init.sh` | — | Symlink helpers and aliases into `~/.local/bin` |
 
 ## Quick Start
 
 ```bash
 # Create a container with the current directory mounted as /workspace
-incus.init my-project
+inci my-project
 
 # Open a shell
-incus.shell my-project
+incs my-project
 
 # Run a command (e.g. Claude Code)
-incus.shell my-project claude
+incs my-project claude
 ```
+
+The full names (`incus.init`, `incus.shell`) also work.
 
 ## incus.init Options
 
@@ -78,14 +81,15 @@ Options:
 
 ### What incus.init does
 
-1. Launches an Alpine 3.23 container (or Ubuntu 24.04 with `--ubuntu`)
-2. Installs build tools, dev libraries, Python, and Node.js
-3. Creates a user matching your host UID/GID with passwordless sudo
-4. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
-5. Installs mise (runtime version manager) and Claude Code
-6. Installs Oh My Zsh, fzf, bat, and shell aliases
-7. Installs Docker and Chromium (Playwright)
-8. Optionally installs 1Password CLI, GitHub auth, and/or proxy configuration
+1. On macOS, bootstraps Colima with the Incus runtime (skipped on Linux)
+2. Launches an Alpine 3.23 container (or Ubuntu 24.04 with `--ubuntu`)
+3. Installs build tools, dev libraries, Python, and Node.js
+4. Creates a user matching your host UID/GID with passwordless sudo
+5. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
+6. Installs mise (runtime version manager) and Claude Code
+7. Installs Oh My Zsh, fzf, bat, and shell aliases
+8. Installs Docker and Chromium (Playwright)
+9. Optionally installs 1Password CLI, GitHub auth, and/or proxy configuration
 
 ## The Development Workflow
 
@@ -109,10 +113,10 @@ A recommended setup uses two containers sharing the same workspace:
 
 ```bash
 # Agent container — lean, secure default
-incus.init project-agent
+inci project-agent
 
 # Dev container — with credentials
-incus.init --ubuntu --1pass --gh-token project-dev
+inci --ubuntu --1pass --gh-token project-dev
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.

@@ -1,0 +1,63 @@
+#!/bin/bash
+# incus.macos.setup
+# Bootstraps Incus on macOS via Colima.
+# Called from incus.init — exits silently on non-macOS systems.
+# On macOS, ensures colima + incus CLI are installed and the
+# "agentincus" Colima profile is running before incus.init continues.
+
+# Skip entirely on non-macOS
+[[ "$(uname -s)" != "Darwin" ]] && return 0 2>/dev/null || [[ "$(uname -s)" != "Darwin" ]] && exit 0
+
+COLIMA_PROFILE="agentincus"
+
+# ---------------------------------------------------------------------------
+# Check: colima installed
+# ---------------------------------------------------------------------------
+if ! command -v colima >/dev/null 2>&1; then
+  warn "Colima is not installed."
+  read -rp "Install with 'brew install colima'? [Y/n] " reply
+  if [[ "${reply:-Y}" =~ ^[Nn]$ ]]; then
+    error "Colima is required on macOS. Install it and try again."
+  fi
+  log "Installing colima..."
+  brew install colima
+fi
+
+# ---------------------------------------------------------------------------
+# Check: incus CLI installed
+# ---------------------------------------------------------------------------
+if ! command -v incus >/dev/null 2>&1; then
+  warn "Incus CLI is not installed."
+  read -rp "Install with 'brew install incus'? [Y/n] " reply
+  if [[ "${reply:-Y}" =~ ^[Nn]$ ]]; then
+    error "Incus CLI is required. Install it and try again."
+  fi
+  log "Installing incus..."
+  brew install incus
+fi
+
+# ---------------------------------------------------------------------------
+# Check: Colima "agentincus" profile
+# ---------------------------------------------------------------------------
+PROFILE_STATUS="$(colima list --json 2>/dev/null \
+  | grep -o "\"name\":\"$COLIMA_PROFILE\"[^}]*\"status\":\"[^\"]*\"" \
+  | sed 's/.*"status":"\([^"]*\)"/\1/' || true)"
+
+if [[ -z "$PROFILE_STATUS" ]]; then
+  log "Creating Colima profile '$COLIMA_PROFILE' with Incus runtime..."
+  colima start --runtime incus --profile "$COLIMA_PROFILE"
+elif [[ "$PROFILE_STATUS" != "Running" ]]; then
+  log "Starting existing Colima profile '$COLIMA_PROFILE'..."
+  colima start --profile "$COLIMA_PROFILE"
+else
+  log "Colima profile '$COLIMA_PROFILE' is already running."
+fi
+
+# ---------------------------------------------------------------------------
+# Verify incus connectivity
+# ---------------------------------------------------------------------------
+log "Verifying incus connectivity..."
+if ! incus list >/dev/null 2>&1; then
+  error "Cannot reach Incus. 'incus list' failed. Check that Colima profile '$COLIMA_PROFILE' is running and the Incus remote is configured."
+fi
+log "Incus is reachable."
