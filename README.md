@@ -125,7 +125,7 @@ The host, agent, and dev containers all read and write the same `/workspace` dir
 
 ### Expose Container Ports
 
-To access a service running inside a container from your host (e.g. a web app you want to view in your browser):
+To access a service running inside a container from your host, either forward the port to localhost:
 
 ```bash
 incus config device add project-dev web proxy \
@@ -133,15 +133,7 @@ incus config device add project-dev web proxy \
   connect=tcp:127.0.0.1:4000
 ```
 
-**On Linux**, the container gets a bridge IP — find it with `incus list` and open `http://<container-ip>:4000`.
-
-**On macOS (Colima)**, the Colima VM gets a routable IP on a private network between your Mac and the VM. Find it with:
-
-```bash
-colima list
-```
-
-Look for the IP in the output (e.g. `192.168.64.6`), then open `http://192.168.64.6:4000`. This IP is only accessible from your Mac, not from other machines on your network.
+Or use the container/VM IP directly — find it with `incus list` (Linux) or `colima list` (macOS). On macOS, the Colima VM IP (e.g. `192.168.64.6`) is a private address only accessible from your Mac.
 
 **Important: bind to 0.0.0.0** — most dev servers bind to `localhost` by default, which blocks access from outside the container. You need to bind to all interfaces:
 
