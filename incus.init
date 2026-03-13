@@ -44,6 +44,7 @@ Options:
   --proxy-ip IP             Optional proxy IP override
   --1pass                   Install 1Password CLI
   --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
+  --entire                  Install Entire CLI (https://github.com/entireio/cli)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
@@ -254,6 +255,7 @@ USE_GH_TOKEN=0
 GH_TOKEN_VALUE=""
 GH_USER_NAME=""
 GH_USER_EMAIL=""
+USE_ENTIRE=0
 DRY_RUN=0
 MAP_USER=0
 IDMAP_METHOD=""
@@ -272,6 +274,7 @@ while [[ $# -gt 0 ]]; do
     --proxy-ip)      [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_IP="$2"; shift 2 ;;
     --1pass)         USE_1PASSWORD=1; shift ;;
     --gh-token)      USE_GH_TOKEN=1; shift ;;
+    --entire)        USE_ENTIRE=1; shift ;;
     --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
@@ -657,7 +660,7 @@ log "Installing fzf and bat via mise..."
 incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
   set -e
   export MISE_TRUSTED_CONFIG_PATHS="/workspace"
-  mise use -g fzf@latest bat@latest
+  mise use -g go@latest fzf@latest bat@latest
 
   cat >> ~/.zshrc <<'FZF'
 
@@ -669,6 +672,19 @@ gdiff() {
 }
 FZF
 EOF
+
+# ---------------------------------------------------------------------------
+# Entire CLI (optional)
+# ---------------------------------------------------------------------------
+if [[ "$USE_ENTIRE" == "1" ]]; then
+  log "Installing Entire CLI..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    eval "$(mise activate bash)"
+    go install github.com/entireio/cli@latest
+    entire enable
+EOF
+fi
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then

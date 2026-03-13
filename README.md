@@ -61,6 +61,7 @@ Options:
   --proxy-ip IP             Proxy IP override (default: container gateway)
   --1pass                   Install 1Password CLI (prompts for service account token)
   --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
+  --entire                  Install Entire CLI (https://github.com/entireio/cli)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
