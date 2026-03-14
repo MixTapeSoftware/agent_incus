@@ -14,9 +14,9 @@
       "WebSearch",
       "NotebookEdit(**)",
       "SlashCommand(*)",
-      "Skill(*)"
+      "Skill(*)",
+      "WebFetch(*)"
     ],
-    "ask": ["WebFetch(*)"],
     "defaultMode": "acceptEdits",
     "deny": ["Read(./.entire/metadata/**)"]
   }
