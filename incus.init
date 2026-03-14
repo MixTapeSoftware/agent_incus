@@ -526,8 +526,6 @@ if [[ -d /workspace ]]; then
 fi
 WORKSPACE
 
-  # Activate mise in zsh
-  echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
 ZSHEOF
 
 log "Installing Oh My Zsh..."
@@ -548,6 +546,9 @@ RCBLOCK
   git clone https://github.com/zsh-users/zsh-autosuggestions \
     ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
   sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions)/' ~/.zshrc
+
+  # Activate mise in zsh (must be after Oh My Zsh overwrites .zshrc)
+  echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
 ZSHEOF
 
 # ---------------------------------------------------------------------------
