@@ -257,107 +257,81 @@ MAP_USER=0
 IDMAP_METHOD=""
 
 # ---------------------------------------------------------------------------
-# Component registry — selectable items for TUI installer
+# Component registry — one line per component: id:name:description:default
 # ---------------------------------------------------------------------------
-COMP_IDS=(    docker          chromium            ohmyzsh       fzf-bat          claude-code        1pass              gh-auth          entire         )
-COMP_NAMES=(  "Docker"        "Chromium/Playwright" "Oh My Zsh" "fzf + bat"    "Claude Code"      "1Password CLI"    "GitHub Auth"    "Entire CLI"   )
-COMP_DESCS=(  "Container runtime & compose"
-              "Headless browser for testing"
-              "Zsh framework with plugins"
-              "Interactive search & file preview"
-              "AI coding assistant"
-              "Password manager CLI"
-              "GitHub token & git credentials"
-              "Entire CLI tool"                                                                                                                      )
-COMP_DEFAULTS=(1 0 0 0 0 0 0 0)
-COMP_SELECTED=(1 0 0 0 0 0 0 0)
-
-# ---------------------------------------------------------------------------
-# Component helpers
-# ---------------------------------------------------------------------------
-comp_index() {
-  local id="$1"
-  for i in "${!COMP_IDS[@]}"; do
-    [[ "${COMP_IDS[$i]}" == "$id" ]] && echo "$i" && return 0
-  done
-  return 1
-}
-
-comp_select() {
-  local idx
-  idx=$(comp_index "$1") && COMP_SELECTED[$idx]=1
-}
-
-comp_is_selected() {
-  local idx
-  idx=$(comp_index "$1") && [[ "${COMP_SELECTED[$idx]}" == "1" ]]
-}
+COMPONENTS=(
+  "docker:Docker:Container runtime & compose:1"
+  "chromium:Chromium/Playwright:Headless browser for testing:0"
+  "ohmyzsh:Oh My Zsh:Zsh framework with plugins:0"
+  "fzf-bat:fzf + bat:Interactive search & file preview:0"
+  "claude-code:Claude Code:AI coding assistant:0"
+  "1pass:1Password CLI:Password manager CLI:0"
+  "gh-auth:GitHub Auth:GitHub token & git credentials:0"
+  "entire:Entire CLI:Entire CLI tool:0"
+)
+declare -A SELECTED=()
+for _entry in "${COMPONENTS[@]}"; do
+  IFS=: read -r _id _ _ _default <<< "$_entry"
+  SELECTED[$_id]=$_default
+done
+unset _entry _id _default
 
 # ---------------------------------------------------------------------------
 # TUI component selector
 # ---------------------------------------------------------------------------
 show_tui() {
-  local count=${#COMP_IDS[@]}
+  local count=${#COMPONENTS[@]}
   local cursor=0
+  local key seq marker id name desc default
 
-  # Save cursor position and hide it
   tput civis 2>/dev/null || true
-  # Ensure cursor is restored on exit
   trap 'tput cnorm 2>/dev/null || true' RETURN
 
   while true; do
-    # Clear and render
     printf '\033[2J\033[H'
-    echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
-    echo -e "${GREEN}║${NC}  Select components to install                        ${GREEN}║${NC}"
-    echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
-    echo -e "${GREEN}║${NC}  ↑/↓ or j/k: navigate   Space: toggle   Enter: go   ${GREEN}║${NC}"
-    echo -e "${GREEN}║${NC}  q: quit                                             ${GREEN}║${NC}"
-    echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
+    echo -e "${GREEN}|${NC}  Select components to install                        ${GREEN}|${NC}"
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
+    echo -e "${GREEN}|${NC}  Up/Down or j/k: navigate   Space: toggle   Enter: go${GREEN}|${NC}"
+    echo -e "${GREEN}|${NC}  q: quit                                             ${GREEN}|${NC}"
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
     echo ""
 
-    for i in $(seq 0 $((count - 1))); do
-      local marker="[ ]"
-      [[ "${COMP_SELECTED[$i]}" == "1" ]] && marker="[x]"
+    for ((i=0; i<count; i++)); do
+      IFS=: read -r id name desc default <<< "${COMPONENTS[$i]}"
+      marker="[ ]"
+      [[ "${SELECTED[$id]}" == "1" ]] && marker="[x]"
 
       if [[ $i -eq $cursor ]]; then
-        # Highlighted row
-        printf "  \033[7m %s %-24s %s \033[0m\n" "$marker" "${COMP_NAMES[$i]}" "${COMP_DESCS[$i]}"
+        printf "  \033[7m %s %-24s %s \033[0m\n" "$marker" "$name" "$desc"
       else
-        printf "   %s %-24s %s\n" "$marker" "${COMP_NAMES[$i]}" "${COMP_DESCS[$i]}"
+        printf "   %s %-24s %s\n" "$marker" "$name" "$desc"
       fi
     done
 
     echo ""
 
-    # Read a single keypress
-    local key
     IFS= read -rsn1 key
 
     case "$key" in
       $'\x1b')
-        # Read escape sequence
-        local seq
-        IFS= read -rsn2 seq
+        IFS= read -rsn2 -t 0.2 seq || continue
         case "$seq" in
-          '[A') cursor=$(( (cursor - 1 + count) % count )) ;;  # Up
-          '[B') cursor=$(( (cursor + 1) % count )) ;;          # Down
+          '[A') cursor=$(( (cursor - 1 + count) % count )) ;;
+          '[B') cursor=$(( (cursor + 1) % count )) ;;
         esac
         ;;
       'k') cursor=$(( (cursor - 1 + count) % count )) ;;
       'j') cursor=$(( (cursor + 1) % count )) ;;
       ' ')
-        # Toggle
-        if [[ "${COMP_SELECTED[$cursor]}" == "1" ]]; then
-          COMP_SELECTED[$cursor]=0
+        IFS=: read -r id _ _ _ <<< "${COMPONENTS[$cursor]}"
+        if [[ "${SELECTED[$id]}" == "1" ]]; then
+          SELECTED[$id]=0
         else
-          COMP_SELECTED[$cursor]=1
+          SELECTED[$id]=1
         fi
         ;;
-      ''|$'\n')
-        # Enter — confirm
-        break
-        ;;
+      ''|$'\n') break ;;
       'q')
         tput cnorm 2>/dev/null || true
         echo "Aborted."
@@ -366,14 +340,13 @@ show_tui() {
     esac
   done
 
-  # Restore cursor
   tput cnorm 2>/dev/null || true
   printf '\033[2J\033[H'
 
-  # Sync flag variables from selections
-  comp_is_selected "1pass"   && USE_1PASSWORD=1
-  comp_is_selected "gh-auth" && USE_GH_TOKEN=1
-  comp_is_selected "entire"  && USE_ENTIRE=1
+  # Sync USE_* flags unconditionally from SELECTED
+  USE_1PASSWORD=$([[ "${SELECTED[1pass]}" == "1" ]] && echo 1 || echo 0)
+  USE_GH_TOKEN=$([[ "${SELECTED[gh-auth]}" == "1" ]] && echo 1 || echo 0)
+  USE_ENTIRE=$([[ "${SELECTED[entire]}" == "1" ]] && echo 1 || echo 0)
 }
 
 # ---------------------------------------------------------------------------
@@ -398,16 +371,30 @@ RCBLOCK
   git clone https://github.com/zsh-users/zsh-autosuggestions \
     ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
   sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions)/' ~/.zshrc
-
-  # Activate mise in zsh (must be after Oh My Zsh overwrites .zshrc)
-  echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
 ZSHEOF
 }
 
 install_docker() {
+  log "Configuring container for Docker..."
+  incus config set "$CONTAINER_NAME" security.nesting=true
+  incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
+  incus config set "$CONTAINER_NAME" security.syscalls.intercept.setxattr=true
+
+  # Docker-in-Incus hits two AppArmor problems:
+  #   1. runc fails with "ip_unprivileged_port_start: permission denied"
+  #      unless the container runs with an unconfined AppArmor profile.
+  #   2. Docker reads /sys/module/apparmor/parameters/enabled, sees "Y",
+  #      and tries to load the "docker-default" profile via securityfs.
+  # Fix: set unconfined at the LXC level, then mask the kernel flag.
+  incus config set "$CONTAINER_NAME" raw.lxc "lxc.apparmor.profile=unconfined"
+  # raw.lxc is only read at container start, so restart to apply it.
+  incus restart "$CONTAINER_NAME"
+  wait_for_container "$CONTAINER_NAME"
+  wait_for_network "$CONTAINER_NAME"
+
   log "Installing Docker..."
 
-  # Mask AppArmor so Docker doesn't try to use it (see AppArmor comment above).
+  # Mask AppArmor enabled flag so Docker skips it entirely.
   incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'APPARMOR_EOF'
     if [ -f /sys/module/apparmor/parameters/enabled ] && \
        grep -q Y /sys/module/apparmor/parameters/enabled 2>/dev/null; then
@@ -558,6 +545,40 @@ EOF
 }
 
 # ---------------------------------------------------------------------------
+# Token prompt functions — defined once, called once after TUI
+# ---------------------------------------------------------------------------
+prompt_1password_token() {
+  echo ""
+  log "1Password CLI requires a service account token"
+  echo "Create one at: https://start.1password.com/settings/automation"
+  read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
+  echo ""
+  [[ -z "$ONEPASSWORD_SERVICE_KEY" ]] && error "Token required"
+}
+
+prompt_gh_token() {
+  echo ""
+  log "GitHub auth requires a fine-grained personal access token"
+  echo "Create one at: https://github.com/settings/tokens?type=beta"
+  echo "Recommended scopes: Contents (read/write), Metadata (read)"
+  read -rsp "Enter GitHub token: " GH_TOKEN_VALUE
+  echo ""
+  [[ -z "$GH_TOKEN_VALUE" ]] && error "GitHub token required"
+
+  local default_name default_email
+  default_name="$(git config --global user.name 2>/dev/null || true)"
+  default_email="$(git config --global user.email 2>/dev/null || true)"
+
+  read -rp "Git user.name [${default_name:-}]: " GH_USER_NAME
+  GH_USER_NAME="${GH_USER_NAME:-$default_name}"
+  [[ -z "$GH_USER_NAME" ]] && error "Git user.name required"
+
+  read -rp "Git user.email [${default_email:-}]: " GH_USER_EMAIL
+  GH_USER_EMAIL="${GH_USER_EMAIL:-$default_email}"
+  [[ -z "$GH_USER_EMAIL" ]] && error "Git user.email required"
+}
+
+# ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
@@ -569,9 +590,9 @@ while [[ $# -gt 0 ]]; do
     --proxy)         USE_PROXY=1; shift ;;
     --proxy-port)    [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_PORT="$2"; shift 2 ;;
     --proxy-ip)      [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_IP="$2"; shift 2 ;;
-    --1pass)         USE_1PASSWORD=1; comp_select "1pass"; shift ;;
-    --gh-token)      USE_GH_TOKEN=1; comp_select "gh-auth"; shift ;;
-    --entire)        USE_ENTIRE=1; comp_select "entire"; shift ;;
+    --1pass)         SELECTED[1pass]=1; shift ;;
+    --gh-token)      SELECTED[gh-auth]=1; shift ;;
+    --entire)        SELECTED[entire]=1; shift ;;
     --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
@@ -618,79 +639,22 @@ if [[ ! "${MAP_CHOICE:-Y}" =~ ^[Nn]$ ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# 1Password token prompt
-# ---------------------------------------------------------------------------
-if [[ "$USE_1PASSWORD" == "1" ]]; then
-  echo ""
-  log "1Password CLI requires a service account token"
-  echo "Create one at: https://start.1password.com/settings/automation"
-  read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
-  echo ""
-  [[ -z "$ONEPASSWORD_SERVICE_KEY" ]] && error "Token required"
-fi
-
-# ---------------------------------------------------------------------------
-# GitHub token prompt
-# ---------------------------------------------------------------------------
-if [[ "$USE_GH_TOKEN" == "1" ]]; then
-  echo ""
-  log "GitHub auth requires a fine-grained personal access token"
-  echo "Create one at: https://github.com/settings/tokens?type=beta"
-  echo "Recommended scopes: Contents (read/write), Metadata (read)"
-  read -rsp "Enter GitHub token: " GH_TOKEN_VALUE
-  echo ""
-  [[ -z "$GH_TOKEN_VALUE" ]] && error "GitHub token required"
-
-  DEFAULT_GH_NAME="$(git config --global user.name 2>/dev/null || true)"
-  DEFAULT_GH_EMAIL="$(git config --global user.email 2>/dev/null || true)"
-
-  read -rp "Git user.name [${DEFAULT_GH_NAME:-}]: " GH_USER_NAME
-  GH_USER_NAME="${GH_USER_NAME:-$DEFAULT_GH_NAME}"
-  [[ -z "$GH_USER_NAME" ]] && error "Git user.name required"
-
-  read -rp "Git user.email [${DEFAULT_GH_EMAIL:-}]: " GH_USER_EMAIL
-  GH_USER_EMAIL="${GH_USER_EMAIL:-$DEFAULT_GH_EMAIL}"
-  [[ -z "$GH_USER_EMAIL" ]] && error "Git user.email required"
-fi
-
-# ---------------------------------------------------------------------------
 # TUI component selector
 # ---------------------------------------------------------------------------
 if [[ "$NO_TUI" == "0" ]]; then
   show_tui
+else
+  # --no-tui: sync USE_* from defaults/CLI flags
+  USE_1PASSWORD=$([[ "${SELECTED[1pass]}" == "1" ]] && echo 1 || echo 0)
+  USE_GH_TOKEN=$([[ "${SELECTED[gh-auth]}" == "1" ]] && echo 1 || echo 0)
+  USE_ENTIRE=$([[ "${SELECTED[entire]}" == "1" ]] && echo 1 || echo 0)
 fi
 
-# Prompt for 1Password token if selected via TUI (not already prompted via --1pass flag)
-if [[ "$USE_1PASSWORD" == "1" && -z "${ONEPASSWORD_SERVICE_KEY:-}" ]]; then
-  echo ""
-  log "1Password CLI requires a service account token"
-  echo "Create one at: https://start.1password.com/settings/automation"
-  read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
-  echo ""
-  [[ -z "$ONEPASSWORD_SERVICE_KEY" ]] && error "Token required"
-fi
-
-# Prompt for GitHub token if selected via TUI (not already prompted via --gh-token flag)
-if [[ "$USE_GH_TOKEN" == "1" && -z "${GH_TOKEN_VALUE:-}" ]]; then
-  echo ""
-  log "GitHub auth requires a fine-grained personal access token"
-  echo "Create one at: https://github.com/settings/tokens?type=beta"
-  echo "Recommended scopes: Contents (read/write), Metadata (read)"
-  read -rsp "Enter GitHub token: " GH_TOKEN_VALUE
-  echo ""
-  [[ -z "$GH_TOKEN_VALUE" ]] && error "GitHub token required"
-
-  DEFAULT_GH_NAME="$(git config --global user.name 2>/dev/null || true)"
-  DEFAULT_GH_EMAIL="$(git config --global user.email 2>/dev/null || true)"
-
-  read -rp "Git user.name [${DEFAULT_GH_NAME:-}]: " GH_USER_NAME
-  GH_USER_NAME="${GH_USER_NAME:-$DEFAULT_GH_NAME}"
-  [[ -z "$GH_USER_NAME" ]] && error "Git user.name required"
-
-  read -rp "Git user.email [${DEFAULT_GH_EMAIL:-}]: " GH_USER_EMAIL
-  GH_USER_EMAIL="${GH_USER_EMAIL:-$DEFAULT_GH_EMAIL}"
-  [[ -z "$GH_USER_EMAIL" ]] && error "Git user.email required"
-fi
+# ---------------------------------------------------------------------------
+# Token prompts — called once, after TUI decision
+# ---------------------------------------------------------------------------
+[[ "${SELECTED[1pass]}" == "1" ]] && prompt_1password_token
+[[ "${SELECTED[gh-auth]}" == "1" ]] && prompt_gh_token
 
 # ---------------------------------------------------------------------------
 # Dry-run summary
@@ -707,11 +671,12 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
   echo ""
   echo "Selected components:"
-  for i in "${!COMP_IDS[@]}"; do
-    if [[ "${COMP_SELECTED[$i]}" == "1" ]]; then
-      echo "  [x] ${COMP_NAMES[$i]}"
+  for entry in "${COMPONENTS[@]}"; do
+    IFS=: read -r id name desc default <<< "$entry"
+    if [[ "${SELECTED[$id]}" == "1" ]]; then
+      echo "  [x] $name"
     else
-      echo "  [ ] ${COMP_NAMES[$i]}"
+      echo "  [ ] $name"
     fi
   done
   echo ""
@@ -730,27 +695,6 @@ trap cleanup_on_failure ERR
 # ---------------------------------------------------------------------------
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
 incus launch "$BASE_IMAGE" "$CONTAINER_NAME"
-
-log "Enabling container nesting for Docker..."
-incus config set "$CONTAINER_NAME" security.nesting=true
-incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
-incus config set "$CONTAINER_NAME" security.syscalls.intercept.setxattr=true
-
-# Docker-in-Incus hits two AppArmor problems:
-#   1. runc fails with "ip_unprivileged_port_start: permission denied"
-#      unless the container runs with an unconfined AppArmor profile.
-#      (CVE-2025-52881, https://github.com/lxc/incus/pull/2624)
-#   2. Even with unconfined, Docker reads /sys/module/apparmor/parameters/enabled,
-#      sees "Y", and tries to load the "docker-default" profile via securityfs —
-#      which isn't accessible inside the container.
-# Fix: set unconfined at the LXC level (fixes #1), then mask the kernel
-# AppArmor "enabled" flag inside the container so Docker skips AppArmor
-# entirely (fixes #2).  The Incus container itself remains the security
-# boundary.
-incus config set "$CONTAINER_NAME" raw.lxc "lxc.apparmor.profile=unconfined"
-log "AppArmor set to unconfined inside container (required for Docker)."
-# raw.lxc is only read at container start, so restart to apply it.
-incus restart "$CONTAINER_NAME"
 
 wait_for_container "$CONTAINER_NAME"
 wait_for_network "$CONTAINER_NAME"
@@ -859,19 +803,22 @@ if [[ -d /workspace ]]; then
 fi
 WORKSPACE
 
+  # Activate mise in zsh (available for fzf, bat, go, and other mise-managed tools)
+  echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
+
 ZSHEOF
 
 # ---------------------------------------------------------------------------
 # Install selected components
 # ---------------------------------------------------------------------------
-comp_is_selected "ohmyzsh"     && install_ohmyzsh
-comp_is_selected "docker"      && install_docker
-comp_is_selected "chromium"    && install_chromium
-comp_is_selected "fzf-bat"    && install_fzf_bat
-comp_is_selected "claude-code" && install_claude_code
-comp_is_selected "1pass"       && install_1password
-comp_is_selected "gh-auth"     && install_gh_auth
-comp_is_selected "entire"      && install_entire
+[[ "${SELECTED[ohmyzsh]}" == "1" ]]     && install_ohmyzsh
+[[ "${SELECTED[docker]}" == "1" ]]      && install_docker
+[[ "${SELECTED[chromium]}" == "1" ]]    && install_chromium
+[[ "${SELECTED[fzf-bat]}" == "1" ]]     && install_fzf_bat
+[[ "${SELECTED[claude-code]}" == "1" ]] && install_claude_code
+[[ "${SELECTED[1pass]}" == "1" ]]       && install_1password
+[[ "${SELECTED[gh-auth]}" == "1" ]]     && install_gh_auth
+[[ "${SELECTED[entire]}" == "1" ]]      && install_entire
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
@@ -915,8 +862,9 @@ echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
 echo "Write access: ${IDMAP_METHOD:-none}"
 echo ""
 echo "Installed:"
-for i in "${!COMP_IDS[@]}"; do
-  [[ "${COMP_SELECTED[$i]}" == "1" ]] && echo "  ✓ ${COMP_NAMES[$i]}"
+for entry in "${COMPONENTS[@]}"; do
+  IFS=: read -r id name desc default <<< "$entry"
+  [[ "${SELECTED[$id]}" == "1" ]] && echo "  ✓ $name"
 done
 [[ "$USE_PROXY" == "1" ]] && echo "  ✓ Proxy (http://$PROXY_IP:$PROXY_PORT)"
 echo "========================================"
@@ -924,7 +872,7 @@ echo ""
 echo "Shell in:"
 echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER"
 echo ""
-if comp_is_selected "claude-code"; then
+if [[ "${SELECTED[claude-code]}" == "1" ]]; then
 echo "Start Claude Code:"
 echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER -c 'cd $MOUNT_PATH && claude'"
 fi
