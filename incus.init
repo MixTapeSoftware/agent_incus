@@ -553,7 +553,7 @@ prompt_1password_token() {
   echo "Create one at: https://start.1password.com/settings/automation"
   read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
   echo ""
-  [[ -z "$ONEPASSWORD_SERVICE_KEY" ]] && error "Token required"
+  if [[ -z "$ONEPASSWORD_SERVICE_KEY" ]]; then error "Token required"; fi
 }
 
 prompt_gh_token() {
@@ -563,7 +563,7 @@ prompt_gh_token() {
   echo "Recommended scopes: Contents (read/write), Metadata (read)"
   read -rsp "Enter GitHub token: " GH_TOKEN_VALUE
   echo ""
-  [[ -z "$GH_TOKEN_VALUE" ]] && error "GitHub token required"
+  if [[ -z "$GH_TOKEN_VALUE" ]]; then error "GitHub token required"; fi
 
   local default_name default_email
   default_name="$(git config --global user.name 2>/dev/null || true)"
@@ -571,11 +571,11 @@ prompt_gh_token() {
 
   read -rp "Git user.name [${default_name:-}]: " GH_USER_NAME
   GH_USER_NAME="${GH_USER_NAME:-$default_name}"
-  [[ -z "$GH_USER_NAME" ]] && error "Git user.name required"
+  if [[ -z "$GH_USER_NAME" ]]; then error "Git user.name required"; fi
 
   read -rp "Git user.email [${default_email:-}]: " GH_USER_EMAIL
   GH_USER_EMAIL="${GH_USER_EMAIL:-$default_email}"
-  [[ -z "$GH_USER_EMAIL" ]] && error "Git user.email required"
+  if [[ -z "$GH_USER_EMAIL" ]]; then error "Git user.email required"; fi
 }
 
 # ---------------------------------------------------------------------------
@@ -653,8 +653,8 @@ fi
 # ---------------------------------------------------------------------------
 # Token prompts — called once, after TUI decision
 # ---------------------------------------------------------------------------
-[[ "${SELECTED[1pass]}" == "1" ]] && prompt_1password_token
-[[ "${SELECTED[gh-auth]}" == "1" ]] && prompt_gh_token
+if [[ "${SELECTED[1pass]}" == "1" ]]; then prompt_1password_token; fi
+if [[ "${SELECTED[gh-auth]}" == "1" ]]; then prompt_gh_token; fi
 
 # ---------------------------------------------------------------------------
 # Dry-run summary
@@ -811,14 +811,14 @@ ZSHEOF
 # ---------------------------------------------------------------------------
 # Install selected components
 # ---------------------------------------------------------------------------
-[[ "${SELECTED[ohmyzsh]}" == "1" ]]     && install_ohmyzsh
-[[ "${SELECTED[docker]}" == "1" ]]      && install_docker
-[[ "${SELECTED[chromium]}" == "1" ]]    && install_chromium
-[[ "${SELECTED[fzf-bat]}" == "1" ]]     && install_fzf_bat
-[[ "${SELECTED[claude-code]}" == "1" ]] && install_claude_code
-[[ "${SELECTED[1pass]}" == "1" ]]       && install_1password
-[[ "${SELECTED[gh-auth]}" == "1" ]]     && install_gh_auth
-[[ "${SELECTED[entire]}" == "1" ]]      && install_entire
+if [[ "${SELECTED[ohmyzsh]}" == "1" ]]; then install_ohmyzsh; fi
+if [[ "${SELECTED[docker]}" == "1" ]]; then install_docker; fi
+if [[ "${SELECTED[chromium]}" == "1" ]]; then install_chromium; fi
+if [[ "${SELECTED[fzf-bat]}" == "1" ]]; then install_fzf_bat; fi
+if [[ "${SELECTED[claude-code]}" == "1" ]]; then install_claude_code; fi
+if [[ "${SELECTED[1pass]}" == "1" ]]; then install_1password; fi
+if [[ "${SELECTED[gh-auth]}" == "1" ]]; then install_gh_auth; fi
+if [[ "${SELECTED[entire]}" == "1" ]]; then install_entire; fi
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
