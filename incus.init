@@ -29,9 +29,9 @@ usage() {
   cat << EOF
 Usage: $(basename "$0") [OPTIONS] <container-name>
 
-Create an Incus container with Claude Code and mounted workspace.
+Create an Incus container with a mounted workspace.
 Default image is Alpine. Use --ubuntu for ML/AI workloads.
-Includes Docker, Chromium (Playwright), Oh My Zsh, fzf, and bat by default.
+Shows an interactive TUI to select components (Docker is on by default).
 
 Options:
   -p, --path PATH           Host directory to mount (default: current directory)
@@ -48,6 +48,7 @@ Options:
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
+  --no-tui                  Skip interactive component selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
 EOF
@@ -251,8 +252,310 @@ GH_USER_NAME=""
 GH_USER_EMAIL=""
 USE_ENTIRE=0
 DRY_RUN=0
+NO_TUI=0
 MAP_USER=0
 IDMAP_METHOD=""
+
+# ---------------------------------------------------------------------------
+# Component registry — selectable items for TUI installer
+# ---------------------------------------------------------------------------
+COMP_IDS=(    docker          chromium            ohmyzsh       fzf-bat          claude-code        1pass              gh-auth          entire         )
+COMP_NAMES=(  "Docker"        "Chromium/Playwright" "Oh My Zsh" "fzf + bat"    "Claude Code"      "1Password CLI"    "GitHub Auth"    "Entire CLI"   )
+COMP_DESCS=(  "Container runtime & compose"
+              "Headless browser for testing"
+              "Zsh framework with plugins"
+              "Interactive search & file preview"
+              "AI coding assistant"
+              "Password manager CLI"
+              "GitHub token & git credentials"
+              "Entire CLI tool"                                                                                                                      )
+COMP_DEFAULTS=(1 0 0 0 0 0 0 0)
+COMP_SELECTED=(1 0 0 0 0 0 0 0)
+
+# ---------------------------------------------------------------------------
+# Component helpers
+# ---------------------------------------------------------------------------
+comp_index() {
+  local id="$1"
+  for i in "${!COMP_IDS[@]}"; do
+    [[ "${COMP_IDS[$i]}" == "$id" ]] && echo "$i" && return 0
+  done
+  return 1
+}
+
+comp_select() {
+  local idx
+  idx=$(comp_index "$1") && COMP_SELECTED[$idx]=1
+}
+
+comp_is_selected() {
+  local idx
+  idx=$(comp_index "$1") && [[ "${COMP_SELECTED[$idx]}" == "1" ]]
+}
+
+# ---------------------------------------------------------------------------
+# TUI component selector
+# ---------------------------------------------------------------------------
+show_tui() {
+  local count=${#COMP_IDS[@]}
+  local cursor=0
+
+  # Save cursor position and hide it
+  tput civis 2>/dev/null || true
+  # Ensure cursor is restored on exit
+  trap 'tput cnorm 2>/dev/null || true' RETURN
+
+  while true; do
+    # Clear and render
+    printf '\033[2J\033[H'
+    echo -e "${GREEN}╔══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${GREEN}║${NC}  Select components to install                        ${GREEN}║${NC}"
+    echo -e "${GREEN}╠══════════════════════════════════════════════════════╣${NC}"
+    echo -e "${GREEN}║${NC}  ↑/↓ or j/k: navigate   Space: toggle   Enter: go   ${GREEN}║${NC}"
+    echo -e "${GREEN}║${NC}  q: quit                                             ${GREEN}║${NC}"
+    echo -e "${GREEN}╚══════════════════════════════════════════════════════╝${NC}"
+    echo ""
+
+    for i in $(seq 0 $((count - 1))); do
+      local marker="[ ]"
+      [[ "${COMP_SELECTED[$i]}" == "1" ]] && marker="[x]"
+
+      if [[ $i -eq $cursor ]]; then
+        # Highlighted row
+        printf "  \033[7m %s %-24s %s \033[0m\n" "$marker" "${COMP_NAMES[$i]}" "${COMP_DESCS[$i]}"
+      else
+        printf "   %s %-24s %s\n" "$marker" "${COMP_NAMES[$i]}" "${COMP_DESCS[$i]}"
+      fi
+    done
+
+    echo ""
+
+    # Read a single keypress
+    local key
+    IFS= read -rsn1 key
+
+    case "$key" in
+      $'\x1b')
+        # Read escape sequence
+        local seq
+        IFS= read -rsn2 seq
+        case "$seq" in
+          '[A') cursor=$(( (cursor - 1 + count) % count )) ;;  # Up
+          '[B') cursor=$(( (cursor + 1) % count )) ;;          # Down
+        esac
+        ;;
+      'k') cursor=$(( (cursor - 1 + count) % count )) ;;
+      'j') cursor=$(( (cursor + 1) % count )) ;;
+      ' ')
+        # Toggle
+        if [[ "${COMP_SELECTED[$cursor]}" == "1" ]]; then
+          COMP_SELECTED[$cursor]=0
+        else
+          COMP_SELECTED[$cursor]=1
+        fi
+        ;;
+      ''|$'\n')
+        # Enter — confirm
+        break
+        ;;
+      'q')
+        tput cnorm 2>/dev/null || true
+        echo "Aborted."
+        exit 1
+        ;;
+    esac
+  done
+
+  # Restore cursor
+  tput cnorm 2>/dev/null || true
+  printf '\033[2J\033[H'
+
+  # Sync flag variables from selections
+  comp_is_selected "1pass"   && USE_1PASSWORD=1
+  comp_is_selected "gh-auth" && USE_GH_TOKEN=1
+  comp_is_selected "entire"  && USE_ENTIRE=1
+}
+
+# ---------------------------------------------------------------------------
+# Install functions — each wraps an installation section
+# ---------------------------------------------------------------------------
+install_ohmyzsh() {
+  log "Installing Oh My Zsh..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'ZSHEOF'
+  set -e
+  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
+
+  sed -i 's/^ZSH_THEME=".*"/ZSH_THEME="dpoggi"/' ~/.zshrc
+
+  # Add [incus] prefix to prompt
+  cat >> ~/.zshrc <<'RCBLOCK'
+
+# [incus] prompt prefix
+PROMPT="%{$fg[cyan]%}[incus]%{$reset_color%} ${PROMPT%»*}%{$reset_color%}"$'\n'"» "
+RCBLOCK
+
+  # Plugins
+  git clone https://github.com/zsh-users/zsh-autosuggestions \
+    ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
+  sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions)/' ~/.zshrc
+
+  # Activate mise in zsh (must be after Oh My Zsh overwrites .zshrc)
+  echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
+ZSHEOF
+}
+
+install_docker() {
+  log "Installing Docker..."
+
+  # Mask AppArmor so Docker doesn't try to use it (see AppArmor comment above).
+  incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'APPARMOR_EOF'
+    if [ -f /sys/module/apparmor/parameters/enabled ] && \
+       grep -q Y /sys/module/apparmor/parameters/enabled 2>/dev/null; then
+      echo N > /run/apparmor_disabled
+      mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled
+
+      # Make the mask persistent across reboots.
+      if command -v systemctl >/dev/null 2>&1; then
+        cat > /etc/systemd/system/mask-apparmor.service <<'UNIT'
+[Unit]
+Description=Mask AppArmor enabled flag for Docker-in-Incus
+DefaultDependencies=no
+Before=docker.service containerd.service docker.socket
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/bin/sh -c 'echo N > /run/apparmor_disabled && mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled'
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+        systemctl daemon-reload
+        systemctl enable mask-apparmor.service
+      elif command -v rc-update >/dev/null 2>&1; then
+        cat > /etc/init.d/mask-apparmor <<'OPENRC'
+#!/sbin/openrc-run
+description="Mask AppArmor enabled flag for Docker-in-Incus"
+
+depend() {
+    before docker containerd
+    keyword -stop
+}
+
+start() {
+    echo N > /run/apparmor_disabled
+    mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled
+}
+OPENRC
+        chmod +x /etc/init.d/mask-apparmor
+        rc-update add mask-apparmor boot
+      fi
+    fi
+APPARMOR_EOF
+
+  incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'DOCKER_EOF'
+    if command -v apt-get >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update && apt-get install -y ca-certificates curl gnupg
+      install -m 0755 -d /etc/apt/keyrings
+      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+      chmod a+r /etc/apt/keyrings/docker.gpg
+      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
+      apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+      systemctl enable docker && systemctl start docker
+    else
+      apk add --no-cache docker docker-cli-compose
+      rc-update add docker boot && service docker start
+    fi
+DOCKER_EOF
+  incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER 2>/dev/null || addgroup $HOST_USER docker 2>/dev/null || true"
+  wait_for_container "$CONTAINER_NAME"
+}
+
+install_chromium() {
+  log "Installing Playwright + Chromium dependencies..."
+  incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'CHROMIUM_EOF'
+    if command -v apk >/dev/null 2>&1; then
+      apk add --no-cache nss freetype harfbuzz ca-certificates ttf-freefont \
+        mesa-gbm libxcomposite libxdamage libxrandr libxshmfence at-spi2-core \
+        cups-libs libdrm pango alsa-lib dbus-libs
+    elif command -v apt-get >/dev/null 2>&1; then
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update && apt-get install -y \
+        libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 \
+        libcups2t64 libdrm2 libxcomposite1 libxdamage1 libxfixes3 \
+        libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 \
+        libatspi2.0-0t64 libxshmfence1 fonts-liberation xdg-utils
+    fi
+CHROMIUM_EOF
+
+  log "Installing Playwright + Chromium browser..."
+  incus exec "$CONTAINER_NAME" -- npm install -g playwright
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx -y playwright install chromium'
+}
+
+install_fzf_bat() {
+  log "Installing fzf and bat via mise..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+  set -e
+  export MISE_TRUSTED_CONFIG_PATHS="/workspace"
+  mise use -g go@latest fzf@latest bat@latest
+
+  cat >> ~/.zshrc <<'FZF'
+
+# fzf + bat aliases
+alias f="fzf --preview 'bat {-1} --color=always'"
+gdiff() {
+  local preview="git diff $@ --color=always -- {-1}"
+  git diff $@ --name-only | fzf -m --ansi --preview $preview
+}
+FZF
+EOF
+}
+
+install_claude_code() {
+  log "Installing Claude Code..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
+  curl -fsSL https://claude.ai/install.sh | bash
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
+CLAUDE
+}
+
+install_1password() {
+  log "Installing 1Password CLI..."
+  incus exec "$CONTAINER_NAME" -- sh -c '
+    wget -q https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_amd64_v2.30.0.zip -O /tmp/op.zip
+    unzip -q /tmp/op.zip -d /tmp/ && mv /tmp/op /usr/local/bin/ && chmod +x /usr/local/bin/op && rm /tmp/op.zip
+  '
+  log "Setting 1Password token via container environment..."
+  incus config set "$CONTAINER_NAME" environment.OP_SERVICE_ACCOUNT_TOKEN="$ONEPASSWORD_SERVICE_KEY"
+  unset ONEPASSWORD_SERVICE_KEY
+}
+
+install_gh_auth() {
+  log "Setting GitHub token via container environment..."
+  incus config set "$CONTAINER_NAME" environment.GH_TOKEN="$GH_TOKEN_VALUE"
+
+  log "Configuring git credential helper and identity..."
+  incus exec "$CONTAINER_NAME" --env "GH_TOKEN=$GH_TOKEN_VALUE" -- su - "$HOST_USER" -c "
+    gh auth setup-git
+    git config --global user.name '$GH_USER_NAME'
+    git config --global user.email '$GH_USER_EMAIL'
+  "
+  unset GH_TOKEN_VALUE
+}
+
+install_entire() {
+  log "Installing Entire CLI..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    eval "$(mise activate bash)"
+    go install github.com/entireio/cli/cmd/entire@latest
+    if [[ -d /workspace/.git ]]; then
+      cd /workspace && entire enable --telemetry=false
+    fi
+EOF
+}
 
 # ---------------------------------------------------------------------------
 # Parse arguments
@@ -266,12 +569,13 @@ while [[ $# -gt 0 ]]; do
     --proxy)         USE_PROXY=1; shift ;;
     --proxy-port)    [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_PORT="$2"; shift 2 ;;
     --proxy-ip)      [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_IP="$2"; shift 2 ;;
-    --1pass)         USE_1PASSWORD=1; shift ;;
-    --gh-token)      USE_GH_TOKEN=1; shift ;;
-    --entire)        USE_ENTIRE=1; shift ;;
+    --1pass)         USE_1PASSWORD=1; comp_select "1pass"; shift ;;
+    --gh-token)      USE_GH_TOKEN=1; comp_select "gh-auth"; shift ;;
+    --entire)        USE_ENTIRE=1; comp_select "entire"; shift ;;
     --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
+    --no-tui)        NO_TUI=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
     -*)              error "Unknown option: $1" ;;
@@ -350,6 +654,45 @@ if [[ "$USE_GH_TOKEN" == "1" ]]; then
 fi
 
 # ---------------------------------------------------------------------------
+# TUI component selector
+# ---------------------------------------------------------------------------
+if [[ "$NO_TUI" == "0" ]]; then
+  show_tui
+fi
+
+# Prompt for 1Password token if selected via TUI (not already prompted via --1pass flag)
+if [[ "$USE_1PASSWORD" == "1" && -z "${ONEPASSWORD_SERVICE_KEY:-}" ]]; then
+  echo ""
+  log "1Password CLI requires a service account token"
+  echo "Create one at: https://start.1password.com/settings/automation"
+  read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
+  echo ""
+  [[ -z "$ONEPASSWORD_SERVICE_KEY" ]] && error "Token required"
+fi
+
+# Prompt for GitHub token if selected via TUI (not already prompted via --gh-token flag)
+if [[ "$USE_GH_TOKEN" == "1" && -z "${GH_TOKEN_VALUE:-}" ]]; then
+  echo ""
+  log "GitHub auth requires a fine-grained personal access token"
+  echo "Create one at: https://github.com/settings/tokens?type=beta"
+  echo "Recommended scopes: Contents (read/write), Metadata (read)"
+  read -rsp "Enter GitHub token: " GH_TOKEN_VALUE
+  echo ""
+  [[ -z "$GH_TOKEN_VALUE" ]] && error "GitHub token required"
+
+  DEFAULT_GH_NAME="$(git config --global user.name 2>/dev/null || true)"
+  DEFAULT_GH_EMAIL="$(git config --global user.email 2>/dev/null || true)"
+
+  read -rp "Git user.name [${DEFAULT_GH_NAME:-}]: " GH_USER_NAME
+  GH_USER_NAME="${GH_USER_NAME:-$DEFAULT_GH_NAME}"
+  [[ -z "$GH_USER_NAME" ]] && error "Git user.name required"
+
+  read -rp "Git user.email [${DEFAULT_GH_EMAIL:-}]: " GH_USER_EMAIL
+  GH_USER_EMAIL="${GH_USER_EMAIL:-$DEFAULT_GH_EMAIL}"
+  [[ -z "$GH_USER_EMAIL" ]] && error "Git user.email required"
+fi
+
+# ---------------------------------------------------------------------------
 # Dry-run summary
 # ---------------------------------------------------------------------------
 if [[ "$DRY_RUN" == "1" ]]; then
@@ -362,28 +705,18 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
   echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
   echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
-  echo "Chromium:    yes"
-  echo "Dev tools:   Oh My Zsh, fzf, bat"
-  echo "Docker:      yes"
-  echo "Proxy:       $( [[ "$USE_PROXY" == "1" ]] && echo "${PROXY_IP:-auto}:$PROXY_PORT" || echo no )"
-  echo "1Password:   $( [[ "$USE_1PASSWORD" == "1" ]] && echo yes || echo no )"
-  echo "GitHub auth: $( [[ "$USE_GH_TOKEN" == "1" ]] && echo "yes ($GH_USER_NAME <$GH_USER_EMAIL>)" || echo no )"
-  echo "========================================"
   echo ""
-  echo "Would run:"
-  echo "  incus launch $BASE_IMAGE $CONTAINER_NAME"
-  echo "  Enable container nesting for Docker"
-  echo "  Install packages ($(echo "$BASE_IMAGE" | grep -q alpine && echo apk || echo apt))"
-  echo "  Create user $HOST_USER inside container"
-  echo "  Mount $WORKSPACE_PATH -> $MOUNT_PATH"
-  [[ "$MAP_USER" == "1" ]] && echo "  Map UID/GID (try shift, fallback to raw.idmap)"
-  echo "  Install: mise, Claude Code"
-  echo "  Install Chromium (headless)"
-  echo "  Install: Oh My Zsh, fzf, bat, shell aliases"
-  echo "  Install Docker"
-  [[ "$USE_1PASSWORD" == "1" ]] && echo "  Install 1Password CLI (token via incus config env var)"
-  [[ "$USE_GH_TOKEN" == "1" ]] && echo "  Install gh CLI, configure git auth (token via incus config env var)"
-  [[ "$USE_PROXY" == "1" ]] && echo "  Configure proxy"
+  echo "Selected components:"
+  for i in "${!COMP_IDS[@]}"; do
+    if [[ "${COMP_SELECTED[$i]}" == "1" ]]; then
+      echo "  [x] ${COMP_NAMES[$i]}"
+    else
+      echo "  [ ] ${COMP_NAMES[$i]}"
+    fi
+  done
+  echo ""
+  echo "Proxy:       $( [[ "$USE_PROXY" == "1" ]] && echo "${PROXY_IP:-auto}:$PROXY_PORT" || echo no )"
+  echo "========================================"
   exit 0
 fi
 
@@ -512,7 +845,7 @@ incus exec "$CONTAINER_NAME" -- id "$HOST_USER" >/dev/null 2>&1 \
 wait_for_network "$CONTAINER_NAME"
 
 # ---------------------------------------------------------------------------
-# Shell setup — auto-cd and dev tools
+# Shell setup — auto-cd (always runs)
 # ---------------------------------------------------------------------------
 log "Configuring zsh..."
 incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'ZSHEOF'
@@ -528,160 +861,17 @@ WORKSPACE
 
 ZSHEOF
 
-log "Installing Oh My Zsh..."
-incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'ZSHEOF'
-  set -e
-  sh -c "$(curl -fsSL https://raw.githubusercontent.com/ohmyzsh/ohmyzsh/master/tools/install.sh)" "" --unattended
-
-  sed -i 's/^ZSH_THEME=".*"/ZSH_THEME="dpoggi"/' ~/.zshrc
-
-  # Add [incus] prefix to prompt
-  cat >> ~/.zshrc <<'RCBLOCK'
-
-# [incus] prompt prefix
-PROMPT="%{$fg[cyan]%}[incus]%{$reset_color%} ${PROMPT%»*}%{$reset_color%}"$'\n'"» "
-RCBLOCK
-
-  # Plugins
-  git clone https://github.com/zsh-users/zsh-autosuggestions \
-    ${ZSH_CUSTOM:-~/.oh-my-zsh/custom}/plugins/zsh-autosuggestions
-  sed -i 's/^plugins=(git)/plugins=(git zsh-autosuggestions)/' ~/.zshrc
-
-  # Activate mise in zsh (must be after Oh My Zsh overwrites .zshrc)
-  echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
-ZSHEOF
-
 # ---------------------------------------------------------------------------
-# Docker
+# Install selected components
 # ---------------------------------------------------------------------------
-log "Installing Docker..."
-
-# Mask AppArmor so Docker doesn't try to use it (see AppArmor comment above).
-# Bind-mount a file containing "N" over the kernel's AppArmor enabled flag.
-# Docker's Go apparmor library reads this to decide whether to use AppArmor;
-# returning "N" makes it skip AppArmor entirely.
-incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'APPARMOR_EOF'
-    if [ -f /sys/module/apparmor/parameters/enabled ] && \
-       grep -q Y /sys/module/apparmor/parameters/enabled 2>/dev/null; then
-      echo N > /run/apparmor_disabled
-      mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled
-
-      # Make the mask persistent across reboots.
-      if command -v systemctl >/dev/null 2>&1; then
-        cat > /etc/systemd/system/mask-apparmor.service <<'UNIT'
-[Unit]
-Description=Mask AppArmor enabled flag for Docker-in-Incus
-DefaultDependencies=no
-Before=docker.service containerd.service docker.socket
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c 'echo N > /run/apparmor_disabled && mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled'
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-        systemctl daemon-reload
-        systemctl enable mask-apparmor.service
-      elif command -v rc-update >/dev/null 2>&1; then
-        # Alpine/OpenRC: create a proper init script with dependency ordering
-        cat > /etc/init.d/mask-apparmor <<'OPENRC'
-#!/sbin/openrc-run
-description="Mask AppArmor enabled flag for Docker-in-Incus"
-
-depend() {
-    before docker containerd
-    keyword -stop
-}
-
-start() {
-    echo N > /run/apparmor_disabled
-    mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled
-}
-OPENRC
-        chmod +x /etc/init.d/mask-apparmor
-        rc-update add mask-apparmor boot
-      fi
-    fi
-APPARMOR_EOF
-
-incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'DOCKER_EOF'
-    if command -v apt-get >/dev/null 2>&1; then
-      export DEBIAN_FRONTEND=noninteractive
-      apt-get update && apt-get install -y ca-certificates curl gnupg
-      install -m 0755 -d /etc/apt/keyrings
-      curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-      chmod a+r /etc/apt/keyrings/docker.gpg
-      echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
-      apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-      systemctl enable docker && systemctl start docker
-    else
-      apk add --no-cache docker docker-cli-compose
-      rc-update add docker boot && service docker start
-    fi
-DOCKER_EOF
-incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER 2>/dev/null || addgroup $HOST_USER docker 2>/dev/null || true"
-wait_for_container "$CONTAINER_NAME"
-
-# ---------------------------------------------------------------------------
-# Chromium
-# ---------------------------------------------------------------------------
-log "Installing Playwright + Chromium dependencies..."
-incus exec "$CONTAINER_NAME" -- sh -c 'bash -s' <<'CHROMIUM_EOF'
-    if command -v apk >/dev/null 2>&1; then
-      apk add --no-cache nss freetype harfbuzz ca-certificates ttf-freefont \
-        mesa-gbm libxcomposite libxdamage libxrandr libxshmfence at-spi2-core \
-        cups-libs libdrm pango alsa-lib dbus-libs
-    elif command -v apt-get >/dev/null 2>&1; then
-      export DEBIAN_FRONTEND=noninteractive
-      # Playwright's bundled Chromium needs.
-      apt-get update && apt-get install -y \
-        libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 \
-        libcups2t64 libdrm2 libxcomposite1 libxdamage1 libxfixes3 \
-        libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 \
-        libatspi2.0-0t64 libxshmfence1 fonts-liberation xdg-utils
-    fi
-CHROMIUM_EOF
-
-log "Installing Playwright + Chromium browser..."
-incus exec "$CONTAINER_NAME" -- npm install -g playwright
-incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx -y playwright install chromium'
-
-# ---------------------------------------------------------------------------
-# fzf + bat (interactive search)
-# ---------------------------------------------------------------------------
-log "Installing fzf and bat via mise..."
-incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-  set -e
-  export MISE_TRUSTED_CONFIG_PATHS="/workspace"
-  mise use -g go@latest fzf@latest bat@latest
-
-  cat >> ~/.zshrc <<'FZF'
-
-# fzf + bat aliases
-alias f="fzf --preview 'bat {-1} --color=always'"
-gdiff() {
-  local preview="git diff $@ --color=always -- {-1}"
-  git diff $@ --name-only | fzf -m --ansi --preview $preview
-}
-FZF
-EOF
-
-# ---------------------------------------------------------------------------
-# Entire CLI (optional)
-# ---------------------------------------------------------------------------
-if [[ "$USE_ENTIRE" == "1" ]]; then
-  log "Installing Entire CLI..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-    set -e
-    eval "$(mise activate bash)"
-    go install github.com/entireio/cli/cmd/entire@latest
-    if [[ -d /workspace/.git ]]; then
-      cd /workspace && entire enable --telemetry=false
-    fi
-EOF
-fi
+comp_is_selected "ohmyzsh"     && install_ohmyzsh
+comp_is_selected "docker"      && install_docker
+comp_is_selected "chromium"    && install_chromium
+comp_is_selected "fzf-bat"    && install_fzf_bat
+comp_is_selected "claude-code" && install_claude_code
+comp_is_selected "1pass"       && install_1password
+comp_is_selected "gh-auth"     && install_gh_auth
+comp_is_selected "entire"      && install_entire
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
@@ -694,53 +884,7 @@ EOF
 fi
 
 # ---------------------------------------------------------------------------
-# 1Password CLI (optional)
-#
-# The service account token is stored as a container-level environment
-# variable via `incus config set`. This avoids writing it to disk or
-# shell history inside the container. It is visible to anyone who can
-# run `incus config show <container>` on the host.
-# ---------------------------------------------------------------------------
-if [[ "$USE_1PASSWORD" == "1" ]]; then
-  log "Installing 1Password CLI..."
-  incus exec "$CONTAINER_NAME" -- sh -c '
-    wget -q https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_amd64_v2.30.0.zip -O /tmp/op.zip
-    unzip -q /tmp/op.zip -d /tmp/ && mv /tmp/op /usr/local/bin/ && chmod +x /usr/local/bin/op && rm /tmp/op.zip
-  '
-  log "Setting 1Password token via container environment..."
-  incus config set "$CONTAINER_NAME" environment.OP_SERVICE_ACCOUNT_TOKEN="$ONEPASSWORD_SERVICE_KEY"
-  unset ONEPASSWORD_SERVICE_KEY
-fi
-
-# ---------------------------------------------------------------------------
-# GitHub auth (optional)
-#
-# Injects the token as a container env var and configures git's credential
-# helper via `gh auth setup-git`. gh CLI is already installed as a base
-# package. Token never written to disk; unset from host shell after injection.
-# ---------------------------------------------------------------------------
-if [[ "$USE_GH_TOKEN" == "1" ]]; then
-  log "Setting GitHub token via container environment..."
-  incus config set "$CONTAINER_NAME" environment.GH_TOKEN="$GH_TOKEN_VALUE"
-
-  log "Configuring git credential helper and identity..."
-  incus exec "$CONTAINER_NAME" --env "GH_TOKEN=$GH_TOKEN_VALUE" -- su - "$HOST_USER" -c "
-    gh auth setup-git
-    git config --global user.name '$GH_USER_NAME'
-    git config --global user.email '$GH_USER_EMAIL'
-  "
-  unset GH_TOKEN_VALUE
-fi
-
-# ---------------------------------------------------------------------------
-# Claude Code
-# ---------------------------------------------------------------------------
-incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
-  curl -fsSL https://claude.ai/install.sh | bash
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
-CLAUDE
-# ---------------------------------------------------------------------------
-# Proxy (optional)
+# Proxy (optional, not a TUI component)
 # ---------------------------------------------------------------------------
 if [[ "$USE_PROXY" == "1" ]]; then
   [[ -z "$PROXY_IP" ]] && PROXY_IP="$(incus exec "$CONTAINER_NAME" -- sh -c "ip route | awk '/default/ {print \$3}'")"
@@ -769,16 +913,18 @@ echo "Image:       $BASE_IMAGE"
 echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
 echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
 echo "Write access: ${IDMAP_METHOD:-none}"
-echo "Chromium:    installed"
-echo "Dev tools:   Oh My Zsh, fzf, bat"
-echo "Docker:      installed"
-[[ "$USE_PROXY" == "1" ]]     && echo "Proxy:       http://$PROXY_IP:$PROXY_PORT"
-[[ "$USE_1PASSWORD" == "1" ]] && echo "1Password:   installed (token in container env)"
-[[ "$USE_GH_TOKEN" == "1" ]] && echo "GitHub auth: configured ($GH_USER_NAME <$GH_USER_EMAIL>)"
+echo ""
+echo "Installed:"
+for i in "${!COMP_IDS[@]}"; do
+  [[ "${COMP_SELECTED[$i]}" == "1" ]] && echo "  ✓ ${COMP_NAMES[$i]}"
+done
+[[ "$USE_PROXY" == "1" ]] && echo "  ✓ Proxy (http://$PROXY_IP:$PROXY_PORT)"
 echo "========================================"
 echo ""
 echo "Shell in:"
 echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER"
 echo ""
+if comp_is_selected "claude-code"; then
 echo "Start Claude Code:"
 echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER -c 'cd $MOUNT_PATH && claude'"
+fi
