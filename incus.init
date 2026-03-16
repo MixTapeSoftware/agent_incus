@@ -262,7 +262,9 @@ IDMAP_METHOD=""
 COMPONENTS=(
   "docker:Docker:Container runtime & compose:1"
   "chromium:Chromium/Playwright:Headless browser for testing:0"
-  "ohmyzsh:Oh My Zsh:Zsh framework with plugins:0"
+  "nvchad:NvChad:Neovim with NvChad config:0"
+  "openspec:OpenSpec:Spec-driven development CLI:0"
+  "rtkplus:rtk:AI coding agent toolkit:0"
   "fzf-bat:fzf + bat:Interactive search & file preview:0"
   "claude-code:Claude Code:AI coding assistant:0"
   "1pass:1Password CLI:Password manager CLI:0"
@@ -530,6 +532,38 @@ install_gh_auth() {
     git config --global user.email '$GH_USER_EMAIL'
   "
   unset GH_TOKEN_VALUE
+}
+
+install_nvchad() {
+  log "Installing NvChad..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    git clone https://github.com/NvChad/starter ~/.config/nvim
+EOF
+}
+
+install_openspec() {
+  log "Installing OpenSpec..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    eval "$(mise activate bash)"
+    go install github.com/Fission-AI/OpenSpec@latest
+    if [[ -d /workspace ]]; then
+      cd /workspace && openspec init
+    fi
+EOF
+}
+
+install_rtkplus() {
+  log "Installing rtk..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    eval "$(mise activate bash)"
+    go install github.com/rtk-ai/rtk@latest
+    if [[ -d /workspace ]]; then
+      cd /workspace && rtk init -g
+    fi
+EOF
 }
 
 install_entire() {
@@ -811,9 +845,12 @@ ZSHEOF
 # ---------------------------------------------------------------------------
 # Install selected components
 # ---------------------------------------------------------------------------
-if [[ "${SELECTED[ohmyzsh]}" == "1" ]]; then install_ohmyzsh; fi
+install_ohmyzsh
 if [[ "${SELECTED[docker]}" == "1" ]]; then install_docker; fi
 if [[ "${SELECTED[chromium]}" == "1" ]]; then install_chromium; fi
+if [[ "${SELECTED[nvchad]}" == "1" ]]; then install_nvchad; fi
+if [[ "${SELECTED[openspec]}" == "1" ]]; then install_openspec; fi
+if [[ "${SELECTED[rtkplus]}" == "1" ]]; then install_rtkplus; fi
 if [[ "${SELECTED[fzf-bat]}" == "1" ]]; then install_fzf_bat; fi
 if [[ "${SELECTED[claude-code]}" == "1" ]]; then install_claude_code; fi
 if [[ "${SELECTED[1pass]}" == "1" ]]; then install_1password; fi

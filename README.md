@@ -74,10 +74,27 @@ Options:
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID with passwordless sudo
 5. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
-6. Installs mise (runtime version manager) and Claude Code
-7. Installs Oh My Zsh, fzf, bat, and shell aliases
-8. Installs Docker and Chromium (Playwright)
-9. Optionally installs 1Password CLI, GitHub auth, and/or proxy configuration
+6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
+7. Presents an interactive TUI to select optional components (see below)
+
+### Optional Components
+
+The TUI lets you pick from the following optional packages during container creation:
+
+| Component | Description |
+|---|---|
+| [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
+| [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
+| [NvChad](https://nvchad.com/) | Feature-rich Neovim config built on lazy.nvim |
+| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Spec-driven development CLI |
+| [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
+| [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
+| [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
+| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
+| [Entire CLI](https://github.com/entireio/cli) | Entire CLI tool |
+
+Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI flags (`--1pass`, `--gh-token`, `--entire`).
 
 ## The Development Workflow
 
