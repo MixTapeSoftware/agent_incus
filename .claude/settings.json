@@ -17,7 +17,6 @@
       "Skill(*)",
       "WebFetch(*)"
     ],
-    "defaultMode": "acceptEdits",
-    "deny": ["Read(./.entire/metadata/**)"]
+    "defaultMode": "acceptEdits"
   }
 }
