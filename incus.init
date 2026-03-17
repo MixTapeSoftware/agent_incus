@@ -505,8 +505,8 @@ EOF
 install_claude_code() {
   log "Installing Claude Code..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
+  set -e
   curl -fsSL https://claude.ai/install.sh | bash
-  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 CLAUDE
 }
 
@@ -546,10 +546,10 @@ install_openspec() {
   log "Installing OpenSpec..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
-    eval "$(mise activate bash)"
-    go install github.com/Fission-AI/OpenSpec@latest
+    sudo npm install -g @fission-ai/openspec@latest
+    export OPENSPEC_TELEMETRY=0
     if [[ -d /workspace ]]; then
-      cd /workspace && openspec init
+      cd /workspace && openspec init --tools claude
     fi
 EOF
 }
@@ -558,8 +558,8 @@ install_rtkplus() {
   log "Installing rtk..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
-    eval "$(mise activate bash)"
-    go install github.com/rtk-ai/rtk@latest
+    curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
+    export PATH="$HOME/.local/bin:$PATH"
     if [[ -d /workspace ]]; then
       cd /workspace && rtk init -g
     fi
@@ -570,7 +570,8 @@ install_entire() {
   log "Installing Entire CLI..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
-    eval "$(mise activate bash)"
+    mise use -g go@latest
+    export PATH="$HOME/go/bin:$(mise where go)/bin:$PATH"
     go install github.com/entireio/cli/cmd/entire@latest
     if [[ -d /workspace/.git ]]; then
       cd /workspace && entire enable --telemetry=false
@@ -836,16 +837,24 @@ if [[ -d /workspace ]]; then
     cd /workspace
 fi
 WORKSPACE
+ZSHEOF
 
-  # Activate mise in zsh (available for fzf, bat, go, and other mise-managed tools)
+# ---------------------------------------------------------------------------
+# Install Oh My Zsh (always) — must run before appending to .zshrc since
+# the installer replaces .zshrc with its own template
+# ---------------------------------------------------------------------------
+install_ohmyzsh
+
+# Append mise activation and PATH after Oh My Zsh has written its .zshrc
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'ZSHEOF'
+  set -e
   echo 'eval "$(mise activate zsh)"' >> ~/.zshrc
-
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 ZSHEOF
 
 # ---------------------------------------------------------------------------
 # Install selected components
 # ---------------------------------------------------------------------------
-install_ohmyzsh
 if [[ "${SELECTED[docker]}" == "1" ]]; then install_docker; fi
 if [[ "${SELECTED[chromium]}" == "1" ]]; then install_chromium; fi
 if [[ "${SELECTED[nvchad]}" == "1" ]]; then install_nvchad; fi
