@@ -1,18 +1,14 @@
 #!/bin/bash
 set -euo pipefail
-
 CONTAINER="${1:-${CLAUDE_CONTAINER:-}}"
 if [[ -z "$CONTAINER" ]]; then
   echo "Usage: $(basename "$0") <container> [command...]"
   exit 1
 fi
-
 HOST_USER="$(id -un)"
-HOST_UID="$(id -u "$HOST_USER")"
-
 if [[ $# -gt 1 ]]; then
   shift
-  exec incus exec "$CONTAINER" --user "$HOST_UID" --cwd /workspace -- zsh -ic "$*"
+  exec incus exec "$CONTAINER" -- su - "$HOST_USER" -c "cd /workspace && zsh -ic '$*'"
 else
-  exec incus exec "$CONTAINER" --user "$HOST_UID" --cwd /workspace -- zsh -i
+  exec incus exec "$CONTAINER" -- su - "$HOST_USER" -c "cd /workspace && exec zsh -i"
 fi
