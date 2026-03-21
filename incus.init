@@ -868,12 +868,17 @@ if [[ "${SELECTED[entire]}" == "1" ]]; then install_entire; fi
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
-  log "Running mise install for workspace..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-    export MISE_TRUSTED_CONFIG_PATHS=/workspace;
-    export MISE_NODE_COMPILE=0;
-    cd $MOUNT_PATH && mise install
-EOF
+  log "Trusting workspace mise config..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise trust'
+
+  # Only auto-install on Ubuntu/Debian where prebuilt binaries are available.
+  # Alpine (musl) lacks prebuilts for most tools and would compile from source.
+  if incus exec "$CONTAINER_NAME" -- sh -c 'command -v apt-get >/dev/null 2>&1'; then
+    log "Running mise install for workspace..."
+    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise install'
+  else
+    log "Skipping mise install on Alpine (run manually if needed)"
+  fi
 fi
 
 # ---------------------------------------------------------------------------
