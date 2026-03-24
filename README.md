@@ -92,6 +92,7 @@ The TUI lets you pick from the following optional packages during container crea
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
+| [just](https://github.com/casey/just) | Command runner for project tasks |
 | [Entire CLI](https://github.com/entireio/cli) | Entire CLI tool |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI flags (`--1pass`, `--gh-token`, `--entire`).
