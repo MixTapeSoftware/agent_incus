@@ -120,11 +120,11 @@ The host, agent, and dev containers all read and write the same `/workspace` dir
 
 ### Expose Container Ports
 
-To access a service running inside a container from your host, either forward the port to localhost:
+To access a service running inside a container from your host, either forward the internal localhost to host localhost:
 
 ```bash
 incus config device add project-dev web proxy \
-  listen=tcp:0.0.0.0:4000 \
+  listen=tcp:127.0.0.1:4000 \
   connect=tcp:127.0.0.1:4000
 ```
 
