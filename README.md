@@ -103,7 +103,7 @@ A recommended setup uses two containers sharing the same workspace:
 ```mermaid
 graph TB
     W["/workspace (app files)"]
-    H["Host"] --> W
+    H["Host Machine"] --> W
     A["Agent Container (Alpine)"] --> W
     D["Dev Container (Ubuntu)"] --> W
 ```
