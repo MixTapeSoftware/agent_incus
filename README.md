@@ -100,20 +100,12 @@ Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI f
 
 A recommended setup uses two containers sharing the same workspace:
 
-```
- Host (your machine)
- ├── Editor open on ./project
- ├── Git credentials stay here
- │
- ├── Agent Container (Alpine, batteries included)
- │   ├── Claude Code + API key only
- │   ├── Docker, Chromium, dev tools
- │   └── /workspace ──┐
- │                     ├── shared directory
- └── Dev Container (Ubuntu, full)
-     ├── API keys, 1Password, GitHub auth
-     ├── Port forwarded to host
-     └── /workspace ──┘
+```mermaid
+graph TB
+    W["/workspace (app files)"]
+    H["Host"] --> W
+    A["Agent Container (Alpine)"] --> W
+    D["Dev Container (Ubuntu)"] --> W
 ```
 
 ```bash
