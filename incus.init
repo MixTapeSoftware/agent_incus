@@ -270,6 +270,7 @@ COMPONENTS=(
   "1pass:1Password CLI:Password manager CLI:0"
   "gh-auth:GitHub Auth:GitHub token & git credentials:0"
   "entire:Entire CLI:Entire CLI tool:0"
+  "just:just:Command runner for project tasks:0"
 )
 declare -A SELECTED=()
 for _entry in "${COMPONENTS[@]}"; do
@@ -574,6 +575,16 @@ install_rtkplus() {
 EOF
 }
 
+install_just() {
+  log "Installing just..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    curl -fsSL https://just.systems/install.sh | bash -s -- --to "$HOME/.local/bin"
+    export PATH="$HOME/.local/bin:$PATH"
+    just --version
+EOF
+}
+
 install_entire() {
   log "Installing Entire CLI..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
@@ -873,6 +884,7 @@ if [[ "${SELECTED[claude-code]}" == "1" ]]; then install_claude_code; fi
 if [[ "${SELECTED[1pass]}" == "1" ]]; then install_1password; fi
 if [[ "${SELECTED[gh-auth]}" == "1" ]]; then install_gh_auth; fi
 if [[ "${SELECTED[entire]}" == "1" ]]; then install_entire; fi
+if [[ "${SELECTED[just]}" == "1" ]]; then install_just; fi
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
