@@ -518,12 +518,20 @@ install_1password() {
   '
   log "Setting 1Password token via container environment..."
   incus config set "$CONTAINER_NAME" environment.OP_SERVICE_ACCOUNT_TOKEN="$ONEPASSWORD_SERVICE_KEY"
+
+  # Also write to .zshenv so the token survives `su -` login shells
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+    "echo 'export OP_SERVICE_ACCOUNT_TOKEN=\"$ONEPASSWORD_SERVICE_KEY\"' >> ~/.zshenv"
   unset ONEPASSWORD_SERVICE_KEY
 }
 
 install_gh_auth() {
   log "Setting GitHub token via container environment..."
   incus config set "$CONTAINER_NAME" environment.GH_TOKEN="$GH_TOKEN_VALUE"
+
+  # Write to .zshenv so the token survives `su -` login shells
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+    "echo 'export GH_TOKEN=\"$GH_TOKEN_VALUE\"' >> ~/.zshenv"
 
   log "Configuring git credential helper and identity..."
   incus exec "$CONTAINER_NAME" --env "GH_TOKEN=$GH_TOKEN_VALUE" -- su - "$HOST_USER" -c "
