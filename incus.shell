@@ -6,9 +6,21 @@ if [[ -z "$CONTAINER" ]]; then
   exit 1
 fi
 HOST_USER="$(id -un)"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
 if [[ $# -gt 1 ]]; then
   shift
-  exec incus exec "$CONTAINER" -- su - "$HOST_USER" -c "cd /workspace && zsh -ic '$*'"
+  exec incus exec "$CONTAINER" \
+    --user "$HOST_UID" --group "$HOST_GID" \
+    --cwd /workspace \
+    --env "HOME=/home/$HOST_USER" \
+    --env "USER=$HOST_USER" \
+    -- zsh -lic "$*"
 else
-  exec incus exec "$CONTAINER" -- su - "$HOST_USER" -c "cd /workspace && exec zsh -i"
+  exec incus exec "$CONTAINER" \
+    --user "$HOST_UID" --group "$HOST_GID" \
+    --cwd /workspace \
+    --env "HOME=/home/$HOST_USER" \
+    --env "USER=$HOST_USER" \
+    -- zsh -li
 fi
