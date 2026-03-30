@@ -8,17 +8,33 @@ fi
 HOST_USER="$(id -un)"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
+
+# We use --user/--group instead of `su -` so incus manages the PTY
+# end-to-end (no signal-intercepting middleman that kills the session
+# on Ctrl+C).  However, --group only sets the primary GID — supplementary
+# groups (e.g. docker) are not loaded.  To fix this we ask the container
+# to resolve the user's supplementary groups and pass them via --group.
+SUPP_GIDS=$(incus exec "$CONTAINER" -- id -G "$HOST_USER" 2>/dev/null | tr ' ' ',')
+GROUP_FLAGS=()
+if [[ -n "$SUPP_GIDS" ]]; then
+  for gid in ${SUPP_GIDS//,/ }; do
+    GROUP_FLAGS+=(--group "$gid")
+  done
+else
+  GROUP_FLAGS=(--group "$HOST_GID")
+fi
+
 if [[ $# -gt 1 ]]; then
   shift
   exec incus exec "$CONTAINER" \
-    --user "$HOST_UID" --group "$HOST_GID" \
+    --user "$HOST_UID" "${GROUP_FLAGS[@]}" \
     --cwd /workspace \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
     -- zsh -lic "$*"
 else
   exec incus exec "$CONTAINER" \
-    --user "$HOST_UID" --group "$HOST_GID" \
+    --user "$HOST_UID" "${GROUP_FLAGS[@]}" \
     --cwd /workspace \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
