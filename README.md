@@ -4,6 +4,22 @@ AgentIncus, inspired by [Code in Incus (COI)](https://github.com/mensfeld/code-o
 
 Why shell scripts? They introduce no dependencies, are ergonomic enough for simple systems administration tasks, and transparently convey their purpose. They're meant to be copied and tailored to your needs.
 
+## Contents
+
+- [Prerequisites](#prerequisites)
+- [Install](#install)
+- [Quick Start](#quick-start)
+- [Scripts](#scripts)
+- [incus.init Options](#incusinit-options)
+  - [What incus.init does](#what-incusinit-does)
+  - [Optional Components](#optional-components)
+- [The Development Workflow](#the-development-workflow)
+  - [Base Images](#base-images)
+  - [Expose Container Ports](#expose-container-ports)
+  - [Snapshots](#snapshots)
+- [Runtime Management](#runtime-management)
+- [Linux Gotchas](#linux-gotchas)
+
 ## Prerequisites
 
 - **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
