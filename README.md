@@ -124,6 +124,45 @@ inci --image incus-init/project-base project-agent-2
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
 
+### Base Images
+
+Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and Docker. This takes a few minutes. You can skip that on subsequent containers by publishing a **base image** — a snapshot of a fully provisioned container with no secrets baked in.
+
+**Build once:**
+
+```bash
+inci --publish my-base
+# or answer "y" when prompted after provisioning
+```
+
+This provisions the container, scrubs any tokens from the image, and publishes it locally as `incus-init/my-base`. The original container keeps running with its tokens intact.
+
+**Reuse instantly:**
+
+```bash
+# Spin up a new container from the base image — seconds, not minutes
+inci --image incus-init/my-base my-project
+
+# Same base, different credentials
+inci --image incus-init/my-base --1pass --gh-token my-dev
+```
+
+When launching from a local image, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected components run.
+
+**Manage images:**
+
+```bash
+incus image list             # see published images
+incus image delete incus-init/my-base  # remove one
+```
+
+Use `--publish-alias` to customize the image name:
+
+```bash
+inci --publish --publish-alias team/node20-base my-base
+inci --image team/node20-base my-project
+```
+
 ### Expose Container Ports
 
 To access a service running inside a container from your host, either forward the internal localhost to host localhost:
