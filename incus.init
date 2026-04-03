@@ -258,7 +258,6 @@ IDMAP_METHOD=""
 COMPONENTS=(
   "docker:Docker:Container runtime & compose:1"
   "chromium:Chromium/Playwright:Headless browser for testing:0"
-  "nvchad:NvChad:Neovim with NvChad config:0"
   "openspec:OpenSpec:Spec-driven development CLI:0"
   "rtkplus:rtk:AI coding agent toolkit:0"
   "fzf-bat:fzf + bat:Interactive search & file preview:0"
@@ -267,6 +266,8 @@ COMPONENTS=(
   "gh-auth:GitHub Auth:GitHub token & git credentials:0"
   "entire:Entire CLI:Entire CLI tool:0"
   "just:just:Command runner for project tasks:0"
+  "glow:Glow:Terminal markdown viewer:0"
+  "codex:Codex:OpenAI coding agent:0"
 )
 declare -A SELECTED=()
 for _entry in "${COMPONENTS[@]}"; do
@@ -509,14 +510,6 @@ install_gh_auth() {
   unset GH_TOKEN_VALUE
 }
 
-install_nvchad() {
-  log "Installing NvChad..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-    set -e
-    git clone https://github.com/NvChad/starter ~/.config/nvim
-EOF
-}
-
 install_openspec() {
   log "Installing OpenSpec..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
@@ -531,12 +524,15 @@ EOF
 
 install_rtkplus() {
   log "Installing rtk..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "bash -s" <<EOF
     set -e
     curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-    export PATH="$HOME/.local/bin:$PATH"
-    if [[ -d /workspace ]]; then
-      cd /workspace && rtk init -g
+    export PATH="\$HOME/.local/bin:\$PATH"
+    if [[ -d /workspace && -n "$RTK_INIT_CMD" ]]; then
+      cd /workspace && $RTK_INIT_CMD --auto-patch
+      if [[ -f /workspace/.gitignore ]] && ! grep -q '\.rtk' /workspace/.gitignore; then
+        echo '.rtk/' >> /workspace/.gitignore
+      fi
     fi
 EOF
 }
@@ -564,6 +560,25 @@ install_entire() {
 EOF
 }
 
+install_glow() {
+  log "Installing Glow..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    sudo mkdir -p /etc/apt/keyrings
+    curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list
+    sudo apt-get update && sudo apt-get install -y glow
+EOF
+}
+
+install_codex() {
+  log "Installing Codex..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
+    set -e
+    sudo npm install -g @openai/codex
+EOF
+}
+
 # ---------------------------------------------------------------------------
 # Token prompt functions — defined once, called once after TUI
 # ---------------------------------------------------------------------------
@@ -574,6 +589,34 @@ prompt_1password_token() {
   read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
   echo ""
   if [[ -z "$ONEPASSWORD_SERVICE_KEY" ]]; then error "Token required"; fi
+}
+
+RTK_INIT_CMD=""
+
+prompt_rtk_agent() {
+  echo ""
+  log "Select an agent for rtk init"
+  echo "  CLI command output compression for token efficiency"
+  echo ""
+  echo "  1) Claude Code / Copilot (default)"
+  echo "  2) Gemini CLI"
+  echo "  3) Codex (OpenAI)"
+  echo "  4) Cursor"
+  echo "  5) Windsurf"
+  echo "  6) Cline / Roo Code"
+  echo "  7) Skip (don't init)"
+  read -rp "Choice [1]: " rtk_choice
+  rtk_choice="${rtk_choice:-1}"
+  case "$rtk_choice" in
+    1) RTK_INIT_CMD="rtk init -g" ;;
+    2) RTK_INIT_CMD="rtk init -g --gemini" ;;
+    3) RTK_INIT_CMD="rtk init -g --codex" ;;
+    4) RTK_INIT_CMD="rtk init -g --agent cursor" ;;
+    5) RTK_INIT_CMD="rtk init --agent windsurf" ;;
+    6) RTK_INIT_CMD="rtk init --agent cline" ;;
+    7) RTK_INIT_CMD="" ;;
+    *) RTK_INIT_CMD="rtk init -g" ;;
+  esac
 }
 
 prompt_gh_token() {
@@ -707,6 +750,7 @@ fi
 # ---------------------------------------------------------------------------
 # Token prompts — called once, after TUI decision
 # ---------------------------------------------------------------------------
+if [[ "${SELECTED[rtkplus]}" == "1" ]]; then prompt_rtk_agent; fi
 if [[ "${SELECTED[1pass]}" == "1" ]]; then prompt_1password_token; fi
 if [[ "${SELECTED[gh-auth]}" == "1" ]]; then prompt_gh_token; fi
 
@@ -882,7 +926,6 @@ fi  # end FROM_BASE_IMAGE == 0
 # ---------------------------------------------------------------------------
 if [[ "${SELECTED[docker]}" == "1" ]]; then install_docker; fi
 if [[ "${SELECTED[chromium]}" == "1" ]]; then install_chromium; fi
-if [[ "${SELECTED[nvchad]}" == "1" ]]; then install_nvchad; fi
 if [[ "${SELECTED[openspec]}" == "1" ]]; then install_openspec; fi
 if [[ "${SELECTED[rtkplus]}" == "1" ]]; then install_rtkplus; fi
 if [[ "${SELECTED[fzf-bat]}" == "1" ]]; then install_fzf_bat; fi
@@ -891,6 +934,8 @@ if [[ "${SELECTED[1pass]}" == "1" ]]; then install_1password; fi
 if [[ "${SELECTED[gh-auth]}" == "1" ]]; then install_gh_auth; fi
 if [[ "${SELECTED[entire]}" == "1" ]]; then install_entire; fi
 if [[ "${SELECTED[just]}" == "1" ]]; then install_just; fi
+if [[ "${SELECTED[glow]}" == "1" ]]; then install_glow; fi
+if [[ "${SELECTED[codex]}" == "1" ]]; then install_codex; fi
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then

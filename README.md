@@ -95,6 +95,19 @@ Options:
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional components (see below)
 
+### Default Packages
+
+Every container is provisioned with the following packages before any optional components are selected:
+
+| Category | Packages |
+|---|---|
+| Core | bash, curl, git, wget, sudo, unzip, tmux, zsh |
+| Build tools | build-essential, pkg-config, autoconf, automake, bison, cmake |
+| Dev libraries | libssl-dev, libreadline-dev, libyaml-dev, libsqlite3-dev, libffi-dev, libncurses-dev, zlib1g-dev, and more |
+| Runtimes | python3, python3-dev, python3-pip, python3-venv, nodejs, npm |
+| Utilities | gpg, ca-certificates, psmisc, fontconfig, fzf, bat |
+| Tools | [mise](https://mise.jdx.dev/) (runtime version manager), [Oh My Zsh](https://ohmyz.sh/) (with zsh-autosuggestions), [GitHub CLI](https://cli.github.com/) |
+
 ### Optional Components
 
 The TUI lets you pick from the following optional packages during container creation:
@@ -103,7 +116,6 @@ The TUI lets you pick from the following optional packages during container crea
 |---|---|
 | [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
-| [NvChad](https://nvchad.com/) | Feature-rich Neovim config built on lazy.nvim |
 | [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Spec-driven development CLI |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
@@ -112,6 +124,8 @@ The TUI lets you pick from the following optional packages during container crea
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
 | [Entire CLI](https://github.com/entireio/cli) | Entire CLI tool |
+| [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
+| [Codex](https://github.com/openai/codex) | OpenAI coding agent |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI flags (`--1pass`, `--gh-token`, `--entire`).
 
