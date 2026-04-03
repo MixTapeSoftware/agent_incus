@@ -46,6 +46,7 @@ Options:
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
+  --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --no-tui                  Skip interactive component selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
@@ -247,6 +248,7 @@ DRY_RUN=0
 NO_TUI=0
 PUBLISH_IMAGE=0
 PUBLISH_ALIAS=""
+NO_SUDO=0
 MAP_USER=0
 IDMAP_METHOD=""
 
@@ -647,6 +649,7 @@ while [[ $# -gt 0 ]]; do
     --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
+    --no-sudo)       NO_SUDO=1; shift ;;
     --no-tui)        NO_TUI=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
@@ -793,32 +796,34 @@ fi  # end FROM_BASE_IMAGE == 0
 # ---------------------------------------------------------------------------
 log "Creating user $HOST_USER..."
 incus exec "$CONTAINER_NAME" -- sh -c "
-  # Skip if user already exists with correct UID
-  if id $HOST_USER >/dev/null 2>&1 && [ \"\$(id -u $HOST_USER)\" = \"$HOST_UID\" ]; then
-    exit 0
+  # Skip creation if user already exists with correct UID
+  if ! (id $HOST_USER >/dev/null 2>&1 && [ \"\$(id -u $HOST_USER)\" = \"$HOST_UID\" ]); then
+    ZSH_PATH=\$(command -v zsh || echo /bin/bash)
+
+    # Remove conflicting UID/GID owners
+    EXISTING_USER=\$(getent passwd $HOST_UID | cut -d: -f1 || true)
+    EXISTING_GROUP=\$(getent group $HOST_GID | cut -d: -f1 || true)
+
+    if [ -n \"\$EXISTING_USER\" ] && [ \"\$EXISTING_USER\" != \"$HOST_USER\" ]; then
+      userdel -r \"\$EXISTING_USER\" 2>/dev/null || userdel \"\$EXISTING_USER\" 2>/dev/null || true
+    fi
+    if [ -n \"\$EXISTING_GROUP\" ] && [ \"\$EXISTING_GROUP\" != \"$HOST_USER\" ]; then
+      groupdel \"\$EXISTING_GROUP\" 2>/dev/null || true
+    fi
+
+    groupadd -g $HOST_GID $HOST_USER 2>/dev/null || true
+    useradd -m -u $HOST_UID -g $HOST_GID -s \"\$ZSH_PATH\" $HOST_USER || exit 1
   fi
-
-  ZSH_PATH=\$(command -v zsh || echo /bin/bash)
-
-  # Remove conflicting UID/GID owners
-  EXISTING_USER=\$(getent passwd $HOST_UID | cut -d: -f1 || true)
-  EXISTING_GROUP=\$(getent group $HOST_GID | cut -d: -f1 || true)
-
-  if [ -n \"\$EXISTING_USER\" ] && [ \"\$EXISTING_USER\" != \"$HOST_USER\" ]; then
-    userdel -r \"\$EXISTING_USER\" 2>/dev/null || userdel \"\$EXISTING_USER\" 2>/dev/null || true
-  fi
-  if [ -n \"\$EXISTING_GROUP\" ] && [ \"\$EXISTING_GROUP\" != \"$HOST_USER\" ]; then
-    groupdel \"\$EXISTING_GROUP\" 2>/dev/null || true
-  fi
-
-  # Create group + user
-  groupadd -g $HOST_GID $HOST_USER 2>/dev/null || true
-  useradd -m -u $HOST_UID -g $HOST_GID -s \"\$ZSH_PATH\" $HOST_USER || exit 1
-
-  echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
-  chmod 0440 /etc/sudoers.d/$HOST_USER
 
   id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
+
+  # Sudo: always enforce current flag state (base image may differ)
+  if [ \"$NO_SUDO\" = \"1\" ]; then
+    rm -f /etc/sudoers.d/$HOST_USER
+  else
+    echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
+    chmod 0440 /etc/sudoers.d/$HOST_USER
+  fi
 "
 
 # ---------------------------------------------------------------------------

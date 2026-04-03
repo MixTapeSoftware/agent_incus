@@ -79,6 +79,7 @@ Options:
   --1pass                   Install 1Password CLI (prompts for service account token)
   --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
   --entire                  Install Entire CLI (https://github.com/entireio/cli)
+  --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
@@ -116,7 +117,7 @@ Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI f
 
 ## The Development Workflow
 
-A recommended setup uses two containers sharing the same workspace:
+A recommended setup uses two containers sharing the same workspace. The agent container runs with `--no-sudo` so AI tools cannot escalate privileges, while the dev container has full access and credentials:
 
 ```mermaid
 graph TB
@@ -127,15 +128,15 @@ graph TB
 ```
 
 ```bash
-# Agent container — lean, no credentials
-inci project-agent
+# Agent container — no sudo, no credentials
+inci --no-sudo project-agent
 
 # Dev container — with credentials
 inci --1pass --gh-token project-dev
 
 # Publish as reusable base image, then spin up new containers instantly
 inci --publish project-base
-inci --image incus-init/project-base project-agent-2
+inci --image incus-init/project-base --no-sudo project-agent-2
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
