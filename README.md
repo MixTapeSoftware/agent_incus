@@ -54,8 +54,9 @@ Usage: incus.init [OPTIONS] <container-name>
 Options:
   -p, --path PATH           Host directory to mount (default: current directory)
   -m, --mount-path PATH     Container mount point (default: /workspace)
-  -i, --image IMAGE         Base image override
-  --ubuntu                  Use Ubuntu 24.04 instead of Alpine 3.23
+  -i, --image IMAGE         Base image override (default: ubuntu/24.04)
+  --publish                 Publish container as local image after provisioning
+  --publish-alias ALIAS     Custom alias for published image (default: incus-init/<name>)
   --proxy                   Route container traffic through a proxy (advanced)
   --proxy-port PORT         Required when --proxy is set
   --proxy-ip IP             Proxy IP override (default: container gateway)
@@ -70,7 +71,7 @@ Options:
 
 ### What incus.init does
 
-1. Launches an Alpine 3.23 container (or Ubuntu 24.04 with `--ubuntu`)
+1. Launches an Ubuntu 24.04 container (override with `--image`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID with passwordless sudo
 5. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
@@ -105,16 +106,20 @@ A recommended setup uses two containers sharing the same workspace:
 graph TB
     W["/workspace (app files)"]
     H["Host Machine"] --> W
-    A["Agent Container (Alpine)"] --> W
-    D["Dev Container (Ubuntu)"] --> W
+    A["Agent Container"] --> W
+    D["Dev Container"] --> W
 ```
 
 ```bash
-# Agent container — lean, secure default
+# Agent container — lean, no credentials
 inci project-agent
 
 # Dev container — with credentials
-inci --ubuntu --1pass --gh-token project-dev
+inci --1pass --gh-token project-dev
+
+# Publish as reusable base image, then spin up new containers instantly
+inci --publish project-base
+inci --image incus-init/project-base project-agent-2
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
