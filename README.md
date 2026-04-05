@@ -70,15 +70,13 @@ Usage: incus.init [OPTIONS] <container-name>
 Options:
   -p, --path PATH           Host directory to mount (default: current directory)
   -m, --mount-path PATH     Container mount point (default: /workspace)
+  -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
-  --publish                 Publish container as local image after provisioning
-  --publish-alias ALIAS     Custom alias for published image (default: incus-init/<name>)
-  --proxy                   Route container traffic through a proxy (advanced)
-  --proxy-port PORT         Required when --proxy is set
-  --proxy-ip IP             Proxy IP override (default: container gateway)
+  -t, --template            Save container as a reusable local template (implies --no-mount)
   --1pass                   Install 1Password CLI (prompts for service account token)
   --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
   --entire                  Install Entire CLI (https://github.com/entireio/cli)
+  --no-mount                Clone repo into container instead of mounting host directory
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
@@ -148,51 +146,44 @@ inci --no-sudo project-agent
 # Dev container — with credentials
 inci --1pass --gh-token project-dev
 
-# Publish as reusable base image, then spin up new containers instantly
-inci --publish project-base
-inci --image incus-init/project-base --no-sudo project-agent-2
+# Save as reusable template, then spin up new containers instantly
+inci --template project-base
+inci --from project-base --no-sudo project-agent-2
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
 
-### Base Images
+### Templates
 
-Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and Docker. This takes a few minutes. You can skip that on subsequent containers by publishing a **base image** — a snapshot of a fully provisioned container with no secrets baked in.
+Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and Docker. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container with no secrets baked in, stored in the local Incus image store.
 
 **Build once:**
 
 ```bash
-inci --publish my-base
-# or answer "y" when prompted after provisioning
+inci --template my-base
 ```
 
-This provisions the container, scrubs any tokens from the image, and publishes it locally as `incus-init/my-base`. The original container keeps running with its tokens intact.
+This provisions the container (without mounting host files), scrubs any tokens, and saves it locally as `incus-init/my-base`. The original container keeps running with its tokens intact.
 
 **Reuse instantly:**
 
 ```bash
 # Spin up a new container from the base image — seconds, not minutes
-inci --image incus-init/my-base my-project
+inci --from my-base my-project
 
 # Same base, different credentials
-inci --image incus-init/my-base --1pass --gh-token my-dev
+inci --from my-base --1pass --gh-token my-dev
 ```
 
-When launching from a local image, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected components run.
+When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected components run.
 
-**Manage images:**
+**Manage templates:**
 
 ```bash
-incus image list             # see published images
+incus image list             # see saved templates
 incus image delete incus-init/my-base  # remove one
 ```
 
-Use `--publish-alias` to customize the image name:
-
-```bash
-inci --publish --publish-alias team/node20-base my-base
-inci --image team/node20-base my-project
-```
 
 ### Expose Container Ports
 

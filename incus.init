@@ -34,18 +34,16 @@ Default image is Ubuntu 24.04. Shows an interactive TUI to select components.
 Options:
   -p, --path PATH           Host directory to mount (default: current directory)
   -m, --mount-path PATH     Container mount point (default: /workspace)
+  -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
-  --publish                 Publish container as local image after provisioning
-  --publish-alias ALIAS     Custom alias for published image (default: incus-init/<name>)
-  --proxy                   Enable HTTP(S) proxy env vars
-  --proxy-port PORT         REQUIRED when --proxy is set
-  --proxy-ip IP             Optional proxy IP override
+  -t, --template            Save container as a reusable local template (implies --no-mount)
   --1pass                   Install 1Password CLI
   --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
   --entire                  Install Entire CLI (https://github.com/entireio/cli)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
+  --no-mount                Clone repo into container instead of mounting host directory
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --no-tui                  Skip interactive component selector, use defaults
   --dry-run                 Show what would be done without doing it
@@ -234,9 +232,6 @@ WORKSPACE_PATH="$PWD"
 MOUNT_PATH="/workspace"
 BASE_IMAGE="images:ubuntu/24.04"
 CONTAINER_NAME=""
-USE_PROXY=0
-PROXY_PORT=""
-PROXY_IP=""
 USE_1PASSWORD=0
 ONEPASSWORD_SERVICE_KEY=""
 USE_GH_TOKEN=0
@@ -246,9 +241,9 @@ GH_USER_EMAIL=""
 USE_ENTIRE=0
 DRY_RUN=0
 NO_TUI=0
-PUBLISH_IMAGE=0
-PUBLISH_ALIAS=""
+SAVE_TEMPLATE=0
 NO_SUDO=0
+NO_MOUNT=0
 MAP_USER=0
 IDMAP_METHOD=""
 
@@ -375,6 +370,10 @@ ZSHEOF
 }
 
 install_docker() {
+  if incus exec "$CONTAINER_NAME" -- sh -c 'command -v docker' &>/dev/null; then
+    log "Docker already installed, skipping"
+    return
+  fi
   log "Configuring container for Docker..."
   incus config set "$CONTAINER_NAME" security.nesting=true
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
@@ -436,6 +435,10 @@ DOCKER_EOF
 }
 
 install_chromium() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx playwright --version' &>/dev/null; then
+    log "Chromium/Playwright already installed, skipping"
+    return
+  fi
   log "Installing Playwright + Chromium dependencies..."
   incus exec "$CONTAINER_NAME" -- sh -s <<'CHROMIUM_EOF'
     export DEBIAN_FRONTEND=noninteractive
@@ -452,6 +455,10 @@ CHROMIUM_EOF
 }
 
 install_fzf_bat() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v fzf' &>/dev/null; then
+    log "fzf + bat already installed, skipping"
+    return
+  fi
   log "Installing fzf and bat via mise..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
   set -e
@@ -471,6 +478,10 @@ EOF
 }
 
 install_claude_code() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.claude/local/claude"' &>/dev/null; then
+    log "Claude Code already installed, skipping"
+    return
+  fi
   log "Installing Claude Code..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
   set -e
@@ -479,11 +490,15 @@ CLAUDE
 }
 
 install_1password() {
-  log "Installing 1Password CLI..."
-  incus exec "$CONTAINER_NAME" -- sh -c '
-    wget -q https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_amd64_v2.30.0.zip -O /tmp/op.zip
-    unzip -q /tmp/op.zip -d /tmp/ && mv /tmp/op /usr/local/bin/ && chmod +x /usr/local/bin/op && rm /tmp/op.zip
-  '
+  if incus exec "$CONTAINER_NAME" -- sh -c 'command -v op' &>/dev/null; then
+    log "1Password CLI already installed, skipping binary install"
+  else
+    log "Installing 1Password CLI..."
+    incus exec "$CONTAINER_NAME" -- sh -c '
+      wget -q https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_amd64_v2.30.0.zip -O /tmp/op.zip
+      unzip -q /tmp/op.zip -d /tmp/ && mv /tmp/op /usr/local/bin/ && chmod +x /usr/local/bin/op && rm /tmp/op.zip
+    '
+  fi
   log "Setting 1Password token via container environment..."
   incus config set "$CONTAINER_NAME" environment.OP_SERVICE_ACCOUNT_TOKEN="$ONEPASSWORD_SERVICE_KEY"
 
@@ -511,6 +526,10 @@ install_gh_auth() {
 }
 
 install_openspec() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v openspec' &>/dev/null; then
+    log "OpenSpec already installed, skipping"
+    return
+  fi
   log "Installing OpenSpec..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
@@ -523,6 +542,10 @@ EOF
 }
 
 install_rtkplus() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/rtk"' &>/dev/null; then
+    log "rtk already installed, skipping"
+    return
+  fi
   log "Installing rtk..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "bash -s" <<EOF
     set -e
@@ -538,6 +561,10 @@ EOF
 }
 
 install_just() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/just"' &>/dev/null; then
+    log "just already installed, skipping"
+    return
+  fi
   log "Installing just..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
@@ -548,6 +575,10 @@ EOF
 }
 
 install_entire() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/go/bin/entire"' &>/dev/null; then
+    log "Entire CLI already installed, skipping"
+    return
+  fi
   log "Installing Entire CLI..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
@@ -561,6 +592,10 @@ EOF
 }
 
 install_glow() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v glow' &>/dev/null; then
+    log "Glow already installed, skipping"
+    return
+  fi
   log "Installing Glow..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
@@ -572,6 +607,10 @@ EOF
 }
 
 install_codex() {
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v codex' &>/dev/null; then
+    log "Codex already installed, skipping"
+    return
+  fi
   log "Installing Codex..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
@@ -641,9 +680,9 @@ prompt_gh_token() {
   if [[ -z "$GH_USER_EMAIL" ]]; then error "Git user.email required"; fi
 }
 
-publish_image() {
-  local alias="${PUBLISH_ALIAS:-incus-init/$CONTAINER_NAME}"
-  log "Publishing container as local image: $alias"
+save_template() {
+  local alias="incus-init/$CONTAINER_NAME"
+  log "Saving as local template: $alias (stored in local Incus image store)"
 
   # Save token lines from .zshenv, then strip them so they don't leak into the image
   local saved_tokens
@@ -669,8 +708,8 @@ TOKENS"
   fi
 
   wait_for_network "$CONTAINER_NAME"
-  log "Published as: $alias"
-  echo "  Reuse with: $(basename "$0") --image $alias <new-name>"
+  log "Saved template: $alias"
+  echo "  Reuse with: $(basename "$0") --from $CONTAINER_NAME <new-name>"
 }
 
 # ---------------------------------------------------------------------------
@@ -680,18 +719,16 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     -p|--path)       [[ $# -lt 2 ]] && error "$1 requires an argument"; WORKSPACE_PATH="$2"; shift 2 ;;
     -m|--mount-path) [[ $# -lt 2 ]] && error "$1 requires an argument"; MOUNT_PATH="$2"; shift 2 ;;
+    -f|--from)       [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="incus-init/$2"; shift 2 ;;
     -i|--image)      [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="$2"; shift 2 ;;
-    --publish)       PUBLISH_IMAGE=1; shift ;;
-    --publish-alias) [[ $# -lt 2 ]] && error "$1 requires an argument"; PUBLISH_ALIAS="$2"; shift 2 ;;
-    --proxy)         USE_PROXY=1; shift ;;
-    --proxy-port)    [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_PORT="$2"; shift 2 ;;
-    --proxy-ip)      [[ $# -lt 2 ]] && error "$1 requires an argument"; PROXY_IP="$2"; shift 2 ;;
+    -t|--template) SAVE_TEMPLATE=1; shift ;;
     --1pass)         SELECTED[1pass]=1; shift ;;
     --gh-token)      SELECTED[gh-auth]=1; shift ;;
     --entire)        SELECTED[entire]=1; shift ;;
     --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
+    --no-mount)      NO_MOUNT=1; shift ;;
     --no-sudo)       NO_SUDO=1; shift ;;
     --no-tui)        NO_TUI=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
@@ -715,12 +752,16 @@ require_commands incus curl sudo realpath
 [[ -z "$CONTAINER_NAME" ]] && { warn "Container name required"; echo ""; usage; }
 [[ ! "$CONTAINER_NAME" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] && error "Invalid container name: must start with a letter, only letters/digits/hyphens"
 incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAME' already exists"
-[[ "$USE_PROXY" == "1" && -z "$PROXY_PORT" ]] && error "Proxy enabled but no port provided"
-[[ -n "$PROXY_PORT" && ! "$PROXY_PORT" =~ ^[0-9]+$ ]] && error "Proxy port must be numeric"
 
-WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
-WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
-[[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
+if [[ "$NO_MOUNT" == "0" ]]; then
+  WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
+  WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
+  [[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
+fi
+
+if [[ "$SAVE_TEMPLATE" == "1" ]]; then
+  NO_MOUNT=1
+fi
 
 HOST_USER="$(whoami)"
 HOST_UID="$(id -u)"
@@ -765,7 +806,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "Container:   $CONTAINER_NAME"
   echo "Image:       $BASE_IMAGE"
   echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
-  echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+  if [[ "$NO_MOUNT" == "1" ]]; then
+    echo "Workspace:   git clone into $MOUNT_PATH (no host mount)"
+  else
+    echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+  fi
   echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
   echo ""
   echo "Selected components:"
@@ -778,8 +823,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
     fi
   done
   echo ""
-  echo "Proxy:       $( [[ "$USE_PROXY" == "1" ]] && echo "${PROXY_IP:-auto}:$PROXY_PORT" || echo no )"
-  echo "Publish:     $( [[ "$PUBLISH_IMAGE" == "1" ]] && echo "${PUBLISH_ALIAS:-incus-init/$CONTAINER_NAME}" || echo no )"
+  echo "Template:    $( [[ "$SAVE_TEMPLATE" == "1" ]] && echo "incus-init/$CONTAINER_NAME" || echo no )"
   echo "========================================"
   exit 0
 fi
@@ -871,16 +915,35 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 "
 
 # ---------------------------------------------------------------------------
-# Mount workspace (always)
+# Mount workspace or clone repo
 # ---------------------------------------------------------------------------
-log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
-
-if [[ "$MAP_USER" == "1" ]]; then
-  mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH" "$HOST_UID" "$HOST_GID"
+if [[ "$NO_MOUNT" == "1" ]]; then
+  # Check if mount path exists and has content (e.g. from a base image built without --no-mount)
+  if incus exec "$CONTAINER_NAME" -- sh -c "[ -d '$MOUNT_PATH' ] && [ \"\$(ls -A '$MOUNT_PATH')\" ]"; then
+    error "$MOUNT_PATH is not empty inside the container. Rebuild the base image with --no-mount."
+  fi
+  incus exec "$CONTAINER_NAME" -- sh -c \
+    "mkdir -p $MOUNT_PATH && chown $HOST_USER:$HOST_USER $MOUNT_PATH"
+  REPO_URL="$(git -C "$PWD" remote get-url origin 2>/dev/null || true)"
+  if [[ -n "$REPO_URL" ]]; then
+    REPO_BRANCH="$(git -C "$PWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+    log "Cloning repo into container (--no-mount)..."
+    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+      "git clone --branch ${REPO_BRANCH:-main} $REPO_URL $MOUNT_PATH"
+  else
+    log "No git remote found — creating empty $MOUNT_PATH"
+  fi
+  IDMAP_METHOD="clone"
 else
-  incus config device add "$CONTAINER_NAME" workspace disk \
-    source="$WORKSPACE_PATH" path="$MOUNT_PATH"
-  IDMAP_METHOD="none"
+  log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
+
+  if [[ "$MAP_USER" == "1" ]]; then
+    mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH" "$HOST_UID" "$HOST_GID"
+  else
+    incus config device add "$CONTAINER_NAME" workspace disk \
+      source="$WORKSPACE_PATH" path="$MOUNT_PATH"
+    IDMAP_METHOD="none"
+  fi
 fi
 
 # Final readiness check
@@ -946,19 +1009,6 @@ if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise install'
 fi
 
-# ---------------------------------------------------------------------------
-# Proxy (optional, not a TUI component)
-# ---------------------------------------------------------------------------
-if [[ "$USE_PROXY" == "1" ]]; then
-  [[ -z "$PROXY_IP" ]] && PROXY_IP="$(incus exec "$CONTAINER_NAME" -- sh -c "ip route | awk '/default/ {print \$3}'")"
-  log "Configuring proxy: $PROXY_IP:$PROXY_PORT"
-  incus exec "$CONTAINER_NAME" -- sh -c "cat >/etc/profile.d/claude-proxy.sh <<PROXYEOF
-export HTTP_PROXY='http://$PROXY_IP:$PROXY_PORT'
-export HTTPS_PROXY='http://$PROXY_IP:$PROXY_PORT'
-export NO_PROXY='localhost,127.0.0.1'
-PROXYEOF
-chmod 644 /etc/profile.d/claude-proxy.sh"
-fi
 
 # ---------------------------------------------------------------------------
 # Disable cleanup trap on success
@@ -974,7 +1024,11 @@ echo "========================================"
 echo "Container:   $CONTAINER_NAME"
 echo "Image:       $BASE_IMAGE"
 echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
-echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+if [[ "$NO_MOUNT" == "1" ]]; then
+  echo "Workspace:   git clone into $MOUNT_PATH (no host mount)"
+else
+  echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+fi
 echo "Write access: ${IDMAP_METHOD:-none}"
 echo ""
 echo "Installed:"
@@ -982,7 +1036,6 @@ for entry in "${COMPONENTS[@]}"; do
   IFS=: read -r id name desc default <<< "$entry"
   [[ "${SELECTED[$id]}" == "1" ]] && echo "  ✓ $name"
 done
-[[ "$USE_PROXY" == "1" ]] && echo "  ✓ Proxy (http://$PROXY_IP:$PROXY_PORT)"
 echo "========================================"
 echo ""
 echo "Shell in:"
@@ -996,12 +1049,6 @@ fi
 # ---------------------------------------------------------------------------
 # Publish as local image (optional)
 # ---------------------------------------------------------------------------
-if [[ "$PUBLISH_IMAGE" == "1" ]]; then
-  publish_image
-elif [[ "$NO_TUI" == "0" ]]; then
-  echo ""
-  read -rp "Publish this container as a reusable local image? [y/N] " PUB_REPLY
-  if [[ "${PUB_REPLY:-N}" =~ ^[Yy]$ ]]; then
-    publish_image
-  fi
+if [[ "$SAVE_TEMPLATE" == "1" ]]; then
+  save_template
 fi
