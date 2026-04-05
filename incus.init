@@ -478,15 +478,16 @@ EOF
 }
 
 install_claude_code() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.claude/local/claude"' &>/dev/null; then
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/claude"' &>/dev/null; then
     log "Claude Code already installed, skipping"
-    return
-  fi
-  log "Installing Claude Code..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
-  set -e
-  curl -fsSL https://claude.ai/install.sh | bash
+  else
+    log "Installing Claude Code..."
+    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
+    set -e
+    curl -fsSL https://claude.ai/install.sh | bash
 CLAUDE
+  fi
+
 }
 
 install_1password() {
@@ -617,6 +618,7 @@ install_codex() {
     sudo npm install -g @openai/codex
 EOF
 }
+
 
 # ---------------------------------------------------------------------------
 # Token prompt functions — defined once, called once after TUI
@@ -993,6 +995,23 @@ if [[ "${SELECTED[openspec]}" == "1" ]]; then install_openspec; fi
 if [[ "${SELECTED[rtkplus]}" == "1" ]]; then install_rtkplus; fi
 if [[ "${SELECTED[fzf-bat]}" == "1" ]]; then install_fzf_bat; fi
 if [[ "${SELECTED[claude-code]}" == "1" ]]; then install_claude_code; fi
+
+# Offer Claude Code skills if Claude Code is present (selected or from template)
+if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/claude"' &>/dev/null; then
+  echo ""
+  log "Optional Claude Code skills:"
+  USE_CAVEMAN=0; USE_SUPERPOWERS=0
+  read -rp "  Install Caveman (token reduction ~75%)? [y/N] " caveman_reply
+  [[ "${caveman_reply:-N}" =~ ^[Yy]$ ]] && USE_CAVEMAN=1
+  read -rp "  Install Superpowers (structured dev workflow)? [y/N] " superpowers_reply
+  [[ "${superpowers_reply:-N}" =~ ^[Yy]$ ]] && USE_SUPERPOWERS=1
+  if [[ "$USE_CAVEMAN" == "1" ]]; then
+    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx skills add JuliusBrussee/caveman'
+  fi
+  if [[ "$USE_SUPERPOWERS" == "1" ]]; then
+    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx skills add obra/superpowers'
+  fi
+fi
 if [[ "${SELECTED[1pass]}" == "1" ]]; then install_1password; fi
 if [[ "${SELECTED[gh-auth]}" == "1" ]]; then install_gh_auth; fi
 if [[ "${SELECTED[entire]}" == "1" ]]; then install_entire; fi

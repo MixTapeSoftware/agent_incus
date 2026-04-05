@@ -117,7 +117,7 @@ The TUI lets you pick from the following optional packages during container crea
 | [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Spec-driven development CLI |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant (optionally includes [Caveman](https://github.com/JuliusBrussee/caveman) and [Superpowers](https://github.com/obra/superpowers) skills) |
 | [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
