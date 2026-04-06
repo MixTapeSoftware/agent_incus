@@ -370,10 +370,7 @@ ZSHEOF
 }
 
 install_docker() {
-  if incus exec "$CONTAINER_NAME" -- sh -c 'command -v docker' &>/dev/null; then
-    log "Docker already installed, skipping"
-    return
-  fi
+  # Container config is always needed — not preserved in templates
   log "Configuring container for Docker..."
   incus config set "$CONTAINER_NAME" security.nesting=true
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
@@ -390,6 +387,14 @@ install_docker() {
   incus restart "$CONTAINER_NAME"
   wait_for_container "$CONTAINER_NAME"
   wait_for_network "$CONTAINER_NAME"
+
+  if incus exec "$CONTAINER_NAME" -- sh -c 'command -v docker' &>/dev/null; then
+    log "Docker binary already installed, skipping package install"
+    incus restart "$CONTAINER_NAME"
+    wait_for_container "$CONTAINER_NAME"
+    wait_for_network "$CONTAINER_NAME"
+    return
+  fi
 
   log "Installing Docker..."
 
