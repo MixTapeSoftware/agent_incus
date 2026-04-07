@@ -388,14 +388,25 @@ install_docker() {
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.setxattr=true
 
-  # AppArmor (mandatory access control) causes two more problems:
+  # AppArmor (mandatory access control) causes two problems for Docker-in-Incus:
   #   1. runc fails with "ip_unprivileged_port_start: permission denied"
   #      because AppArmor's default profile restricts nested containers.
   #   2. Docker checks if AppArmor is enabled, sees "Y", and tries to load
   #      its "docker-default" profile via securityfs — which isn't accessible
   #      inside an Incus container, so it fails.
+  #
   # Fix: run unconfined (removes restriction #1), then mask the AppArmor
   # enabled flag so Docker thinks it's not available (removes #2).
+  #
+  # Security tradeoff: Docker's AppArmor profile normally restricts containers
+  # from writing to /proc/sys, mounting filesystems, and accessing raw kernel
+  # interfaces. We lose that layer here, but Incus compensates with its own
+  # isolation: user namespaces (container root maps to an unprivileged host
+  # UID), seccomp syscall filtering, PID/network/mount namespaces, and cgroup
+  # resource limits. An attacker would need to escape both Docker and Incus to
+  # reach the host. Loading the profile from outside is impractical — Docker
+  # expects to manage AppArmor profiles dynamically, and exposing securityfs
+  # into the container would let it weaken the host's own confinement.
   incus config set "$CONTAINER_NAME" raw.lxc "lxc.apparmor.profile=unconfined"
   # raw.lxc is only read at container start, so restart to apply it.
   incus restart "$CONTAINER_NAME"
