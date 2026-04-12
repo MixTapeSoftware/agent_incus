@@ -5,10 +5,14 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
+YELLOW='\033[1;33m'
 NC='\033[0m'
 
 log()   { echo -e "${GREEN}[+]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+
+INCS_LOG_DIR="${INCS_LOG_DIR:-/var/log/incs}"
+INCS_STATUS_FILE="$HOME/.local/state/incs/last-update"
 
 usage() {
   cat <<'EOF'
@@ -20,8 +24,13 @@ Commands:
   -i, init [args...]             Create/provision a new container
   -n, net <container> [ports...] Manage port proxies
   -u, update <container>         Update packages in a container
-  -ua, update-all                Update packages in all running containers
+  -ua, update-all                Update packages in all agent-incus containers
   -h, help                       Show this help
+
+Cron:
+  cron install [HOUR]            Install nightly update cron (default: 19)
+  cron remove                    Remove the update cron
+  cron status                    Show current cron schedule
 
 Examples:
   incs pb                        Shell into pb
@@ -31,7 +40,9 @@ Examples:
   incs -n pb 4000 3241           Proxy ports 4000 and 3241
   incs -n pb -l                  List proxies on pb
   incs -u pb                     Update packages in pb
-  incs -ua                       Update all running containers
+  incs -ua                       Update all agent-incus containers
+  incs cron install              Install 7pm daily update cron
+  incs cron install 3            Install 3am daily update cron
 EOF
   exit 0
 }
@@ -41,7 +52,23 @@ is_debian() {
   incus exec "$container" -- sh -c 'test -f /etc/debian_version' </dev/null &>/dev/null
 }
 
-UPDATE_LOG="/tmp/incs-update-$(date +%Y%m%d-%H%M%S).log"
+ensure_log_dir() {
+  if [[ ! -d "$INCS_LOG_DIR" ]]; then
+    sudo mkdir -p "$INCS_LOG_DIR"
+    sudo chown "$(id -u):$(id -g)" "$INCS_LOG_DIR"
+  fi
+}
+
+write_status() {
+  local status="$1"
+  local details="${2:-}"
+  mkdir -p "$(dirname "$INCS_STATUS_FILE")"
+  cat > "$INCS_STATUS_FILE" <<STATUSEOF
+status=$status
+date=$(date '+%Y-%m-%d %H:%M')
+details=$details
+STATUSEOF
+}
 
 cmd_update() {
   local container="$1"
@@ -77,15 +104,17 @@ cmd_update_all() {
     return
   fi
 
+  ensure_log_dir
   local failed=()
-  local logfile="$UPDATE_LOG"
+  local logfile="$INCS_LOG_DIR/update-$(date +%Y%m%d-%H%M%S).log"
 
   while IFS=, read -r name status; do
-    local was_stopped=0
-    if [[ "$status" == "STOPPED" ]]; then
+    local was_running=0
+    if [[ "$status" == "RUNNING" ]]; then
+      was_running=1
+    else
       log "Starting $name..."
       incus start "$name"
-      was_stopped=1
       # Wait for container to be ready
       local attempts=0
       while true; do
@@ -103,14 +132,15 @@ cmd_update_all() {
     fi
     if ! is_debian "$name"; then
       echo "  ⚠️  WARNING: $name is tagged as agent-incus but is not Debian/Ubuntu — skipping update"
-      [[ "$was_stopped" == "1" ]] && incus stop "$name"
+      [[ "$was_running" == "0" ]] && incus stop "$name"
       continue
     fi
     log "Updating $name..."
     if ! cmd_update "$name" "$logfile"; then
       failed+=("$name")
     fi
-    if [[ "$was_stopped" == "1" ]]; then
+    # Only stop containers that were stopped before we started
+    if [[ "$was_running" == "0" ]]; then
       log "Stopping $name..."
       incus stop "$name"
     fi
@@ -120,11 +150,72 @@ cmd_update_all() {
   if [[ ${#failed[@]} -gt 0 ]]; then
     echo "⚠️  Failed: ${failed[*]}"
     echo "   See $logfile for details"
+    write_status "failed" "${failed[*]}"
   else
-    # Clean up log on full success
     rm -f "$logfile"
     log "All containers updated successfully"
+    write_status "ok"
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Cron management
+# ---------------------------------------------------------------------------
+CRON_TAG="# incs-update-all"
+
+cmd_cron() {
+  local action="${1:-}"
+  case "$action" in
+    install)
+      local hour="${2:-19}"
+      # Validate hour
+      if ! [[ "$hour" =~ ^[0-9]+$ ]] || [[ "$hour" -gt 23 ]]; then
+        error "Invalid hour: $hour (must be 0-23)"
+      fi
+      local incs_path
+      incs_path="$(readlink -f "$0")"
+      local cron_line="0 $hour * * * $incs_path -ua >> $INCS_LOG_DIR/cron.log 2>&1 $CRON_TAG"
+      # Remove existing entry, add new one
+      (crontab -l 2>/dev/null | grep -v "$CRON_TAG"; echo "$cron_line") | crontab -
+      log "Installed cron: daily at $(printf '%02d' "$hour"):00"
+      echo "  Logs: $INCS_LOG_DIR/cron.log"
+      ;;
+    remove)
+      crontab -l 2>/dev/null | grep -v "$CRON_TAG" | crontab -
+      log "Removed incs update cron"
+      ;;
+    status)
+      local entry
+      entry=$(crontab -l 2>/dev/null | grep "$CRON_TAG" || true)
+      if [[ -n "$entry" ]]; then
+        echo "Active: $entry"
+      else
+        echo "No incs update cron installed"
+      fi
+      ;;
+    *)
+      error "Usage: incs cron {install [HOUR]|remove|status}"
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Login notification — source this snippet from .zshrc/.bashrc
+# ---------------------------------------------------------------------------
+cmd_notify_snippet() {
+  cat <<'SNIPPET'
+# incs update notification — add to ~/.zshrc or ~/.bashrc
+if [[ -f "$HOME/.local/state/incs/last-update" ]]; then
+  _incs_status=$(grep '^status=' "$HOME/.local/state/incs/last-update" | cut -d= -f2)
+  _incs_date=$(grep '^date=' "$HOME/.local/state/incs/last-update" | cut -d= -f2-)
+  _incs_details=$(grep '^details=' "$HOME/.local/state/incs/last-update" | cut -d= -f2-)
+  if [[ "$_incs_status" == "failed" ]]; then
+    echo -e "\033[1;33m⚠️  incs update failed ($_incs_date): $_incs_details\033[0m"
+    echo "   Run 'ls /var/log/incs/' to see logs"
+  fi
+  unset _incs_status _incs_date _incs_details
+fi
+SNIPPET
 }
 
 [[ $# -eq 0 ]] && usage
@@ -152,6 +243,13 @@ case "$1" in
     ;;
   -ua|update-all)
     cmd_update_all
+    ;;
+  cron)
+    shift
+    cmd_cron "$@"
+    ;;
+  notify-snippet)
+    cmd_notify_snippet
     ;;
   -*)
     error "Unknown command: $1 (try incs -h)"

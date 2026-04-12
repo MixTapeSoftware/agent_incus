@@ -77,6 +77,10 @@ incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
+incs cron install                      # Install 7pm daily update cron
+incs cron install 3                    # Install 3am daily update cron
+incs cron status                       # Show current cron schedule
+incs cron remove                       # Remove the update cron
 ```
 
 The individual scripts and aliases (`inci`, `incn`) still work directly.
@@ -258,7 +262,35 @@ incs -u my-project
 incs -ua
 ```
 
-`incs -ua` starts stopped containers, updates them, then stops them again. Only containers tagged with `user.managed-by=agent-incus` (set automatically during `inci`) are updated. Non-Debian containers are skipped.
+`incs -ua` starts stopped containers, updates them, then stops them again. Containers that were already running are left running. Only containers tagged with `user.managed-by=agent-incus` (set automatically during `inci`) are updated. Non-Debian containers are skipped.
+
+Logs are written to `/var/log/incs/` and cleaned up on success.
+
+#### Scheduled Updates
+
+Install a daily cron to update all containers automatically:
+
+```bash
+incs cron install         # Daily at 7pm (default)
+incs cron install 3       # Daily at 3am
+incs cron status          # Show current schedule
+incs cron remove          # Remove the cron
+```
+
+#### Failure Notifications
+
+If an update fails, you'll see a notification the next time you open a terminal:
+
+```
+⚠️  incs update failed (2026-04-11 19:00): avex mix-claude
+   Run 'ls /var/log/incs/' to see logs
+```
+
+To enable this, add the notification hook to your shell:
+
+```bash
+incs notify-snippet >> ~/.zshrc
+```
 
 ### Snapshots
 
