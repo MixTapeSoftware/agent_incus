@@ -911,6 +911,7 @@ fi
 # ---------------------------------------------------------------------------
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
 incus launch "$BASE_IMAGE" "$CONTAINER_NAME"
+incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
 
 wait_for_container "$CONTAINER_NAME"
 wait_for_network "$CONTAINER_NAME"

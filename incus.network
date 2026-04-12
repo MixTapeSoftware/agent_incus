@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage: incs -n <container> [options] [port ...]
+
+Manage Incus proxy devices for container port forwarding.
+
+Arguments:
+  container              Name of the Incus container
+  port ...               One or more ports to proxy (host:container or just port for same on both)
+
+Options:
+  -b, --bind ADDR        Listen address (default: 127.0.0.1)
+  -l, --list             List active proxy devices
+  -r, --remove PORT      Remove proxy for PORT (or "all" to remove all proxies)
+  -h, --help             Show this help
+
+Examples:
+  incs -n pb 4000 3241              Proxy ports 4000 and 3241 on localhost
+  incs -n pb -b 100.69.177.88 4000  Proxy port 4000 on a specific address
+  incs -n pb 4000:8080              Host 4000 -> container 8080
+  incs -n pb -l                     List current proxies
+  incs -n pb -r 4000                Remove proxy for port 4000
+  incs -n pb -r all                 Remove all proxies
+EOF
+  exit 0
+}
+
+[[ $# -lt 1 ]] && usage
+
+CONTAINER="$1"; shift
+BIND_ADDR="127.0.0.1"
+ACTION="add"
+REMOVE_PORT=""
+PORTS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -b|--bind)   [[ $# -lt 2 ]] && { echo "Error: $1 requires an argument" >&2; exit 1; }; BIND_ADDR="$2"; shift 2 ;;
+    -l|--list)   ACTION="list"; shift ;;
+    -r|--remove) [[ $# -lt 2 ]] && { echo "Error: $1 requires an argument" >&2; exit 1; }; ACTION="remove"; REMOVE_PORT="$2"; shift 2 ;;
+    -h|--help)   usage ;;
+    -*)          echo "Error: Unknown option: $1" >&2; exit 1 ;;
+    *)           PORTS+=("$1"); shift ;;
+  esac
+done
+
+# Prefix used for proxy device names so we can identify ours.
+DEVICE_PREFIX="proxy-"
+
+list_proxies() {
+  local devices
+  devices=$(incus config device list "$CONTAINER" 2>/dev/null) || {
+    echo "Error: container '$CONTAINER' not found" >&2; exit 1
+  }
+  local found=0
+  for dev in $devices; do
+    if [[ "$dev" == ${DEVICE_PREFIX}* ]]; then
+      listen=$(incus config device get "$CONTAINER" "$dev" listen 2>/dev/null)
+      connect=$(incus config device get "$CONTAINER" "$dev" connect 2>/dev/null)
+      printf "%-20s %s -> %s\n" "$dev" "$listen" "$connect"
+      found=1
+    fi
+  done
+  if [[ "$found" == "0" ]]; then
+    echo "No proxy devices on $CONTAINER"
+  fi
+}
+
+remove_proxies() {
+  local port="$1"
+  if [[ "$port" == "all" ]]; then
+    local devices
+    devices=$(incus config device list "$CONTAINER" 2>/dev/null) || {
+      echo "Error: container '$CONTAINER' not found" >&2; exit 1
+    }
+    for dev in $devices; do
+      if [[ "$dev" == ${DEVICE_PREFIX}* ]]; then
+        incus config device remove "$CONTAINER" "$dev"
+        echo "Removed $dev"
+      fi
+    done
+  else
+    local dev="${DEVICE_PREFIX}${port}"
+    if incus config device remove "$CONTAINER" "$dev" 2>/dev/null; then
+      echo "Removed $dev"
+    else
+      echo "Error: no proxy device '$dev' on $CONTAINER" >&2; exit 1
+    fi
+  fi
+}
+
+add_proxies() {
+  if [[ ${#PORTS[@]} -eq 0 ]]; then
+    echo "Error: no ports specified" >&2; exit 1
+  fi
+
+  for spec in "${PORTS[@]}"; do
+    if [[ "$spec" == *:* ]]; then
+      host_port="${spec%%:*}"
+      container_port="${spec##*:}"
+    else
+      host_port="$spec"
+      container_port="$spec"
+    fi
+
+    dev="${DEVICE_PREFIX}${host_port}"
+    incus config device add "$CONTAINER" "$dev" proxy \
+      "listen=tcp:${BIND_ADDR}:${host_port}" \
+      "connect=tcp:127.0.0.1:${container_port}" || {
+      echo "Error: failed to add proxy for port $host_port" >&2; exit 1
+    }
+    echo "$BIND_ADDR:$host_port -> 127.0.0.1:$container_port"
+  done
+}
+
+case "$ACTION" in
+  list)   list_proxies ;;
+  remove) remove_proxies "$REMOVE_PORT" ;;
+  add)    add_proxies ;;
+esac

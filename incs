@@ -1,0 +1,132 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+NC='\033[0m'
+
+log()   { echo -e "${GREEN}[+]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: incs [command] [args...]
+
+Commands:
+  <container>                    Shell into container (default)
+  -s, shell <container> [cmd]    Shell into container
+  -i, init [args...]             Create/provision a new container
+  -n, net <container> [ports...] Manage port proxies
+  -u, update <container>         Update packages in a container
+  -ua, update-all                Update packages in all running containers
+  -h, help                       Show this help
+
+Examples:
+  incs pb                        Shell into pb
+  incs -s pb                     Shell into pb (explicit)
+  incs -s pb mix test            Run a command in pb
+  incs -i pb --from base-dev     Init pb from template
+  incs -n pb 4000 3241           Proxy ports 4000 and 3241
+  incs -n pb -l                  List proxies on pb
+  incs -u pb                     Update packages in pb
+  incs -ua                       Update all running containers
+EOF
+  exit 0
+}
+
+is_debian() {
+  local container="$1"
+  incus exec "$container" -- sh -c 'test -f /etc/debian_version' </dev/null &>/dev/null
+}
+
+cmd_update() {
+  local container="$1"
+  incus exec "$container" -- sh -c '
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -qq && apt-get upgrade -y
+  ' </dev/null || {
+    echo "  ⚠️  Failed to update $container" >&2
+    return 1
+  }
+  log "Updated $container"
+}
+
+cmd_update_all() {
+  local containers
+  containers=$(incus list user.managed-by=agent-incus --format csv --columns ns 2>/dev/null) || {
+    error "Failed to list containers"
+  }
+  if [[ -z "$containers" ]]; then
+    echo "No incus-init managed containers found"
+    return
+  fi
+  while IFS=, read -r name status; do
+    local was_stopped=0
+    if [[ "$status" == "STOPPED" ]]; then
+      log "Starting $name..."
+      incus start "$name"
+      was_stopped=1
+      # Wait for container to be ready
+      local attempts=0
+      while true; do
+        if timeout 5 incus exec "$name" -- true </dev/null &>/dev/null; then
+          break
+        fi
+        sleep 1
+        attempts=$((attempts + 1))
+        if [[ $attempts -ge 30 ]]; then
+          echo "  ⚠️  Timed out waiting for $name" >&2
+          continue 2
+        fi
+      done
+    fi
+    if ! is_debian "$name"; then
+      echo "  ⚠️  WARNING: $name is tagged as agent-incus but is not Debian/Ubuntu — skipping update"
+      [[ "$was_stopped" == "1" ]] && incus stop "$name"
+      continue
+    fi
+    log "Updating $name..."
+    cmd_update "$name" || true
+    if [[ "$was_stopped" == "1" ]]; then
+      log "Stopping $name..."
+      incus stop "$name"
+    fi
+  done < <(echo "$containers")
+}
+
+[[ $# -eq 0 ]] && usage
+
+case "$1" in
+  -h|--help|help)
+    usage
+    ;;
+  -s|shell)
+    shift
+    exec "$SCRIPT_DIR/incus.shell" "$@"
+    ;;
+  -i|init)
+    shift
+    exec "$SCRIPT_DIR/incus.init" "$@"
+    ;;
+  -n|net)
+    shift
+    exec "$SCRIPT_DIR/incus.network" "$@"
+    ;;
+  -u|update)
+    shift
+    [[ $# -lt 1 ]] && error "Usage: incs update <container>"
+    cmd_update "$1"
+    ;;
+  -ua|update-all)
+    cmd_update_all
+    ;;
+  -*)
+    error "Unknown command: $1 (try incs -h)"
+    ;;
+  *)
+    # Default: shell into container
+    exec "$SCRIPT_DIR/incus.shell" "$@"
+    ;;
+esac

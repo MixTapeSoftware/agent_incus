@@ -19,14 +19,16 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Files to link
 FILES=(
+  "incs"
   "incus.shell"
   "incus.init"
+  "incus.network"
   "incus.macos.setup"
 )
 
 # Short aliases: alias_name:target_file
-ALIAS_NAMES=("incs" "inci")
-ALIAS_TARGETS=("incus.shell" "incus.init")
+ALIAS_NAMES=("inci" "incn")
+ALIAS_TARGETS=("incus.init" "incus.network")
 
 # Ensure ~/.local/bin exists
 mkdir -p ~/.local/bin
