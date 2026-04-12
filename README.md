@@ -293,7 +293,7 @@ incs -ua
 
 `incs -ua` starts stopped containers, updates them, then stops them again. Containers that were already running are left running. Only containers tagged with `user.managed-by=agent-incus` (set automatically during `incs -i`) are updated. Non-Debian containers are skipped.
 
-Logs are written to `/var/log/incs/` and cleaned up on success.
+Logs are written to `~/.local/state/incs/logs/` and cleaned up on success.
 
 #### Scheduled Updates
 
@@ -312,7 +312,7 @@ If an update fails, you'll see a notification the next time you open a terminal:
 
 ```
 ⚠️  incs update failed (2026-04-11 19:00): avex mix-claude
-   Run 'ls /var/log/incs/' to see logs
+   Run 'ls ~/.local/state/incs/logs/' to see logs
 ```
 
 To enable this, add the notification hook to your shell:

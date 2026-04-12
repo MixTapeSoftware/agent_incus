@@ -11,8 +11,9 @@ NC='\033[0m'
 log()   { echo -e "${GREEN}[+]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 
-INCS_LOG_DIR="${INCS_LOG_DIR:-/var/log/incs}"
-INCS_STATUS_FILE="$HOME/.local/state/incs/last-update"
+INCS_STATE_DIR="$HOME/.local/state/incs"
+INCS_LOG_DIR="${INCS_LOG_DIR:-$INCS_STATE_DIR/logs}"
+INCS_STATUS_FILE="$INCS_STATE_DIR/last-update"
 
 usage() {
   cat <<'EOF'
@@ -53,10 +54,7 @@ is_debian() {
 }
 
 ensure_log_dir() {
-  if [[ ! -d "$INCS_LOG_DIR" ]]; then
-    sudo mkdir -p "$INCS_LOG_DIR"
-    sudo chown "$(id -u):$(id -g)" "$INCS_LOG_DIR"
-  fi
+  mkdir -p "$INCS_LOG_DIR"
 }
 
 write_status() {
@@ -212,7 +210,7 @@ if [[ -f "$HOME/.local/state/incs/last-update" ]]; then
   _incs_details=$(grep '^details=' "$HOME/.local/state/incs/last-update" | cut -d= -f2-)
   if [[ "$_incs_status" == "failed" ]]; then
     echo -e "\033[1;33m⚠️  incs update failed ($_incs_date): $_incs_details\033[0m"
-    echo "   Run 'ls /var/log/incs/' to see logs"
+    echo "   Run 'ls ~/.local/state/incs/logs/' to see logs"
   fi
   unset _incs_status _incs_date _incs_details
 fi
