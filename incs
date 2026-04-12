@@ -41,15 +41,29 @@ is_debian() {
   incus exec "$container" -- sh -c 'test -f /etc/debian_version' </dev/null &>/dev/null
 }
 
+UPDATE_LOG="/tmp/incs-update-$(date +%Y%m%d-%H%M%S).log"
+
 cmd_update() {
   local container="$1"
-  incus exec "$container" -- sh -c '
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq && apt-get upgrade -y
-  ' </dev/null || {
-    echo "  ⚠️  Failed to update $container" >&2
-    return 1
-  }
+  local logfile="${2:-}"
+  if [[ -n "$logfile" ]]; then
+    echo "=== $container $(date) ===" >> "$logfile"
+    incus exec "$container" -- sh -c '
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq && apt-get upgrade -y
+    ' </dev/null >> "$logfile" 2>&1 || {
+      echo "  ⚠️  Failed to update $container" >&2
+      return 1
+    }
+  else
+    incus exec "$container" -- sh -c '
+      export DEBIAN_FRONTEND=noninteractive
+      apt-get update -qq && apt-get upgrade -y
+    ' </dev/null || {
+      echo "  ⚠️  Failed to update $container" >&2
+      return 1
+    }
+  fi
   log "Updated $container"
 }
 
@@ -62,6 +76,10 @@ cmd_update_all() {
     echo "No incus-init managed containers found"
     return
   fi
+
+  local failed=()
+  local logfile="$UPDATE_LOG"
+
   while IFS=, read -r name status; do
     local was_stopped=0
     if [[ "$status" == "STOPPED" ]]; then
@@ -78,6 +96,7 @@ cmd_update_all() {
         attempts=$((attempts + 1))
         if [[ $attempts -ge 30 ]]; then
           echo "  ⚠️  Timed out waiting for $name" >&2
+          failed+=("$name")
           continue 2
         fi
       done
@@ -88,12 +107,24 @@ cmd_update_all() {
       continue
     fi
     log "Updating $name..."
-    cmd_update "$name" || true
+    if ! cmd_update "$name" "$logfile"; then
+      failed+=("$name")
+    fi
     if [[ "$was_stopped" == "1" ]]; then
       log "Stopping $name..."
       incus stop "$name"
     fi
   done < <(echo "$containers")
+
+  echo ""
+  if [[ ${#failed[@]} -gt 0 ]]; then
+    echo "⚠️  Failed: ${failed[*]}"
+    echo "   See $logfile for details"
+  else
+    # Clean up log on full success
+    rm -f "$logfile"
+    log "All containers updated successfully"
+  fi
 }
 
 [[ $# -eq 0 ]] && usage

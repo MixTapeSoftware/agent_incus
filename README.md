@@ -53,14 +53,33 @@ incs my-project claude
 
 | Script | Alias | Purpose |
 |---|---|---|
+| `incs` | — | Unified CLI (shell, init, network, update) |
 | `incus.init` | `inci` | Create and provision a container |
-| `incus.shell` | `incs` | Open a login shell (or run a command) in a container |
+| `incus.shell` | — | Open a login shell (or run a command) in a container |
+| `incus.network` | `incn` | Manage port proxy devices |
 | `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
 | `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin` |
 
+### incs — Unified CLI
 
+`incs` is the main entrypoint. It routes to the underlying scripts:
 
-The full names (`incus.init`, `incus.shell`) also work.
+```bash
+incs my-project                        # Shell into container (default)
+incs -s my-project                     # Shell (explicit)
+incs -s my-project mix test            # Run a command in container
+incs -i my-project                     # Create a new container
+incs -i my-project --from base-dev     # Create from template
+incs -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
+incs -n my-project -b 10.0.0.5 4000   # Proxy port 4000 on a specific address
+incs -n my-project -l                  # List active proxies
+incs -n my-project -r 4000            # Remove proxy for port 4000
+incs -n my-project -r all             # Remove all proxies
+incs -u my-project                     # Update packages in a container
+incs -ua                               # Update all agent-incus containers
+```
+
+The individual scripts and aliases (`inci`, `incn`) still work directly.
 
 ## incus.init Options
 
@@ -187,12 +206,20 @@ incus image delete incus-init/my-base  # remove one
 
 ### Expose Container Ports
 
-To access a service running inside a container from your host, either forward the internal localhost to host localhost:
+To access a service running inside a container from your host:
 
 ```bash
-incus config device add project-dev web proxy \
-  listen=tcp:127.0.0.1:4000 \
-  connect=tcp:127.0.0.1:4000
+# Proxy one or more ports to localhost
+incs -n project-dev 4000 3241
+
+# Proxy to a specific address (e.g. Tailscale IP)
+incs -n project-dev -b 100.69.177.88 4000
+
+# List active proxies
+incs -n project-dev -l
+
+# Remove a proxy
+incs -n project-dev -r 4000
 ```
 
 Or use the container/VM IP directly — find it with `incus list` (Linux) or `colima list` (macOS). On macOS, the Colima VM IP (e.g. `192.168.64.6`) is a private address only accessible from your Mac.
@@ -217,6 +244,26 @@ uvicorn main:app --host 0.0.0.0
 
 # Vite (Vue, Svelte, etc.)
 npm run dev -- --host 0.0.0.0
+```
+
+### Updating Containers
+
+Containers don't have sudo by default, so package updates run from the host via `incus exec`:
+
+```bash
+# Update a single container
+incs -u my-project
+
+# Update all agent-incus managed containers
+incs -ua
+```
+
+`incs -ua` starts stopped containers, updates them, then stops them again. Only containers tagged with `user.managed-by=agent-incus` (set automatically during `inci`) are updated. Non-Debian containers are skipped.
+
+To tag existing containers retroactively:
+
+```bash
+for c in $(incus list --format csv --columns n); do incus config set "$c" user.managed-by=agent-incus && echo "Tagged $c"; done
 ```
 
 ### Snapshots
