@@ -37,9 +37,6 @@ Options:
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
   -t, --template            Save container as a reusable local template (implies --no-mount)
-  --1pass                   Install 1Password CLI
-  --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
-  --entire                  Install Entire CLI (https://github.com/entireio/cli)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
@@ -48,6 +45,10 @@ Options:
   --no-tui                  Skip interactive component selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
+
+Components are defined in the components/ directory. Some provide CLI flags
+(e.g. --1pass, --gh-token, --entire) to pre-select them without the TUI.
+Drop a new .sh file in components/ to add your own.
 EOF
   exit 1
 }
@@ -232,13 +233,6 @@ WORKSPACE_PATH="$PWD"
 MOUNT_PATH="/workspace"
 BASE_IMAGE="images:ubuntu/24.04"
 CONTAINER_NAME=""
-USE_1PASSWORD=0
-ONEPASSWORD_SERVICE_KEY=""
-USE_GH_TOKEN=0
-GH_TOKEN_VALUE=""
-GH_USER_NAME=""
-GH_USER_EMAIL=""
-USE_ENTIRE=0
 DRY_RUN=0
 NO_TUI=0
 SAVE_TEMPLATE=0
@@ -248,28 +242,53 @@ MAP_USER=0
 IDMAP_METHOD=""
 
 # ---------------------------------------------------------------------------
-# Component registry — one line per component: id:name:description:default
+# Component discovery — reads components/*.sh plugin files
 # ---------------------------------------------------------------------------
-COMPONENTS=(
-  "docker:Docker:Container runtime & compose:1"
-  "chromium:Chromium/Playwright:Headless browser for testing:0"
-  "openspec:OpenSpec:Spec-driven development CLI:0"
-  "rtkplus:rtk:AI coding agent toolkit:0"
-  "fzf-bat:fzf + bat:Interactive search & file preview:0"
-  "claude-code:Claude Code:AI coding assistant:0"
-  "1pass:1Password CLI:Password manager CLI:0"
-  "gh-auth:GitHub Auth:GitHub token & git credentials:0"
-  "entire:Entire CLI:Entire CLI tool:0"
-  "just:just:Command runner for project tasks:0"
-  "glow:Glow:Terminal markdown viewer:0"
-  "codex:Codex:OpenAI coding agent:0"
-)
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+COMPONENTS_DIR="$SCRIPT_DIR/components"
+
+declare -a _C_ID=() _C_NAME=() _C_DESC=() _C_FILE=()
 declare -A SELECTED=()
-for _entry in "${COMPONENTS[@]}"; do
-  IFS=: read -r _id _ _ _default <<< "$_entry"
-  SELECTED[$_id]=$_default
+declare -A _C_CLI_MAP=()   # CLI flag -> component ID
+COMPONENT_COUNT=0
+
+for _f in "$COMPONENTS_DIR"/*.sh; do
+  [[ -f "$_f" ]] || continue
+  # Extract metadata in a subshell to avoid side effects
+  _meta=$(bash -c '
+    COMPONENT_ID="" COMPONENT_NAME="" COMPONENT_DESC="" COMPONENT_DEFAULT=0
+    COMPONENT_CLI_FLAGS="" COMPONENT_NEEDS_PROMPT=0 COMPONENT_RUN_ON_LAUNCH=0
+    source "$1" 2>/dev/null
+    printf "%s\n%s\n%s\n%s\n%s\n%s\n%s\n" \
+      "$COMPONENT_ID" "$COMPONENT_NAME" "$COMPONENT_DESC" "$COMPONENT_DEFAULT" \
+      "$COMPONENT_CLI_FLAGS" "$COMPONENT_NEEDS_PROMPT" "$COMPONENT_RUN_ON_LAUNCH"
+  ' _ "$_f")
+
+  _i=$COMPONENT_COUNT
+  IFS=$'\n' read -d '' -r _cid _cname _cdesc _cdefault _ccli _cprompt _claunch <<< "$_meta" || true
+  [[ -z "$_cid" ]] && continue
+
+  _C_ID[$_i]="$_cid"
+  _C_NAME[$_i]="$_cname"
+  _C_DESC[$_i]="$_cdesc"
+  _C_FILE[$_i]="$_f"
+  SELECTED[$_cid]="${_cdefault:-0}"
+
+  # Map CLI flags to component IDs
+  for _flag in $_ccli; do
+    _C_CLI_MAP[$_flag]="$_cid"
+  done
+
+  COMPONENT_COUNT=$((_i + 1))
 done
-unset _entry _id _default
+unset _f _meta _i _cid _cname _cdesc _cdefault _ccli _cprompt _claunch _flag
+
+# Build the COMPONENTS array the TUI expects (id:name:desc:default)
+COMPONENTS=()
+for ((_i=0; _i<COMPONENT_COUNT; _i++)); do
+  COMPONENTS+=("${_C_ID[$_i]}:${_C_NAME[$_i]}:${_C_DESC[$_i]}:${SELECTED[${_C_ID[$_i]}]}")
+done
+unset _i
 
 # ---------------------------------------------------------------------------
 # TUI component selector
@@ -337,15 +356,10 @@ show_tui() {
 
   tput cnorm 2>/dev/null || true
   printf '\033[2J\033[H'
-
-  # Sync USE_* flags unconditionally from SELECTED
-  USE_1PASSWORD=$([[ "${SELECTED[1pass]}" == "1" ]] && echo 1 || echo 0)
-  USE_GH_TOKEN=$([[ "${SELECTED[gh-auth]}" == "1" ]] && echo 1 || echo 0)
-  USE_ENTIRE=$([[ "${SELECTED[entire]}" == "1" ]] && echo 1 || echo 0)
 }
 
 # ---------------------------------------------------------------------------
-# Install functions — each wraps an installation section
+# Core install functions (not components)
 # ---------------------------------------------------------------------------
 install_ohmyzsh() {
   log "Installing Oh My Zsh..."
@@ -369,376 +383,50 @@ RCBLOCK
 ZSHEOF
 }
 
-install_docker() {
-  # Container config is always needed — not preserved in templates.
-  #
-  # Security tradeoff: Docker-in-Incus requires relaxing the inner container's
-  # sandbox so Docker can manage its own containers. Specifically:
-  #   - nesting:  lets the container create cgroups/namespaces (container primitives)
-  #   - mknod:    lets it create device nodes in /dev/ (kernel driver access)
-  #   - setxattr: lets it set security labels on files
-  #
-  # A normal Incus container can't do any of this. Enabling these means a process
-  # that escapes Docker inside the container has more capabilities than it would
-  # in a plain Incus container. The Incus boundary still protects the host — it's
-  # one wall instead of two. For dev containers this is fine; for untrusted code,
-  # consider using --no-sudo to limit what the container user can do.
-  log "Configuring container for Docker..."
-  incus config set "$CONTAINER_NAME" security.nesting=true
-  incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
-  incus config set "$CONTAINER_NAME" security.syscalls.intercept.setxattr=true
-
-  # AppArmor (mandatory access control) causes two problems for Docker-in-Incus:
-  #   1. runc fails with "ip_unprivileged_port_start: permission denied"
-  #      because AppArmor's default profile restricts nested containers.
-  #   2. Docker checks if AppArmor is enabled, sees "Y", and tries to load
-  #      its "docker-default" profile via securityfs — which isn't accessible
-  #      inside an Incus container, so it fails.
-  #
-  # Fix: run unconfined (removes restriction #1), then mask the AppArmor
-  # enabled flag so Docker thinks it's not available (removes #2).
-  #
-  # Security tradeoff: Docker's AppArmor profile normally restricts containers
-  # from writing to /proc/sys, mounting filesystems, and accessing raw kernel
-  # interfaces. We lose that layer here, but Incus compensates with its own
-  # isolation: user namespaces (container root maps to an unprivileged host
-  # UID), seccomp syscall filtering, PID/network/mount namespaces, and cgroup
-  # resource limits. An attacker would need to escape both Docker and Incus to
-  # reach the host. Loading the profile from outside is impractical — Docker
-  # expects to manage AppArmor profiles dynamically, and exposing securityfs
-  # into the container would let it weaken the host's own confinement.
-  incus config set "$CONTAINER_NAME" raw.lxc "lxc.apparmor.profile=unconfined"
-  # raw.lxc is only read at container start, so restart to apply it.
-  incus restart "$CONTAINER_NAME"
-  wait_for_container "$CONTAINER_NAME"
-  wait_for_network "$CONTAINER_NAME"
-
-  if incus exec "$CONTAINER_NAME" -- sh -c 'command -v docker' &>/dev/null; then
-    log "Docker binary already installed, skipping package install"
-    incus restart "$CONTAINER_NAME"
-    wait_for_container "$CONTAINER_NAME"
-    wait_for_network "$CONTAINER_NAME"
-    return
-  fi
-
-  log "Installing Docker..."
-
-  # Mask AppArmor enabled flag so Docker skips it entirely.
-  incus exec "$CONTAINER_NAME" -- sh -s <<'APPARMOR_EOF'
-    if [ -f /sys/module/apparmor/parameters/enabled ] && \
-       grep -q Y /sys/module/apparmor/parameters/enabled 2>/dev/null; then
-      echo N > /run/apparmor_disabled
-      mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled
-
-      # Make the mask persistent across reboots.
-      cat > /etc/systemd/system/mask-apparmor.service <<'UNIT'
-[Unit]
-Description=Mask AppArmor enabled flag for Docker-in-Incus
-DefaultDependencies=no
-Before=docker.service containerd.service docker.socket
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c 'echo N > /run/apparmor_disabled && mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled'
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-      systemctl daemon-reload
-      systemctl enable mask-apparmor.service
-    fi
-APPARMOR_EOF
-
-  incus exec "$CONTAINER_NAME" -- sh -s <<'DOCKER_EOF'
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update && apt-get install -y ca-certificates curl gnupg
-    install -m 0755 -d /etc/apt/keyrings
-    curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /etc/apt/keyrings/docker.gpg
-    chmod a+r /etc/apt/keyrings/docker.gpg
-    echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo "$VERSION_CODENAME") stable" > /etc/apt/sources.list.d/docker.list
-    apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
-    systemctl enable docker && systemctl start docker
-DOCKER_EOF
-  incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER"
-  wait_for_container "$CONTAINER_NAME"
-}
-
-install_chromium() {
-  # Ensure Chromium runtime deps are present — templates preserve Playwright's
-  # browser binaries but not always the shared libraries they need.
-  incus exec "$CONTAINER_NAME" -- sh -s <<'CHROMIUM_DEPS_EOF'
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq && apt-get install -y -qq \
-      libnss3 libnspr4 libatk1.0-0t64 libatk-bridge2.0-0t64 \
-      libcups2t64 libdrm2 libxcomposite1 libxdamage1 libxfixes3 \
-      libxrandr2 libgbm1 libpango-1.0-0 libcairo2 libasound2t64 \
-      libatspi2.0-0t64 libxshmfence1 libxkbcommon0 fonts-liberation xdg-utils \
-      > /dev/null
-CHROMIUM_DEPS_EOF
-
-  if ! incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx playwright --version' &>/dev/null; then
-    log "Installing Playwright + Chromium browser..."
-    incus exec "$CONTAINER_NAME" -- npm install -g playwright
-    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx -y playwright install --with-deps chromium'
-  else
-    log "Playwright already installed, skipping"
-  fi
-
-  # Symlink Playwright's Chromium as google-chrome so Wallaby and other tools
-  # can find it on PATH. Run every time — symlinks don't survive template launches.
-  if ! incus exec "$CONTAINER_NAME" -- test -x /usr/local/bin/google-chrome; then
-    incus exec "$CONTAINER_NAME" -- sh -c "
-      chrome_path=\$(find /home/$HOST_USER/.cache/ms-playwright -name chrome -path '*/chrome-linux64/chrome' -type f 2>/dev/null | head -1)
-      if [ -n \"\$chrome_path\" ]; then
-        ln -sf \"\$chrome_path\" /usr/local/bin/google-chrome
-      fi
-    "
-  fi
-
-  # Install chromedriver for tools like Wallaby that expect it on PATH.
-  # Ubuntu's chromium-chromedriver is a snap transitional package that doesn't
-  # work in containers, so we download from Chrome for Testing.
-  if ! incus exec "$CONTAINER_NAME" -- test -x /usr/local/bin/chromedriver; then
-    incus exec "$CONTAINER_NAME" -- sh -s <<'CHROMEDRIVER_EOF'
-      set -e
-      URL=$(curl -s https://googlechromelabs.github.io/chrome-for-testing/last-known-good-versions-with-downloads.json \
-        | python3 -c "import sys,json; d=json.load(sys.stdin); print([x['url'] for x in d['channels']['Stable']['downloads']['chromedriver'] if x['platform']=='linux64'][0])")
-      curl -sfL -o /tmp/chromedriver.zip "$URL"
-      cd /tmp && unzip -o chromedriver.zip
-      mv chromedriver-linux64/chromedriver /usr/local/bin/chromedriver
-      chmod +x /usr/local/bin/chromedriver
-      rm -rf /tmp/chromedriver.zip /tmp/chromedriver-linux64
-CHROMEDRIVER_EOF
-  fi
-}
-
-install_fzf_bat() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v fzf' &>/dev/null; then
-    log "fzf + bat already installed, skipping"
-    return
-  fi
-  log "Installing fzf and bat via mise..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-  set -e
-  export MISE_TRUSTED_CONFIG_PATHS="/workspace"
-  mise use -g go@latest fzf@latest bat@latest
-
-  cat >> ~/.zshrc <<'FZF'
-
-# fzf + bat aliases
-alias f="fzf --preview 'bat {-1} --color=always'"
-gdiff() {
-  local preview="git diff $@ --color=always -- {-1}"
-  git diff $@ --name-only | fzf -m --ansi --preview $preview
-}
-FZF
-EOF
-}
-
-install_claude_code() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/claude"' &>/dev/null; then
-    log "Claude Code already installed, skipping"
-  else
-    log "Installing Claude Code..."
-    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
-    set -e
-    curl -fsSL https://claude.ai/install.sh | bash
-CLAUDE
-  fi
-
-}
-
-install_1password() {
-  if incus exec "$CONTAINER_NAME" -- sh -c 'command -v op' &>/dev/null; then
-    log "1Password CLI already installed, skipping binary install"
-  else
-    log "Installing 1Password CLI..."
-    incus exec "$CONTAINER_NAME" -- sh -c '
-      wget -q https://cache.agilebits.com/dist/1P/op2/pkg/v2.30.0/op_linux_amd64_v2.30.0.zip -O /tmp/op.zip
-      unzip -q /tmp/op.zip -d /tmp/ && mv /tmp/op /usr/local/bin/ && chmod +x /usr/local/bin/op && rm /tmp/op.zip
-    '
-  fi
-  log "Setting 1Password token via container environment..."
-  incus config set "$CONTAINER_NAME" environment.OP_SERVICE_ACCOUNT_TOKEN="$ONEPASSWORD_SERVICE_KEY"
-
-  # Also write to .zshenv so the token survives `su -` login shells
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "echo 'export OP_SERVICE_ACCOUNT_TOKEN=\"$ONEPASSWORD_SERVICE_KEY\"' >> ~/.zshenv"
-  unset ONEPASSWORD_SERVICE_KEY
-}
-
-install_gh_auth() {
-  log "Setting GitHub token via container environment..."
-  incus config set "$CONTAINER_NAME" environment.GH_TOKEN="$GH_TOKEN_VALUE"
-
-  # Write to .zshenv so the token survives `su -` login shells
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "echo 'export GH_TOKEN=\"$GH_TOKEN_VALUE\"' >> ~/.zshenv"
-
-  log "Configuring git credential helper and identity..."
-  incus exec "$CONTAINER_NAME" --env "GH_TOKEN=$GH_TOKEN_VALUE" -- su - "$HOST_USER" -c "
-    gh auth setup-git
-    git config --global user.name '$GH_USER_NAME'
-    git config --global user.email '$GH_USER_EMAIL'
-  "
-  unset GH_TOKEN_VALUE
-}
-
-install_openspec() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v openspec' &>/dev/null; then
-    log "OpenSpec already installed, skipping"
-    return
-  fi
-  log "Installing OpenSpec..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-    set -e
-    sudo npm install -g @fission-ai/openspec@latest
-    export OPENSPEC_TELEMETRY=0
-    if [[ -d /workspace ]]; then
-      cd /workspace && openspec init --tools claude
-    fi
-EOF
-}
-
-install_rtkplus() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/rtk"' &>/dev/null; then
-    log "rtk already installed, skipping"
-    return
-  fi
-  log "Installing rtk..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "bash -s" <<EOF
-    set -e
-    curl -fsSL https://raw.githubusercontent.com/rtk-ai/rtk/refs/heads/master/install.sh | sh
-    export PATH="\$HOME/.local/bin:\$PATH"
-    if [[ -d /workspace && -n "$RTK_INIT_CMD" ]]; then
-      cd /workspace && $RTK_INIT_CMD --auto-patch
-      if [[ -f /workspace/.gitignore ]] && ! grep -q '\.rtk' /workspace/.gitignore; then
-        echo '.rtk/' >> /workspace/.gitignore
-      fi
-    fi
-EOF
-}
-
-install_just() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/just"' &>/dev/null; then
-    log "just already installed, skipping"
-    return
-  fi
-  log "Installing just..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-    set -e
-    curl -fsSL https://just.systems/install.sh | bash -s -- --to "$HOME/.local/bin"
-    export PATH="$HOME/.local/bin:$PATH"
-    just --version
-EOF
-}
-
-install_entire() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/go/bin/entire"' &>/dev/null; then
-    log "Entire CLI already installed, skipping"
-    return
-  fi
-  log "Installing Entire CLI..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-    set -e
-    mise use -g go@latest
-    export PATH="$HOME/go/bin:$(mise where go)/bin:$PATH"
-    go install github.com/entireio/cli/cmd/entire@latest
-    if [[ -d /workspace/.git ]]; then
-      cd /workspace && entire enable --telemetry=false
-    fi
-EOF
-}
-
-install_glow() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v glow' &>/dev/null; then
-    log "Glow already installed, skipping"
-    return
-  fi
-  log "Installing Glow..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-    set -e
-    sudo mkdir -p /etc/apt/keyrings
-    curl -fsSL https://repo.charm.sh/apt/gpg.key | sudo gpg --dearmor -o /etc/apt/keyrings/charm.gpg
-    echo "deb [signed-by=/etc/apt/keyrings/charm.gpg] https://repo.charm.sh/apt/ * *" | sudo tee /etc/apt/sources.list.d/charm.list
-    sudo apt-get update && sudo apt-get install -y glow
-EOF
-}
-
-install_codex() {
-  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v codex' &>/dev/null; then
-    log "Codex already installed, skipping"
-    return
-  fi
-  log "Installing Codex..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
-    set -e
-    sudo npm install -g @openai/codex
-EOF
-}
-
 
 # ---------------------------------------------------------------------------
-# Token prompt functions — defined once, called once after TUI
+# Component dispatch helpers
 # ---------------------------------------------------------------------------
-prompt_1password_token() {
-  echo ""
-  log "1Password CLI requires a service account token"
-  echo "Create one at: https://start.1password.com/settings/automation"
-  read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
-  echo ""
-  if [[ -z "$ONEPASSWORD_SERVICE_KEY" ]]; then error "Token required"; fi
+# Source a component file and call its functions. Each source overwrites
+# the component_* functions, so we process one at a time.
+_run_component_prompts() {
+  for _f in "$COMPONENTS_DIR"/*.sh; do
+    [[ -f "$_f" ]] || continue
+    source "$_f"
+    [[ "${SELECTED[$COMPONENT_ID]:-0}" != "1" ]] && continue
+    [[ "${COMPONENT_NEEDS_PROMPT:-0}" != "1" ]] && continue
+    component_prompt
+  done
 }
 
-RTK_INIT_CMD=""
+_run_component_installs() {
+  local from_template="$1"
+  for _f in "$COMPONENTS_DIR"/*.sh; do
+    [[ -f "$_f" ]] || continue
+    source "$_f"
+    [[ "${SELECTED[$COMPONENT_ID]:-0}" != "1" ]] && continue
 
-prompt_rtk_agent() {
-  echo ""
-  log "Select an agent for rtk init"
-  echo "  CLI command output compression for token efficiency"
-  echo ""
-  echo "  1) Claude Code / Copilot (default)"
-  echo "  2) Gemini CLI"
-  echo "  3) Codex (OpenAI)"
-  echo "  4) Cursor"
-  echo "  5) Windsurf"
-  echo "  6) Cline / Roo Code"
-  echo "  7) Skip (don't init)"
-  read -rp "Choice [1]: " rtk_choice
-  rtk_choice="${rtk_choice:-1}"
-  case "$rtk_choice" in
-    1) RTK_INIT_CMD="rtk init -g" ;;
-    2) RTK_INIT_CMD="rtk init -g --gemini" ;;
-    3) RTK_INIT_CMD="rtk init -g --codex" ;;
-    4) RTK_INIT_CMD="rtk init -g --agent cursor" ;;
-    5) RTK_INIT_CMD="rtk init --agent windsurf" ;;
-    6) RTK_INIT_CMD="rtk init --agent cline" ;;
-    7) RTK_INIT_CMD="" ;;
-    *) RTK_INIT_CMD="rtk init -g" ;;
-  esac
-}
-
-prompt_gh_token() {
-  echo ""
-  log "GitHub auth requires a fine-grained personal access token"
-  echo "Create one at: https://github.com/settings/tokens?type=beta"
-  echo "Recommended scopes: Contents (read/write), Metadata (read)"
-  read -rsp "Enter GitHub token: " GH_TOKEN_VALUE
-  echo ""
-  if [[ -z "$GH_TOKEN_VALUE" ]]; then error "GitHub token required"; fi
-
-  local default_name default_email
-  default_name="$(git config --global user.name 2>/dev/null || true)"
-  default_email="$(git config --global user.email 2>/dev/null || true)"
-
-  read -rp "Git user.name [${default_name:-}]: " GH_USER_NAME
-  GH_USER_NAME="${GH_USER_NAME:-$default_name}"
-  if [[ -z "$GH_USER_NAME" ]]; then error "Git user.name required"; fi
-
-  read -rp "Git user.email [${default_email:-}]: " GH_USER_EMAIL
-  GH_USER_EMAIL="${GH_USER_EMAIL:-$default_email}"
-  if [[ -z "$GH_USER_EMAIL" ]]; then error "Git user.email required"; fi
+    if [[ "$from_template" == "1" ]]; then
+      # Template launch: only run components that declare RUN_ON_LAUNCH
+      if [[ "${COMPONENT_RUN_ON_LAUNCH:-0}" == "1" ]]; then
+        if declare -F component_is_installed >/dev/null && component_is_installed; then
+          # Already installed but needs on_launch hooks (symlinks, config, etc.)
+          if declare -F component_on_launch >/dev/null; then
+            component_on_launch
+          fi
+        else
+          component_install
+        fi
+      fi
+    else
+      # Fresh install
+      if declare -F component_is_installed >/dev/null && component_is_installed; then
+        log "$COMPONENT_NAME already installed, skipping"
+        continue
+      fi
+      component_install
+    fi
+  done
 }
 
 save_template() {
@@ -783,9 +471,6 @@ while [[ $# -gt 0 ]]; do
     -f|--from)       [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="incus-init/$2"; shift 2 ;;
     -i|--image)      [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="$2"; shift 2 ;;
     -t|--template) SAVE_TEMPLATE=1; shift ;;
-    --1pass)         SELECTED[1pass]=1; shift ;;
-    --gh-token)      SELECTED[gh-auth]=1; shift ;;
-    --entire)        SELECTED[entire]=1; shift ;;
     --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
@@ -794,7 +479,15 @@ while [[ $# -gt 0 ]]; do
     --no-tui)        NO_TUI=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
-    -*)              error "Unknown option: $1" ;;
+    -*)
+      # Check if it's a component CLI flag
+      if [[ -n "${_C_CLI_MAP[$1]:-}" ]]; then
+        SELECTED[${_C_CLI_MAP[$1]}]=1
+        shift
+      else
+        error "Unknown option: $1"
+      fi
+      ;;
     *)               CONTAINER_NAME="$1"; shift ;;
   esac
 done
@@ -802,7 +495,6 @@ done
 # ---------------------------------------------------------------------------
 # macOS pre-flight (noop on Linux)
 # ---------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/incus.macos.setup"
 
 # ---------------------------------------------------------------------------
@@ -842,19 +534,12 @@ fi
 # ---------------------------------------------------------------------------
 if [[ "$NO_TUI" == "0" ]]; then
   show_tui
-else
-  # --no-tui: sync USE_* from defaults/CLI flags
-  USE_1PASSWORD=$([[ "${SELECTED[1pass]}" == "1" ]] && echo 1 || echo 0)
-  USE_GH_TOKEN=$([[ "${SELECTED[gh-auth]}" == "1" ]] && echo 1 || echo 0)
-  USE_ENTIRE=$([[ "${SELECTED[entire]}" == "1" ]] && echo 1 || echo 0)
 fi
 
 # ---------------------------------------------------------------------------
-# Token prompts — called once, after TUI decision
+# Component prompts — called once, after TUI decision
 # ---------------------------------------------------------------------------
-if [[ "${SELECTED[rtkplus]}" == "1" ]]; then prompt_rtk_agent; fi
-if [[ "${SELECTED[1pass]}" == "1" ]]; then prompt_1password_token; fi
-if [[ "${SELECTED[gh-auth]}" == "1" ]]; then prompt_gh_token; fi
+_run_component_prompts
 
 # ---------------------------------------------------------------------------
 # Dry-run summary
@@ -1052,18 +737,7 @@ fi  # end FROM_BASE_IMAGE == 0
 # ---------------------------------------------------------------------------
 # Install selected components
 # ---------------------------------------------------------------------------
-if [[ "${SELECTED[docker]}" == "1" ]]; then install_docker; fi
-if [[ "${SELECTED[chromium]}" == "1" ]]; then install_chromium; fi
-if [[ "${SELECTED[openspec]}" == "1" ]]; then install_openspec; fi
-if [[ "${SELECTED[rtkplus]}" == "1" ]]; then install_rtkplus; fi
-if [[ "${SELECTED[fzf-bat]}" == "1" ]]; then install_fzf_bat; fi
-if [[ "${SELECTED[claude-code]}" == "1" ]]; then install_claude_code; fi
-if [[ "${SELECTED[1pass]}" == "1" ]]; then install_1password; fi
-if [[ "${SELECTED[gh-auth]}" == "1" ]]; then install_gh_auth; fi
-if [[ "${SELECTED[entire]}" == "1" ]]; then install_entire; fi
-if [[ "${SELECTED[just]}" == "1" ]]; then install_just; fi
-if [[ "${SELECTED[glow]}" == "1" ]]; then install_glow; fi
-if [[ "${SELECTED[codex]}" == "1" ]]; then install_codex; fi
+_run_component_installs "$FROM_BASE_IMAGE"
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then

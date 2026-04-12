@@ -96,9 +96,7 @@ Options:
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
   -t, --template            Save container as a reusable local template (implies --no-mount)
-  --1pass                   Install 1Password CLI (prompts for service account token)
-  --gh-token                Configure GitHub auth (prompts for PAT, sets up gh CLI)
-  --entire                  Install Entire CLI (https://github.com/entireio/cli)
+  --<component>             Pre-select a component (e.g. --1pass, --gh-token, --entire)
   --no-mount                Clone repo into container instead of mounting host directory
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
@@ -131,7 +129,9 @@ Every container is provisioned with the following packages before any optional c
 
 ### Optional Components
 
-The TUI lets you pick from the following optional packages during container creation:
+The TUI lets you pick from optional components during container creation. Components are defined as standalone scripts in the `components/` directory — the TUI discovers them automatically.
+
+**Included components:**
 
 | Component | Description |
 |---|---|
@@ -149,6 +149,32 @@ The TUI lets you pick from the following optional packages during container crea
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI flags (`--1pass`, `--gh-token`, `--entire`).
+
+### Adding Custom Components
+
+Drop a `.sh` file in the `components/` directory. The filename prefix controls install order (e.g. `10-` before `50-`). Each file defines a simple contract:
+
+```bash
+# components/50-my-tool.sh
+COMPONENT_ID="my-tool"
+COMPONENT_NAME="My Tool"
+COMPONENT_DESC="Does something useful"
+COMPONENT_DEFAULT=0                # 0=off by default, 1=on
+
+component_is_installed() {
+  incus exec "$CONTAINER_NAME" -- command -v my-tool &>/dev/null
+}
+
+component_install() {
+  log "Installing My Tool..."
+  incus exec "$CONTAINER_NAME" -- sh -c 'curl -fsSL ... | sh'
+}
+```
+
+Optional extras:
+- `COMPONENT_CLI_FLAGS="--my-tool"` — adds a CLI flag to pre-select without the TUI
+- `COMPONENT_NEEDS_PROMPT=1` + `component_prompt()` — collect user input before install
+- `COMPONENT_RUN_ON_LAUNCH=1` + `component_on_launch()` — re-run setup when launching from a template (for symlinks, config that doesn't survive snapshots)
 
 ## The Development Workflow
 
