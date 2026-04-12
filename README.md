@@ -176,6 +176,10 @@ Optional extras:
 - `COMPONENT_NEEDS_PROMPT=1` + `component_prompt()` — collect user input before install
 - `COMPONENT_RUN_ON_LAUNCH=1` + `component_on_launch()` — re-run setup when launching from a template (for symlinks, config that doesn't survive snapshots)
 
+#### How discovery works
+
+Component files are sourced in a **separate bash process** to safely extract metadata without executing install logic. The metadata (ID, name, description, default, CLI flags) is stashed into arrays that the TUI and arg parser use. Glob ordering (`10-docker.sh` before `50-just.sh`) controls both TUI display order and install order — no dependency resolution needed. During install, each component file is sourced into the main process so its functions have access to globals like `$CONTAINER_NAME` and `$HOST_USER`.
+
 ## The Development Workflow
 
 A recommended setup uses two containers sharing the same workspace. The agent container runs with `--no-sudo` so AI tools cannot escalate privileges, while the dev container has full access and credentials:
