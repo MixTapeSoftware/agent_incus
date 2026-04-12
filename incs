@@ -172,6 +172,7 @@ cmd_cron() {
       if ! [[ "$hour" =~ ^[0-9]+$ ]] || [[ "$hour" -gt 23 ]]; then
         error "Invalid hour: $hour (must be 0-23)"
       fi
+      ensure_log_dir
       local incs_path
       incs_path="$(readlink -f "$0")"
       local cron_line="0 $hour * * * $incs_path -ua >> $INCS_LOG_DIR/cron.log 2>&1 $CRON_TAG"
