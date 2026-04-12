@@ -71,7 +71,7 @@ incs -s my-project mix test            # Run a command in container
 incs -i my-project                     # Create a new container
 incs -i my-project --from base-dev     # Create from template
 incs -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
-incs -n my-project -b 10.0.0.5 4000   # Proxy port 4000 on a specific address
+incs -n my-project -b 10.0.0.5 4000   # Proxy on a specific address (e.g. Tailscale IP for remote access)
 incs -n my-project -l                  # List active proxies
 incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
@@ -259,12 +259,6 @@ incs -ua
 ```
 
 `incs -ua` starts stopped containers, updates them, then stops them again. Only containers tagged with `user.managed-by=agent-incus` (set automatically during `inci`) are updated. Non-Debian containers are skipped.
-
-To tag existing containers retroactively:
-
-```bash
-for c in $(incus list --format csv --columns n); do incus config set "$c" user.managed-by=agent-incus && echo "Tagged $c"; done
-```
 
 ### Snapshots
 
