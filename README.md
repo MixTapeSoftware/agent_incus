@@ -40,7 +40,7 @@ This symlinks the helper scripts into `~/.local/bin`.
 
 ```bash
 # Create a container with the current directory mounted as /workspace
-inci my-project
+incs -i my-project
 
 # Open a shell
 incs my-project
@@ -190,14 +190,14 @@ graph TB
 
 ```bash
 # Agent container — no sudo, no credentials
-inci --no-sudo project-agent
+incs -i --no-sudo project-agent
 
 # Dev container — with credentials
-inci --1pass --gh-token project-dev
+incs -i --1pass --gh-token project-dev
 
 # Save as reusable template, then spin up new containers instantly
-inci --template project-base
-inci --from project-base --no-sudo project-agent-2
+incs -i --template project-base
+incs -i --from project-base --no-sudo project-agent-2
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
@@ -209,7 +209,7 @@ Provisioning a container from scratch installs packages, build tools, mise, Oh M
 **Build once:**
 
 ```bash
-inci --template my-base
+incs -i --template my-base
 ```
 
 This provisions the container (without mounting host files), scrubs any tokens, and saves it locally as `incus-init/my-base`. The original container keeps running with its tokens intact.
@@ -218,10 +218,10 @@ This provisions the container (without mounting host files), scrubs any tokens, 
 
 ```bash
 # Spin up a new container from the base image — seconds, not minutes
-inci --from my-base my-project
+incs -i --from my-base my-project
 
 # Same base, different credentials
-inci --from my-base --1pass --gh-token my-dev
+incs -i --from my-base --1pass --gh-token my-dev
 ```
 
 When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected components run.
@@ -288,7 +288,7 @@ incs -u my-project
 incs -ua
 ```
 
-`incs -ua` starts stopped containers, updates them, then stops them again. Containers that were already running are left running. Only containers tagged with `user.managed-by=agent-incus` (set automatically during `inci`) are updated. Non-Debian containers are skipped.
+`incs -ua` starts stopped containers, updates them, then stops them again. Containers that were already running are left running. Only containers tagged with `user.managed-by=agent-incus` (set automatically during `incs -i`) are updated. Non-Debian containers are skipped.
 
 Logs are written to `/var/log/incs/` and cleaned up on success.
 
