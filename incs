@@ -39,6 +39,7 @@ Examples:
   incs -s pb mix test            Run a command in pb
   incs -i pb --from base-dev     Init pb from template
   incs -n pb 4000 3241           Proxy ports 4000 and 3241
+  incs -n pb 4000:8080           Host 4000 -> container 8080
   incs -n pb -l                  List proxies on pb
   incs -u pb                     Update packages in pb
   incs -ua                       Update all agent-incus containers
