@@ -40,6 +40,7 @@ Examples:
   incs -i pb --from base-dev     Init pb from template
   incs -n pb 4000 3241           Proxy ports 4000 and 3241
   incs -n pb 4000:8080           Host 4000 -> container 8080
+  incs -n pb -b 10.0.0.5 4000   Bind to a specific IP (e.g. Tailscale)
   incs -n pb -l                  List proxies on pb
   incs -u pb                     Update packages in pb
   incs -ua                       Update all agent-incus containers
