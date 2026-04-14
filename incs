@@ -24,6 +24,7 @@ Commands:
   -s, shell <container> [cmd]    Shell into container
   -i, init [args...]             Create/provision a new container
   -n, net <container> [ports...] Manage port proxies
+  -d, delete <container>          Force delete a container
   -u, update <container>         Update packages in a container
   -ua, update-all                Update packages in all agent-incus containers
   -h, help                       Show this help
@@ -42,6 +43,7 @@ Examples:
   incs -n pb 4000:8080           Host 4000 -> container 8080
   incs -n pb -b 10.0.0.5 4000   Bind to a specific IP (e.g. Tailscale)
   incs -n pb -l                  List proxies on pb
+  incs -d pb                     Delete pb
   incs -u pb                     Update packages in pb
   incs -ua                       Update all agent-incus containers
   incs cron install              Install 7pm daily update cron
@@ -236,6 +238,12 @@ case "$1" in
   -n|net)
     shift
     exec "$SCRIPT_DIR/incus.network" "$@"
+    ;;
+  -d|delete)
+    shift
+    [[ $# -lt 1 ]] && error "Usage: incs delete <container>"
+    incus delete --force "$1"
+    log "Deleted $1"
     ;;
   -u|update)
     shift
