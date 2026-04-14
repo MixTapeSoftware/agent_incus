@@ -107,6 +107,8 @@ add_proxies() {
     fi
 
     dev="${DEVICE_PREFIX}${host_port}"
+    # Remove existing proxy for this port if it exists, then add fresh.
+    incus config device remove "$CONTAINER" "$dev" 2>/dev/null || true
     incus config device add "$CONTAINER" "$dev" proxy \
       "listen=tcp:${BIND_ADDR}:${host_port}" \
       "connect=tcp:127.0.0.1:${container_port}" || {
