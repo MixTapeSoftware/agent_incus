@@ -70,6 +70,7 @@ incs -s my-project mix test            # Run a command in container
 incs -i my-project                     # Create a new container
 incs -i my-project --from base-dev     # Create from template
 incs -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
+incs -n my-project 4000:8080           # Host 4000 -> container 8080
 incs -n my-project -b 10.0.0.5 4000   # Proxy on a specific address (e.g. Tailscale IP for remote access)
 incs -n my-project -l                  # List active proxies
 incs -n my-project -r 4000            # Remove proxy for port 4000
@@ -244,6 +245,9 @@ To access a service running inside a container from your host:
 ```bash
 # Proxy one or more ports to localhost
 incs -n project-dev 4000 3241
+
+# Map different host and container ports
+incs -n project-dev 4000:8080
 
 # Proxy to a specific address (e.g. Tailscale IP)
 incs -n project-dev -b 100.69.177.88 4000
