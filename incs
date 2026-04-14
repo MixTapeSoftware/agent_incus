@@ -25,6 +25,8 @@ Commands:
   -i, init [args...]             Create/provision a new container
   -n, net <container> [ports...] Manage port proxies
   -d, delete <container>          Force delete a container
+  -k, kill <container>           Stop a container
+  -ka, kill-all                  Stop all agent-incus containers
   -u, update <container>         Update packages in a container
   -ua, update-all                Update packages in all agent-incus containers
   -h, help                       Show this help
@@ -44,6 +46,8 @@ Examples:
   incs -n pb -b 10.0.0.5 4000   Bind to a specific IP (e.g. Tailscale)
   incs -n pb -l                  List proxies on pb
   incs -d pb                     Delete pb
+  incs -k pb                     Stop pb
+  incs -ka                       Stop all agent-incus containers
   incs -u pb                     Update packages in pb
   incs -ua                       Update all agent-incus containers
   incs cron install              Install 7pm daily update cron
@@ -244,6 +248,23 @@ case "$1" in
     [[ $# -lt 1 ]] && error "Usage: incs delete <container>"
     incus delete --force "$1"
     log "Deleted $1"
+    ;;
+  -k|kill)
+    shift
+    [[ $# -lt 1 ]] && error "Usage: incs kill <container>"
+    incus stop "$1"
+    log "Stopped $1"
+    ;;
+  -ka|kill-all)
+    containers=$(incus list user.managed-by=agent-incus status=running --format csv --columns n 2>/dev/null)
+    if [[ -z "$containers" ]]; then
+      echo "No running agent-incus containers"
+    else
+      for c in $containers; do
+        incus stop "$c"
+        log "Stopped $c"
+      done
+    fi
     ;;
   -u|update)
     shift
