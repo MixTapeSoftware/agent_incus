@@ -61,7 +61,7 @@ EOF
 APT_CORE="bash curl git wget sudo unzip tmux zsh"
 APT_BUILD="build-essential pkg-config autoconf automake bison cmake"
 APT_DEVLIBS="libssl-dev libncurses-dev libreadline-dev zlib1g-dev libbz2-dev libsqlite3-dev libffi-dev liblzma-dev libyaml-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev libonig-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libgd-dev unixodbc-dev"
-APT_RUNTIME="gpg ca-certificates psmisc fontconfig fzf bat python3 python3-dev python3-pip python3-venv nodejs npm"
+APT_RUNTIME="gpg ca-certificates psmisc fontconfig fzf bat inotify-tools python3 python3-dev python3-pip python3-venv nodejs npm"
 
 # ---------------------------------------------------------------------------
 # Dependency checks
