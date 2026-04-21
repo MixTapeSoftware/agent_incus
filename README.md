@@ -261,6 +261,20 @@ incs -n project-dev -r 4000
 
 Or use the container/VM IP directly — find it with `incus list` (Linux) or `colima list` (macOS). On macOS, the Colima VM IP (e.g. `192.168.64.6`) is a private address only accessible from your Mac.
 
+#### HTTPS over Tailscale
+
+Combine `incs -n` with [`tailscale serve`](https://tailscale.com/kb/1312/serve) to expose a container app over tailnet HTTPS (tailnet-only, respects ACLs):
+
+```bash
+# Forward host:4000 -> container:4000
+incs -n project-dev 4000:4000
+
+# On the host, terminate TLS with the tailnet cert and proxy to the local port
+tailscale serve --bg --https=443 http://127.0.0.1:4000
+```
+
+Then reach the app from any tailnet device at `https://<host>.<tailnet>.ts.net/`. Requires MagicDNS and HTTPS certificates enabled in the tailnet admin console.
+
 **Important: bind to 0.0.0.0** — most dev servers bind to `localhost` by default, which blocks access from outside the container. You need to bind to all interfaces:
 
 ```bash
