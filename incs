@@ -44,6 +44,7 @@ Examples:
   incs -n pb 4000 3241           Proxy ports 4000 and 3241
   incs -n pb 4000:8080           Host 4000 -> container 8080
   incs -n pb -b 10.0.0.5 4000   Bind to a specific IP (e.g. Tailscale)
+  incs -n pb -H host.ts.net 4000 Bind to the IP resolved from an FQDN
   incs -n pb -l                  List proxies on pb
   incs -d pb                     Delete pb
   incs -k pb                     Stop pb
