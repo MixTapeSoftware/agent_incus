@@ -778,11 +778,11 @@ done
 echo "========================================"
 echo ""
 echo "Shell in:"
-echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER"
+echo "  incs $CONTAINER_NAME"
 echo ""
 if [[ "${SELECTED[claude-code]}" == "1" ]]; then
 echo "Start Claude Code:"
-echo "  incus exec $CONTAINER_NAME -- su - $HOST_USER -c 'cd $MOUNT_PATH && claude'"
+echo "  incs -s $CONTAINER_NAME 'cd $MOUNT_PATH && claude'"
 fi
 
 # ---------------------------------------------------------------------------
