@@ -147,6 +147,8 @@ The TUI lets you pick from optional components during container creation. Compon
 | [Entire CLI](https://github.com/entireio/cli) | Entire CLI tool |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
+| [Tidewave](https://tidewave.ai/) | Tidewave CLI for agent-driven web app dev |
+| [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI flags (`--1pass`, `--gh-token`, `--entire`).
 
