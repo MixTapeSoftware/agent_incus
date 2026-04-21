@@ -5,6 +5,25 @@ if [[ -z "$CONTAINER" ]]; then
   echo "Usage: $(basename "$0") <container> [command...]"
   exit 1
 fi
+STATUS=$(incus list "^${CONTAINER}$" --format csv --columns s 2>/dev/null)
+if [[ -z "$STATUS" ]]; then
+  echo "Container not found: $CONTAINER" >&2
+  exit 1
+fi
+if [[ "$STATUS" != "RUNNING" ]]; then
+  echo "Starting $CONTAINER..."
+  incus start "$CONTAINER"
+  attempts=0
+  while ! timeout 5 incus exec "$CONTAINER" -- true </dev/null &>/dev/null; do
+    sleep 1
+    attempts=$((attempts + 1))
+    if [[ $attempts -ge 30 ]]; then
+      echo "Timed out waiting for $CONTAINER to be ready" >&2
+      exit 1
+    fi
+  done
+fi
+
 HOST_USER="$(id -un)"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
