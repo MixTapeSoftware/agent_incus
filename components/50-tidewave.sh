@@ -53,7 +53,7 @@ component_install() {
 EOF
 
   # Derive from tailscale if the prompt skipped (tailscale + auth key path).
-  # Tidewave is served on 4443 so Phoenix can keep the default :443.
+  # Tidewave is served on :4443 so your app can keep the default :443.
   if [[ -z "${TIDEWAVE_ORIGIN:-}" ]]; then
     if [[ -n "${TS_DNS_NAME:-}" ]]; then
       TIDEWAVE_ORIGIN="https://$TS_DNS_NAME:4443"
@@ -75,17 +75,11 @@ set -euo pipefail
 
 : "${TIDEWAVE_ORIGIN:?TIDEWAVE_ORIGIN must be set}"
 
-# Reset + re-register tailscale serve (idempotent across runs)
-tailscale serve reset
-tailscale serve --bg --https=443  http://localhost:4000
+# Register tailscale serve for tidewave on :4443 -> localhost:5555.
+# Idempotent: existing serve on :4443 is overwritten, other serves untouched.
 tailscale serve --bg --https=4443 http://localhost:5555
 
-# Tidewave in the background, phoenix in the foreground
-tidewave -p 5555 --allow-remote-access --allowed-origins="$TIDEWAVE_ORIGIN" &
-TW_PID=$!
-trap 'kill $TW_PID 2>/dev/null || true' EXIT
-
-PORT=4000 exec mise x -- iex -S mix phx.server
+exec tidewave -p 5555 --allow-remote-access --allowed-origins="$TIDEWAVE_ORIGIN"
 SCRIPT
   incus exec "$CONTAINER_NAME" -- chmod +x /workspace/tidewave-dev.sh
 }
