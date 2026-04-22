@@ -149,6 +149,7 @@ The TUI lets you pick from optional components during container creation. Compon
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
 | [Tidewave](https://tidewave.ai/) | Tidewave CLI for agent-driven web app dev |
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
+| Chadmux | Chad's tmux config + TPM plugins |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI flags (`--1pass`, `--gh-token`, `--entire`).
 
