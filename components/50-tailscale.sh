@@ -15,6 +15,15 @@ component_prompt() {
   echo "with 'Tags' set (e.g. tag:incus-dev). Blank to skip and auth later."
   read -rsp "Tailscale auth key: " TS_AUTH_KEY
   echo ""
+
+  if [[ -n "$TS_AUTH_KEY" ]]; then
+    log "Optionally expose a local dev port over HTTPS via tailscale serve."
+    echo "  e.g. 5173 (Vite), 4000 (Phoenix), 3000 (Next). Blank to skip."
+    read -rp "Dev port to serve on :443: " TS_SERVE_PORT
+    if [[ -n "$TS_SERVE_PORT" && ! "$TS_SERVE_PORT" =~ ^[0-9]+$ ]]; then
+      error "TS_SERVE_PORT must be a number, got: $TS_SERVE_PORT"
+    fi
+  fi
 }
 
 component_is_installed() {
@@ -50,6 +59,13 @@ component_install() {
       log "Tailscale machine URL: https://$TS_DNS_NAME"
     else
       warn "Could not read tailnet DNS name from 'tailscale status'"
+    fi
+
+    if [[ -n "${TS_SERVE_PORT:-}" ]]; then
+      log "Registering tailscale serve :443 -> localhost:$TS_SERVE_PORT..."
+      incus exec "$CONTAINER_NAME" -- tailscale serve --bg --https=443 "http://localhost:$TS_SERVE_PORT" || \
+        warn "tailscale serve failed — run it manually once your app is up"
+      unset TS_SERVE_PORT
     fi
   else
     echo ""
