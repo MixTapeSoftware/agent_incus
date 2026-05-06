@@ -24,6 +24,7 @@ Commands:
   -s, shell <container> [cmd]    Shell into container
   -i, init [args...]             Create/provision a new container
   -n, net <container> [ports...] Manage port proxies
+  -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)
   -d, delete <container>          Force delete a container
   -k, kill <container>           Stop a container
   -ka, kill-all                  Stop all agent-incus containers
@@ -37,19 +38,20 @@ Cron:
   cron status                    Show current cron schedule
 
 Examples:
-  incs pb                        Shell into pb
-  incs -s pb                     Shell into pb (explicit)
-  incs -s pb mix test            Run a command in pb
-  incs -i pb --from base-dev     Init pb from template
-  incs -n pb 4000 3241           Proxy ports 4000 and 3241
-  incs -n pb 4000:8080           Host 4000 -> container 8080
-  incs -n pb -b 10.0.0.5 4000   Bind to a specific IP (e.g. Tailscale)
-  incs -n pb -H host.ts.net 4000 Bind to the IP resolved from an FQDN
-  incs -n pb -l                  List proxies on pb
-  incs -d pb                     Delete pb
-  incs -k pb                     Stop pb
+  incs your-container                        Shell into your-container
+  incs -s your-container                     Shell into your-container (explicit)
+  incs -s your-container mix test            Run a command in your-container
+  incs -i your-container --from base-dev     Init your-container from template
+  incs -n your-container 4000 3241           Proxy ports 4000 and 3241
+  incs -n your-container 4000:8080           Host 4000 -> container 8080
+  incs -n your-container -b 10.0.0.5 4000   Bind to a specific IP (e.g. Tailscale)
+  incs -n your-container -H host.ts.net 4000 Bind to the IP resolved from an FQDN
+  incs -n your-container -l                  List proxies on your-container
+  incs -e your-container OPENAI_API_KEY      Set env var in your-container (prompts silently)
+  incs -d your-container                     Delete your-container
+  incs -k your-container                     Stop your-container
   incs -ka                       Stop all agent-incus containers
-  incs -u pb                     Update packages in pb
+  incs -u your-container                     Update packages in your-container
   incs -ua                       Update all agent-incus containers
   incs cron install              Install 7pm daily update cron
   incs cron install 3            Install 3am daily update cron
@@ -166,6 +168,61 @@ cmd_update_all() {
 }
 
 # ---------------------------------------------------------------------------
+# Set an environment variable in a container without echoing it to the screen.
+# Writes both `incus config set environment.VAR=...` (for incus exec sessions)
+# and `export VAR=...` into ~/.zshenv (for `su -` login shells). Any prior
+# entry for the same var in ~/.zshenv is removed first so re-setting replaces.
+# ---------------------------------------------------------------------------
+cmd_set_env() {
+  local container="${1:-}"
+  local var_name="${2:-}"
+
+  [[ -z "$container" || -z "$var_name" ]] && \
+    error "Usage: incs -e <container> <VAR_NAME>"
+
+  [[ "$var_name" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || \
+    error "Invalid variable name: $var_name"
+
+  incus info "$container" &>/dev/null || \
+    error "Container not found: $container"
+
+  local status
+  status=$(incus list "^${container}$" --format csv --columns s 2>/dev/null)
+  if [[ "$status" != "RUNNING" ]]; then
+    log "Starting $container..."
+    incus start "$container"
+    local attempts=0
+    while ! timeout 5 incus exec "$container" -- true </dev/null &>/dev/null; do
+      sleep 1
+      attempts=$((attempts + 1))
+      if [[ $attempts -ge 30 ]]; then
+        error "Timed out waiting for $container"
+      fi
+    done
+  fi
+
+  local value
+  read -rsp "Enter value for $var_name (input hidden, paste ok): " value
+  echo ""
+  [[ -z "$value" ]] && error "Value required"
+
+  incus config set "$container" "environment.$var_name=$value"
+
+  local host_user export_line
+  host_user="$(id -un)"
+  printf -v export_line 'export %s=%q\n' "$var_name" "$value"
+
+  printf '%s' "$export_line" | incus exec "$container" -- \
+    su - "$host_user" -s /bin/sh -c '
+      touch ~/.zshenv
+      sed -i "/^export '"$var_name"'=/d" ~/.zshenv
+      cat >> ~/.zshenv
+    '
+
+  log "Set $var_name in $container"
+}
+
+# ---------------------------------------------------------------------------
 # Cron management
 # ---------------------------------------------------------------------------
 CRON_TAG="# incs-update-all"
@@ -243,6 +300,10 @@ case "$1" in
   -n|net)
     shift
     exec "$SCRIPT_DIR/incus.network" "$@"
+    ;;
+  -e|env)
+    shift
+    cmd_set_env "$@"
     ;;
   -d|delete)
     shift
