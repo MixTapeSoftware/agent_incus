@@ -748,6 +748,22 @@ if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise install'
 fi
 
+# Expose mise shims to non-interactive shells (e.g. Claude Code's Bash tool)
+# by symlinking them into ~/.local/bin, which is on the default PATH.
+# mise activation in .zshrc only covers interactive zsh; without this,
+# `incus exec ... bash -c '...'` falls through to system binaries.
+log "Syncing mise shims into ~/.local/bin..."
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c '
+  shims="$HOME/.local/share/mise/shims"
+  if [[ -d "$shims" ]]; then
+    mkdir -p "$HOME/.local/bin"
+    for shim in "$shims"/*; do
+      [[ -e "$shim" ]] || continue
+      ln -sf "$shim" "$HOME/.local/bin/$(basename "$shim")"
+    done
+  fi
+'
+
 
 # ---------------------------------------------------------------------------
 # Disable cleanup trap on success

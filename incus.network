@@ -19,13 +19,13 @@ Options:
   -h, --help             Show this help
 
 Examples:
-  incs -n pb 4000 3241              Proxy ports 4000 and 3241 on localhost
-  incs -n pb -b 100.69.177.88 4000  Proxy port 4000 on a specific address
-  incs -n pb -H host.tailnet.ts.net 4000  Proxy on resolved tailnet IP
-  incs -n pb 4000:8080              Host 4000 -> container 8080
-  incs -n pb -l                     List current proxies
-  incs -n pb -r 4000                Remove proxy for port 4000
-  incs -n pb -r all                 Remove all proxies
+  incs -n your-continer 4000 3241              Proxy ports 4000 and 3241 on localhost
+  incs -n your-container -b 100.69.177.88 4000  Proxy port 4000 on a specific address
+  incs -n your-continer -H host.tailnet.ts.net 4000  Proxy on resolved tailnet IP
+  incs -n your-continer 4000:8080              Host 4000 -> container 8080
+  incs -n your-continer -l                     List current proxies
+  incs -n your-continer -r 4000                Remove proxy for port 4000
+  incs -n your-continer -r all                 Remove all proxies
 EOF
   exit 0
 }
