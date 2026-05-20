@@ -11,6 +11,8 @@ component_install() {
   log "Installing Codex..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
+    sudo apt-get update
+    sudo DEBIAN_FRONTEND=noninteractive apt-get install -y bubblewrap
     sudo npm install -g @openai/codex
 EOF
 }
