@@ -359,7 +359,7 @@ show_tui() {
 
     case "$key" in
       $'\x1b')
-        IFS= read -rsn2 -t 0.2 seq || continue
+        IFS= read -rsn2 -t 1 seq || continue
         case "$seq" in
           '[A') cursor=$(( (cursor - 1 + count) % count )) ;;
           '[B') cursor=$(( (cursor + 1) % count )) ;;
