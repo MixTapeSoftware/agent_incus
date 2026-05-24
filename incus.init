@@ -58,7 +58,7 @@ EOF
 # ---------------------------------------------------------------------------
 
 # --- Ubuntu/Debian (apt) ---
-APT_CORE="bash curl git wget sudo unzip tmux zsh"
+APT_CORE="bash curl git wget sudo unzip tmux zsh jq"
 APT_BUILD="build-essential pkg-config autoconf automake bison cmake re2c"
 APT_DEVLIBS="libssl-dev libncurses-dev libreadline-dev zlib1g-dev libbz2-dev libsqlite3-dev libffi-dev liblzma-dev libyaml-dev libxml2-dev libxslt1-dev libcurl4-openssl-dev libonig-dev libzip-dev libpng-dev libjpeg-dev libfreetype6-dev libgd-dev unixodbc-dev libpq-dev"
 APT_RUNTIME="gpg ca-certificates psmisc fontconfig fzf bat inotify-tools python3 python3-dev python3-pip python3-venv nodejs npm postgresql-client default-mysql-client"
@@ -191,7 +191,7 @@ mount_workspace() {
   if ensure_subid_entries "$uid" "$gid"; then
     incus config device add "$container" workspace disk \
       source="$source" path="$target"
-    incus config set "$container" raw.idmap "both $uid $uid"
+    incus config set "$container" raw.idmap="both $uid $uid"
     log "Restarting container for raw.idmap..."
     incus restart "$container"
     wait_for_container "$container"
@@ -244,13 +244,42 @@ IDMAP_METHOD=""
 # ---------------------------------------------------------------------------
 # Component discovery — reads components/*.sh plugin files
 # ---------------------------------------------------------------------------
-SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 COMPONENTS_DIR="$SCRIPT_DIR/components"
 
-declare -a _C_ID=() _C_NAME=() _C_DESC=() _C_FILE=()
-declare -A SELECTED=()
-declare -A _C_CLI_MAP=()   # CLI flag -> component ID
+# Parallel arrays (bash 3.2 compatible — macOS /bin/bash has no associative arrays)
+_C_ID=() _C_NAME=() _C_DESC=() _C_FILE=() _C_SELECTED=()
+_C_FLAGS=() _C_FLAG_IDS=()   # parallel: _C_FLAGS[i] -> _C_FLAG_IDS[i]
 COMPONENT_COUNT=0
+
+# Find the slot index for a component ID; prints index or returns 1.
+_component_slot() {
+  local target="$1" i
+  for ((i=0; i<COMPONENT_COUNT; i++)); do
+    [[ "${_C_ID[$i]}" == "$target" ]] && { echo "$i"; return 0; }
+  done
+  return 1
+}
+
+selected_get() {
+  local slot
+  slot=$(_component_slot "$1") || { echo 0; return; }
+  echo "${_C_SELECTED[$slot]:-0}"
+}
+
+selected_set() {
+  local slot
+  slot=$(_component_slot "$1") || return 1
+  _C_SELECTED[$slot]="$2"
+}
+
+flag_to_id() {
+  local target="$1" i
+  for ((i=0; i<${#_C_FLAGS[@]}; i++)); do
+    [[ "${_C_FLAGS[$i]}" == "$target" ]] && { echo "${_C_FLAG_IDS[$i]}"; return 0; }
+  done
+  return 1
+}
 
 for _f in "$COMPONENTS_DIR"/*.sh; do
   [[ -f "$_f" ]] || continue
@@ -272,11 +301,12 @@ for _f in "$COMPONENTS_DIR"/*.sh; do
   _C_NAME[$_i]="$_cname"
   _C_DESC[$_i]="$_cdesc"
   _C_FILE[$_i]="$_f"
-  SELECTED[$_cid]="${_cdefault:-0}"
+  _C_SELECTED[$_i]="${_cdefault:-0}"
 
   # Map CLI flags to component IDs
   for _flag in $_ccli; do
-    _C_CLI_MAP[$_flag]="$_cid"
+    _C_FLAGS+=("$_flag")
+    _C_FLAG_IDS+=("$_cid")
   done
 
   COMPONENT_COUNT=$((_i + 1))
@@ -286,7 +316,7 @@ unset _f _meta _i _cid _cname _cdesc _cdefault _ccli _cprompt _claunch _flag
 # Build the COMPONENTS array the TUI expects (id:name:desc:default)
 COMPONENTS=()
 for ((_i=0; _i<COMPONENT_COUNT; _i++)); do
-  COMPONENTS+=("${_C_ID[$_i]}:${_C_NAME[$_i]}:${_C_DESC[$_i]}:${SELECTED[${_C_ID[$_i]}]}")
+  COMPONENTS+=("${_C_ID[$_i]}:${_C_NAME[$_i]}:${_C_DESC[$_i]}:${_C_SELECTED[$_i]}")
 done
 unset _i
 
@@ -314,7 +344,7 @@ show_tui() {
     for ((i=0; i<count; i++)); do
       IFS=: read -r id name desc default <<< "${COMPONENTS[$i]}"
       marker="[ ]"
-      [[ "${SELECTED[$id]}" == "1" ]] && marker="[x]"
+      [[ "${_C_SELECTED[$i]}" == "1" ]] && marker="[x]"
 
       if [[ $i -eq $cursor ]]; then
         printf "  \033[7m %s %-24s %s \033[0m\n" "$marker" "$name" "$desc"
@@ -338,11 +368,10 @@ show_tui() {
       'k') cursor=$(( (cursor - 1 + count) % count )) ;;
       'j') cursor=$(( (cursor + 1) % count )) ;;
       ' ')
-        IFS=: read -r id _ _ _ <<< "${COMPONENTS[$cursor]}"
-        if [[ "${SELECTED[$id]}" == "1" ]]; then
-          SELECTED[$id]=0
+        if [[ "${_C_SELECTED[$cursor]}" == "1" ]]; then
+          _C_SELECTED[$cursor]=0
         else
-          SELECTED[$id]=1
+          _C_SELECTED[$cursor]=1
         fi
         ;;
       ''|$'\n') break ;;
@@ -393,7 +422,7 @@ _run_component_prompts() {
   for _f in "$COMPONENTS_DIR"/*.sh; do
     [[ -f "$_f" ]] || continue
     source "$_f"
-    [[ "${SELECTED[$COMPONENT_ID]:-0}" != "1" ]] && continue
+    [[ "$(selected_get "$COMPONENT_ID")" != "1" ]] && continue
     [[ "${COMPONENT_NEEDS_PROMPT:-0}" != "1" ]] && continue
     component_prompt
   done
@@ -404,7 +433,7 @@ _run_component_installs() {
   for _f in "$COMPONENTS_DIR"/*.sh; do
     [[ -f "$_f" ]] || continue
     source "$_f"
-    [[ "${SELECTED[$COMPONENT_ID]:-0}" != "1" ]] && continue
+    [[ "$(selected_get "$COMPONENT_ID")" != "1" ]] && continue
 
     if [[ "$from_template" == "1" ]]; then
       # Template launch: only run components that declare RUN_ON_LAUNCH
@@ -481,8 +510,8 @@ while [[ $# -gt 0 ]]; do
     -h|--help)       usage ;;
     -*)
       # Check if it's a component CLI flag
-      if [[ -n "${_C_CLI_MAP[$1]:-}" ]]; then
-        SELECTED[${_C_CLI_MAP[$1]}]=1
+      if _flag_id=$(flag_to_id "$1"); then
+        selected_set "$_flag_id" 1
         shift
       else
         error "Unknown option: $1"
@@ -562,7 +591,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "Selected components:"
   for entry in "${COMPONENTS[@]}"; do
     IFS=: read -r id name desc default <<< "$entry"
-    if [[ "${SELECTED[$id]}" == "1" ]]; then
+    if [[ "$(selected_get "$id")" == "1" ]]; then
       echo "  [x] $name"
     else
       echo "  [ ] $name"
@@ -849,14 +878,14 @@ echo ""
 echo "Installed:"
 for entry in "${COMPONENTS[@]}"; do
   IFS=: read -r id name desc default <<< "$entry"
-  [[ "${SELECTED[$id]}" == "1" ]] && echo "  ✓ $name"
+  [[ "$(selected_get "$id")" == "1" ]] && echo "  ✓ $name"
 done
 echo "========================================"
 echo ""
 echo "Shell in:"
 echo "  incs $CONTAINER_NAME"
 echo ""
-if [[ "${SELECTED[claude-code]}" == "1" ]]; then
+if [[ "$(selected_get claude-code)" == "1" ]]; then
 echo "Start Claude Code:"
 echo "  incs -s $CONTAINER_NAME 'cd $MOUNT_PATH && claude'"
 fi

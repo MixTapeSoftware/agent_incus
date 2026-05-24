@@ -46,7 +46,7 @@ component_install() {
   # reach the host. Loading the profile from outside is impractical -- Docker
   # expects to manage AppArmor profiles dynamically, and exposing securityfs
   # into the container would let it weaken the host's own confinement.
-  incus config set "$CONTAINER_NAME" raw.lxc "lxc.apparmor.profile=unconfined"
+  incus config set "$CONTAINER_NAME" raw.lxc="lxc.apparmor.profile=unconfined"
   # raw.lxc is only read at container start, so restart to apply it.
   incus restart "$CONTAINER_NAME"
   wait_for_container "$CONTAINER_NAME"

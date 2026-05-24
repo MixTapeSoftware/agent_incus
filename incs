@@ -238,7 +238,7 @@ cmd_cron() {
       fi
       ensure_log_dir
       local incs_path
-      incs_path="$(readlink -f "$0")"
+      incs_path="$(realpath "$0")"
       local cron_line="0 $hour * * * $incs_path -ua >> $INCS_LOG_DIR/cron.log 2>&1 $CRON_TAG"
       # Remove existing entry, add new one
       (crontab -l 2>/dev/null | grep -v "$CRON_TAG"; echo "$cron_line") | crontab -
