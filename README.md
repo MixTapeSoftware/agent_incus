@@ -57,6 +57,7 @@ incs my-project claude
 | `incus.shell` | — | Open a login shell (or run a command) in a container |
 | `incus.network` | `incn` | Manage port proxy devices |
 | `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
+| `incs.new-plugin` | — | Scaffold a new plugin file from a template (also `incs new-plugin`) |
 | `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin` |
 
 ### incs — Unified CLI
@@ -158,7 +159,15 @@ Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flag
 
 ### Adding Custom Plugins
 
-Drop a `.sh` file in either `plugins/` (built-in, in-tree) or `~/.local/share/agent_incus/plugins/` (user-local, survives reinstall). Each file defines a simple contract:
+Fastest path — generate a stub:
+
+```bash
+incs new-plugin my-tool
+```
+
+This writes `~/.local/share/agent_incus/plugins/50-my-tool.sh` and opens it in `$EDITOR`. Use `--builtin` to write to the in-repo `plugins/` dir instead. See `incs new-plugin --help` for all options.
+
+Or write one by hand. Drop a `.sh` file in either `plugins/` (built-in, in-tree) or `~/.local/share/agent_incus/plugins/` (user-local, survives reinstall). Each file defines a simple contract:
 
 ```bash
 # 50-my-tool.sh

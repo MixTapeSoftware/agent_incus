@@ -24,6 +24,7 @@ FILES=(
   "incus.init"
   "incus.network"
   "incus.macos.setup"
+  "incs.new-plugin"
 )
 
 # Short aliases: alias_name:target_file

@@ -1,0 +1,151 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()   { echo -e "${GREEN}[+]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+Usage: incs new-plugin <slug> [options]
+
+Generates a new agent-incus plugin from a template.
+
+Arguments:
+  slug                  Plugin ID (kebab-case, e.g. "my-tool"). Used as
+                        PLUGIN_ID and as the filename stem.
+
+Options:
+  --name NAME           Human-readable name (default: Title Case from slug)
+  --desc DESC           Short description (default: "<NAME> plugin")
+  --builtin             Write to the repo's plugins/ dir instead of the user dir
+  --prefix NN           Filename numeric prefix (default: 50). Cosmetic — sort
+                        is by PLUGIN_NAME, not filename.
+  --default-on          Set PLUGIN_DEFAULT=1 (checked by default in the TUI)
+  --no-edit             Don't open the new file in $EDITOR
+  --force               Overwrite if the file already exists
+  -h, --help            Show this help
+
+Destinations:
+  default      ${XDG_DATA_HOME:-~/.local/share}/agent_incus/plugins/
+  --builtin    <repo>/plugins/
+
+Examples:
+  incs new-plugin my-tool
+  incs new-plugin my-tool --name "My Tool" --desc "Installs my-tool"
+  incs new-plugin docker-buildx --builtin --prefix 11
+EOF
+  exit 0
+}
+
+slug_to_title() {
+  local slug="$1" word head out=""
+  for word in ${slug//-/ }; do
+    head=$(printf '%s' "${word:0:1}" | tr '[:lower:]' '[:upper:]')
+    out+="${head}${word:1} "
+  done
+  echo "${out% }"
+}
+
+SLUG=""
+NAME=""
+DESC=""
+BUILTIN=0
+PREFIX="50"
+DEFAULT_ON=0
+NO_EDIT=0
+FORCE=0
+
+[[ $# -eq 0 ]] && usage
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    -h|--help)      usage ;;
+    --name)         [[ $# -lt 2 ]] && error "$1 requires an argument"; NAME="$2"; shift 2 ;;
+    --desc)         [[ $# -lt 2 ]] && error "$1 requires an argument"; DESC="$2"; shift 2 ;;
+    --prefix)       [[ $# -lt 2 ]] && error "$1 requires an argument"; PREFIX="$2"; shift 2 ;;
+    --builtin)      BUILTIN=1; shift ;;
+    --default-on)   DEFAULT_ON=1; shift ;;
+    --no-edit)      NO_EDIT=1; shift ;;
+    --force)        FORCE=1; shift ;;
+    -*)             error "Unknown option: $1" ;;
+    *)
+      [[ -n "$SLUG" ]] && error "Unexpected argument: $1"
+      SLUG="$1"; shift
+      ;;
+  esac
+done
+
+[[ -z "$SLUG" ]] && error "Plugin slug required (try --help)"
+[[ "$SLUG" =~ ^[a-z][a-z0-9-]*$ ]] || \
+  error "Slug must be kebab-case (lowercase, digits, dashes; must start with a letter)"
+[[ "$PREFIX" =~ ^[0-9]+$ ]] || error "--prefix must be numeric"
+
+[[ -z "$NAME" ]] && NAME="$(slug_to_title "$SLUG")"
+[[ -z "$DESC" ]] && DESC="$NAME plugin"
+
+if [[ "$BUILTIN" == "1" ]]; then
+  SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+  DEST_DIR="$SCRIPT_DIR/plugins"
+else
+  DEST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agent_incus/plugins"
+fi
+
+DEST_FILE="$DEST_DIR/${PREFIX}-${SLUG}.sh"
+
+if [[ -e "$DEST_FILE" && "$FORCE" != "1" ]]; then
+  error "File already exists: $DEST_FILE (use --force to overwrite)"
+fi
+
+mkdir -p "$DEST_DIR"
+
+cat > "$DEST_FILE" <<PLUGIN_EOF
+PLUGIN_ID="$SLUG"
+PLUGIN_NAME="$NAME"
+PLUGIN_DESC="$DESC"
+PLUGIN_DEFAULT=$DEFAULT_ON   # 0=off by default, 1=on
+
+# Optional — uncomment what you need:
+# PLUGIN_CLI_FLAGS="--$SLUG"      # adds CLI flag to pre-select without the TUI
+# PLUGIN_NEEDS_PROMPT=1           # call plugin_prompt() before plugin_install
+# PLUGIN_RUN_ON_LAUNCH=1          # also re-run on template launch (for symlinks etc.)
+
+plugin_is_installed() {
+  # Idempotency check. Return 0 if already installed, 1 otherwise.
+  incus exec "\$CONTAINER_NAME" -- command -v $SLUG &>/dev/null
+}
+
+plugin_install() {
+  log "Installing $NAME..."
+  incus exec "\$CONTAINER_NAME" -- sh -c '
+    set -e
+    # your install commands here
+  '
+}
+
+# plugin_prompt() {
+#   # Collect user input before install. Set globals for plugin_install to use.
+#   read -rp "Some setting: " MY_SETTING
+# }
+
+# plugin_on_launch() {
+#   # Re-applied when launching from a saved template (snapshots may not preserve
+#   # symlinks, host-side config, etc.). Often calls plugin_install for simple cases.
+#   plugin_install
+# }
+PLUGIN_EOF
+
+log "Created $DEST_FILE"
+
+if [[ "$NO_EDIT" != "1" ]]; then
+  if [[ -n "${EDITOR:-}" ]]; then
+    exec "$EDITOR" "$DEST_FILE"
+  else
+    warn '$EDITOR not set — skipping editor open'
+  fi
+fi

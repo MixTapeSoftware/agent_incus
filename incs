@@ -30,6 +30,7 @@ Commands:
   -ka, kill-all                  Stop all agent-incus containers
   -u, update <container>         Update packages in a container
   -ua, update-all                Update packages in all agent-incus containers
+  new-plugin <slug> [opts]       Generate a new plugin file from a template
   -h, help                       Show this help
 
 Cron:
@@ -339,6 +340,10 @@ case "$1" in
   cron)
     shift
     cmd_cron "$@"
+    ;;
+  new-plugin)
+    shift
+    exec "$SCRIPT_DIR/incs.new-plugin" "$@"
     ;;
   notify-snippet)
     cmd_notify_snippet
