@@ -1,14 +1,14 @@
-COMPONENT_ID="docker"
-COMPONENT_NAME="Docker"
-COMPONENT_DESC="Container runtime & compose"
-COMPONENT_DEFAULT=1
-COMPONENT_RUN_ON_LAUNCH=1
+PLUGIN_ID="docker"
+PLUGIN_NAME="Docker"
+PLUGIN_DESC="Container runtime & compose"
+PLUGIN_DEFAULT=1
+PLUGIN_RUN_ON_LAUNCH=1
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- sh -c 'command -v docker' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   # Container config is always needed -- not preserved in templates.
   #
   # Security tradeoff: Docker-in-Incus requires relaxing the inner container's
@@ -52,7 +52,7 @@ component_install() {
   wait_for_container "$CONTAINER_NAME"
   wait_for_network "$CONTAINER_NAME"
 
-  if component_is_installed; then
+  if plugin_is_installed; then
     log "Docker binary already installed, skipping package install"
     incus restart "$CONTAINER_NAME"
     wait_for_container "$CONTAINER_NAME"
@@ -104,6 +104,6 @@ DOCKER_EOF
 }
 
 # Docker container config (nesting, apparmor) isn't preserved in templates.
-component_on_launch() {
-  component_install
+plugin_on_launch() {
+  plugin_install
 }

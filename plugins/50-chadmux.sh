@@ -1,13 +1,13 @@
-COMPONENT_ID="chadmux"
-COMPONENT_NAME="Chadmux"
-COMPONENT_DESC="Chad's tmux config + TPM plugins (dracula, yank, vim-tmux-navigator)"
-COMPONENT_DEFAULT=0
+PLUGIN_ID="chadmux"
+PLUGIN_NAME="Chadmux"
+PLUGIN_DESC="Chad's tmux config + TPM plugins (dracula, yank, vim-tmux-navigator)"
+PLUGIN_DEFAULT=0
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -d "$HOME/.tmux/plugins/tpm"' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   log "Writing ~/.tmux.conf..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cat > ~/.tmux.conf' <<'CONF'
 # Basic settings

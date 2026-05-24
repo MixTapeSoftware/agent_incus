@@ -1,13 +1,13 @@
-COMPONENT_ID="fzf-bat"
-COMPONENT_NAME="fzf + bat"
-COMPONENT_DESC="Interactive search & file preview"
-COMPONENT_DEFAULT=0
+PLUGIN_ID="fzf-bat"
+PLUGIN_NAME="fzf + bat"
+PLUGIN_DESC="Interactive search & file preview"
+PLUGIN_DEFAULT=0
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v fzf' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   log "Installing fzf and bat via mise..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
   set -e

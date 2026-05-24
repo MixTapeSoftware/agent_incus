@@ -1,13 +1,13 @@
-COMPONENT_ID="glow"
-COMPONENT_NAME="Glow"
-COMPONENT_DESC="Terminal markdown viewer"
-COMPONENT_DEFAULT=0
+PLUGIN_ID="glow"
+PLUGIN_NAME="Glow"
+PLUGIN_DESC="Terminal markdown viewer"
+PLUGIN_DEFAULT=0
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v glow' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   log "Installing Glow..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e

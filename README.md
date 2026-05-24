@@ -11,7 +11,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 - [Scripts](#scripts)
 - [incus.init Options](#incusinit-options)
   - [What incus.init does](#what-incusinit-does)
-  - [Optional Components](#optional-components)
+  - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
   - [Base Images](#base-images)
   - [Expose Container Ports](#expose-container-ports)
@@ -96,7 +96,7 @@ Options:
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
   -t, --template            Save container as a reusable local template (implies --no-mount)
-  --<component>             Pre-select a component (e.g. --1pass, --gh-token, --entire)
+  --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
   --no-mount                Clone repo into container instead of mounting host directory
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
@@ -112,11 +112,11 @@ Options:
 4. Creates a user matching your host UID/GID with passwordless sudo
 5. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
-7. Presents an interactive TUI to select optional components (see below)
+7. Presents an interactive TUI to select optional plugins (see below)
 
 ### Default Packages
 
-Every container is provisioned with the following packages before any optional components are selected:
+Every container is provisioned with the following packages before any optional plugins are selected:
 
 | Category | Packages |
 |---|---|
@@ -127,61 +127,66 @@ Every container is provisioned with the following packages before any optional c
 | Utilities | gpg, ca-certificates, psmisc, fontconfig, fzf, bat |
 | Tools | [mise](https://mise.jdx.dev/) (runtime version manager), [Oh My Zsh](https://ohmyz.sh/) (with zsh-autosuggestions), [GitHub CLI](https://cli.github.com/) |
 
-### Optional Components
+### Optional Plugins
 
-The TUI lets you pick from optional components during container creation. Components are defined as standalone scripts in the `components/` directory — the TUI discovers them automatically.
+The TUI lets you pick from optional plugins during container creation. Plugins are standalone scripts that the TUI discovers automatically from two locations:
 
-**Included components:**
+- **Built-in:** `plugins/` (in this repo)
+- **User:** `~/.local/share/agent_incus/plugins/` (or `$XDG_DATA_HOME/agent_incus/plugins/`)
 
-| Component | Description |
+Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrides the built-in. The TUI and install order are sorted A-Z by plugin name.
+
+**Included plugins:**
+
+| Plugin | Description |
 |---|---|
-| [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
+| [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
+| Chadmux | Chad's tmux config + TPM plugins |
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
+| [Codex](https://github.com/openai/codex) | OpenAI coding agent |
+| [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
+| [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
+| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
+| [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
+| [just](https://github.com/casey/just) | Command runner for project tasks |
 | [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Spec-driven development CLI |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
-| [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
-| [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
-| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
-| [just](https://github.com/casey/just) | Command runner for project tasks |
-| [Entire CLI](https://github.com/entireio/cli) | Entire CLI tool |
-| [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
-| [Codex](https://github.com/openai/codex) | OpenAI coding agent |
-| [Tidewave](https://tidewave.ai/) | Tidewave CLI for agent-driven web app dev |
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
-| Chadmux | Chad's tmux config + TPM plugins |
 
-Skip the TUI with `--no-tui` to use defaults, or pre-select components via CLI flags (`--1pass`, `--gh-token`, `--entire`).
+Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`).
 
-### Adding Custom Components
+### Adding Custom Plugins
 
-Drop a `.sh` file in the `components/` directory. The filename prefix controls install order (e.g. `10-` before `50-`). Each file defines a simple contract:
+Drop a `.sh` file in either `plugins/` (built-in, in-tree) or `~/.local/share/agent_incus/plugins/` (user-local, survives reinstall). Each file defines a simple contract:
 
 ```bash
-# components/50-my-tool.sh
-COMPONENT_ID="my-tool"
-COMPONENT_NAME="My Tool"
-COMPONENT_DESC="Does something useful"
-COMPONENT_DEFAULT=0                # 0=off by default, 1=on
+# 50-my-tool.sh
+PLUGIN_ID="my-tool"
+PLUGIN_NAME="My Tool"
+PLUGIN_DESC="Does something useful"
+PLUGIN_DEFAULT=0                   # 0=off by default, 1=on
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- command -v my-tool &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   log "Installing My Tool..."
   incus exec "$CONTAINER_NAME" -- sh -c 'curl -fsSL ... | sh'
 }
 ```
 
 Optional extras:
-- `COMPONENT_CLI_FLAGS="--my-tool"` — adds a CLI flag to pre-select without the TUI
-- `COMPONENT_NEEDS_PROMPT=1` + `component_prompt()` — collect user input before install
-- `COMPONENT_RUN_ON_LAUNCH=1` + `component_on_launch()` — re-run setup when launching from a template (for symlinks, config that doesn't survive snapshots)
+- `PLUGIN_CLI_FLAGS="--my-tool"` — adds a CLI flag to pre-select without the TUI
+- `PLUGIN_NEEDS_PROMPT=1` + `plugin_prompt()` — collect user input before install
+- `PLUGIN_RUN_ON_LAUNCH=1` + `plugin_on_launch()` — re-run setup when launching from a template (for symlinks, config that doesn't survive snapshots)
+
+**Overriding a built-in:** define a plugin in your user dir with the same `PLUGIN_ID` as a built-in. You'll see a `[!] Plugin 'foo' from ... overrides ...` warning at discovery time.
 
 #### How discovery works
 
-Component files are sourced in a **separate bash process** to safely extract metadata without executing install logic. The metadata (ID, name, description, default, CLI flags) is stashed into arrays that the TUI and arg parser use. Glob ordering (`10-docker.sh` before `50-just.sh`) controls both TUI display order and install order — no dependency resolution needed. During install, each component file is sourced into the main process so its functions have access to globals like `$CONTAINER_NAME` and `$HOST_USER`.
+Plugin files are sourced in a **separate bash process** to safely extract metadata without executing install logic. The metadata (ID, name, description, default, CLI flags) is stashed into parallel arrays that the TUI and arg parser use. Both `plugins/` and `~/.local/share/agent_incus/plugins/` are scanned; entries are then sorted A-Z by `PLUGIN_NAME` (case-insensitive), which drives both TUI display order and install order. During install, each plugin file is sourced into the main process so its functions have access to globals like `$CONTAINER_NAME` and `$HOST_USER`.
 
 ## The Development Workflow
 
@@ -231,7 +236,7 @@ incs -i --from my-base my-project
 incs -i --from my-base --1pass --gh-token my-dev
 ```
 
-When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected components run.
+When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected plugins run.
 
 **Manage templates:**
 

@@ -1,19 +1,19 @@
-COMPONENT_ID="chromium"
-COMPONENT_NAME="Chromium/Playwright"
-COMPONENT_DESC="Headless browser for testing"
-COMPONENT_DEFAULT=0
-COMPONENT_RUN_ON_LAUNCH=1
+PLUGIN_ID="chromium"
+PLUGIN_NAME="Chromium/Playwright"
+PLUGIN_DESC="Headless browser for testing"
+PLUGIN_DEFAULT=0
+PLUGIN_RUN_ON_LAUNCH=1
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx playwright --version' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   # Ensure Chromium runtime deps are present -- templates preserve Playwright's
   # browser binaries but not always the shared libraries they need.
   _chromium_ensure_deps
 
-  if ! component_is_installed; then
+  if ! plugin_is_installed; then
     log "Installing Playwright + Chromium browser..."
     incus exec "$CONTAINER_NAME" -- npm install -g playwright
     incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx -y playwright install --with-deps chromium'
@@ -25,7 +25,7 @@ component_install() {
 }
 
 # Deps and symlinks don't survive template launches.
-component_on_launch() {
+plugin_on_launch() {
   _chromium_ensure_deps
   _chromium_ensure_symlinks
 }

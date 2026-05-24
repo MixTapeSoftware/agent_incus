@@ -1,11 +1,11 @@
-COMPONENT_ID="gh-auth"
-COMPONENT_NAME="GitHub Auth"
-COMPONENT_DESC="GitHub token & git credentials"
-COMPONENT_DEFAULT=0
-COMPONENT_CLI_FLAGS="--gh-token"
-COMPONENT_NEEDS_PROMPT=1
+PLUGIN_ID="gh-auth"
+PLUGIN_NAME="GitHub Auth"
+PLUGIN_DESC="GitHub token & git credentials"
+PLUGIN_DEFAULT=0
+PLUGIN_CLI_FLAGS="--gh-token"
+PLUGIN_NEEDS_PROMPT=1
 
-component_prompt() {
+plugin_prompt() {
   echo ""
   log "GitHub auth requires a fine-grained personal access token"
   echo "Create one at: https://github.com/settings/tokens?type=beta"
@@ -27,12 +27,12 @@ component_prompt() {
   if [[ -z "$GH_USER_EMAIL" ]]; then error "Git user.email required"; fi
 }
 
-component_is_installed() {
-  # gh is installed in base provisioning; this component configures auth
+plugin_is_installed() {
+  # gh is installed in base provisioning; this plugin configures auth
   false
 }
 
-component_install() {
+plugin_install() {
   log "Setting GitHub token via container environment..."
   incus config set "$CONTAINER_NAME" environment.GH_TOKEN="$GH_TOKEN_VALUE"
 

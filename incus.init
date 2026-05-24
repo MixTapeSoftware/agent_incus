@@ -29,7 +29,7 @@ usage() {
 Usage: $(basename "$0") [OPTIONS] <container-name>
 
 Create an Incus container with a mounted workspace.
-Default image is Ubuntu 24.04. Shows an interactive TUI to select components.
+Default image is Ubuntu 24.04. Shows an interactive TUI to select plugins.
 
 Options:
   -p, --path PATH           Host directory to mount (default: current directory)
@@ -42,13 +42,14 @@ Options:
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
   --no-mount                Clone repo into container instead of mounting host directory
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
-  --no-tui                  Skip interactive component selector, use defaults
+  --no-tui                  Skip interactive plugin selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
 
-Components are defined in the components/ directory. Some provide CLI flags
+Plugins are defined in the plugins/ directory (or ~/.local/share/agent_incus/plugins/
+for user plugins). Some provide CLI flags
 (e.g. --1pass, --gh-token, --entire) to pre-select them without the TUI.
-Drop a new .sh file in components/ to add your own.
+Drop a new .sh file in plugins/ (or ~/.local/share/agent_incus/plugins/) to add your own.
 EOF
   exit 1
 }
@@ -242,89 +243,130 @@ MAP_USER=0
 IDMAP_METHOD=""
 
 # ---------------------------------------------------------------------------
-# Component discovery — reads components/*.sh plugin files
+# Plugin discovery — reads built-in plugins/*.sh plus user plugins from
+# ${XDG_DATA_HOME:-~/.local/share}/agent_incus/plugins/*.sh
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
-COMPONENTS_DIR="$SCRIPT_DIR/components"
+BUILTIN_PLUGINS_DIR="$SCRIPT_DIR/plugins"
+USER_PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agent_incus/plugins"
 
 # Parallel arrays (bash 3.2 compatible — macOS /bin/bash has no associative arrays)
-_C_ID=() _C_NAME=() _C_DESC=() _C_FILE=() _C_SELECTED=()
-_C_FLAGS=() _C_FLAG_IDS=()   # parallel: _C_FLAGS[i] -> _C_FLAG_IDS[i]
-COMPONENT_COUNT=0
+_P_ID=() _P_NAME=() _P_DESC=() _P_FILE=() _P_SELECTED=()
+_P_FLAGS=() _P_FLAG_IDS=()   # parallel: _P_FLAGS[i] -> _P_FLAG_IDS[i]
+PLUGIN_COUNT=0
 
-# Find the slot index for a component ID; prints index or returns 1.
-_component_slot() {
+# Find the slot index for a plugin ID; prints index or returns 1.
+_plugin_slot() {
   local target="$1" i
-  for ((i=0; i<COMPONENT_COUNT; i++)); do
-    [[ "${_C_ID[$i]}" == "$target" ]] && { echo "$i"; return 0; }
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    [[ "${_P_ID[$i]}" == "$target" ]] && { echo "$i"; return 0; }
   done
   return 1
 }
 
 selected_get() {
   local slot
-  slot=$(_component_slot "$1") || { echo 0; return; }
-  echo "${_C_SELECTED[$slot]:-0}"
+  slot=$(_plugin_slot "$1") || { echo 0; return; }
+  echo "${_P_SELECTED[$slot]:-0}"
 }
 
 selected_set() {
   local slot
-  slot=$(_component_slot "$1") || return 1
-  _C_SELECTED[$slot]="$2"
+  slot=$(_plugin_slot "$1") || return 1
+  _P_SELECTED[$slot]="$2"
 }
 
 flag_to_id() {
   local target="$1" i
-  for ((i=0; i<${#_C_FLAGS[@]}; i++)); do
-    [[ "${_C_FLAGS[$i]}" == "$target" ]] && { echo "${_C_FLAG_IDS[$i]}"; return 0; }
+  for ((i=0; i<${#_P_FLAGS[@]}; i++)); do
+    [[ "${_P_FLAGS[$i]}" == "$target" ]] && { echo "${_P_FLAG_IDS[$i]}"; return 0; }
   done
   return 1
 }
 
-for _f in "$COMPONENTS_DIR"/*.sh; do
-  [[ -f "$_f" ]] || continue
-  # Extract metadata in a subshell to avoid side effects
-  _meta=$(bash -c '
-    COMPONENT_ID="" COMPONENT_NAME="" COMPONENT_DESC="" COMPONENT_DEFAULT=0
-    COMPONENT_CLI_FLAGS="" COMPONENT_NEEDS_PROMPT=0 COMPONENT_RUN_ON_LAUNCH=0
-    source "$1" 2>/dev/null
-    printf "%s\n%s\n%s\n%s\n%s\n%s\n%s\n" \
-      "$COMPONENT_ID" "$COMPONENT_NAME" "$COMPONENT_DESC" "$COMPONENT_DEFAULT" \
-      "$COMPONENT_CLI_FLAGS" "$COMPONENT_NEEDS_PROMPT" "$COMPONENT_RUN_ON_LAUNCH"
-  ' _ "$_f")
+# Discover built-in plugins first, then user plugins. On PLUGIN_ID collision
+# the user plugin overrides (logged). Final order is sorted A-Z by PLUGIN_NAME
+# below — drives both TUI display and install order.
+for _dir in "$BUILTIN_PLUGINS_DIR" "$USER_PLUGINS_DIR"; do
+  [[ -d "$_dir" ]] || continue
+  for _f in "$_dir"/*.sh; do
+    [[ -f "$_f" ]] || continue
+    _meta=$(bash -c '
+      PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
+      PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
+      source "$1" 2>/dev/null
+      printf "%s\n%s\n%s\n%s\n%s\n%s\n%s\n" \
+        "$PLUGIN_ID" "$PLUGIN_NAME" "$PLUGIN_DESC" "$PLUGIN_DEFAULT" \
+        "$PLUGIN_CLI_FLAGS" "$PLUGIN_NEEDS_PROMPT" "$PLUGIN_RUN_ON_LAUNCH"
+    ' _ "$_f")
 
-  _i=$COMPONENT_COUNT
-  IFS=$'\n' read -d '' -r _cid _cname _cdesc _cdefault _ccli _cprompt _claunch <<< "$_meta" || true
-  [[ -z "$_cid" ]] && continue
+    IFS=$'\n' read -d '' -r _pid _pname _pdesc _pdefault _pcli _pprompt _plaunch <<< "$_meta" || true
+    [[ -z "$_pid" ]] && continue
 
-  _C_ID[$_i]="$_cid"
-  _C_NAME[$_i]="$_cname"
-  _C_DESC[$_i]="$_cdesc"
-  _C_FILE[$_i]="$_f"
-  _C_SELECTED[$_i]="${_cdefault:-0}"
+    if _existing=$(_plugin_slot "$_pid"); then
+      echo "[!] Plugin '$_pid' from $_f overrides ${_P_FILE[$_existing]}" >&2
+      _P_NAME[$_existing]="$_pname"
+      _P_DESC[$_existing]="$_pdesc"
+      _P_FILE[$_existing]="$_f"
+      _P_SELECTED[$_existing]="${_pdefault:-0}"
+      for _flag in $_pcli; do
+        _P_FLAGS+=("$_flag")
+        _P_FLAG_IDS+=("$_pid")
+      done
+      continue
+    fi
 
-  # Map CLI flags to component IDs
-  for _flag in $_ccli; do
-    _C_FLAGS+=("$_flag")
-    _C_FLAG_IDS+=("$_cid")
+    _i=$PLUGIN_COUNT
+    _P_ID[$_i]="$_pid"
+    _P_NAME[$_i]="$_pname"
+    _P_DESC[$_i]="$_pdesc"
+    _P_FILE[$_i]="$_f"
+    _P_SELECTED[$_i]="${_pdefault:-0}"
+
+    for _flag in $_pcli; do
+      _P_FLAGS+=("$_flag")
+      _P_FLAG_IDS+=("$_pid")
+    done
+
+    PLUGIN_COUNT=$((_i + 1))
   done
-
-  COMPONENT_COUNT=$((_i + 1))
 done
-unset _f _meta _i _cid _cname _cdesc _cdefault _ccli _cprompt _claunch _flag
+unset _dir _f _meta _i _pid _pname _pdesc _pdefault _pcli _pprompt _plaunch _flag _existing
 
-# Build the COMPONENTS array the TUI expects (id:name:desc:default)
-COMPONENTS=()
-for ((_i=0; _i<COMPONENT_COUNT; _i++)); do
-  COMPONENTS+=("${_C_ID[$_i]}:${_C_NAME[$_i]}:${_C_DESC[$_i]}:${_C_SELECTED[$_i]}")
+# Sort plugins by PLUGIN_NAME, case-insensitive A-Z (stable).
+if (( PLUGIN_COUNT > 1 )); then
+  _sort_lines=""
+  for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+    _sort_lines+="${_P_NAME[$_i]}"$'\t'"$_i"$'\n'
+  done
+  _new_ID=() _new_NAME=() _new_DESC=() _new_FILE=() _new_SELECTED=()
+  while IFS=$'\t' read -r _name _slot; do
+    _new_ID+=("${_P_ID[$_slot]}")
+    _new_NAME+=("${_P_NAME[$_slot]}")
+    _new_DESC+=("${_P_DESC[$_slot]}")
+    _new_FILE+=("${_P_FILE[$_slot]}")
+    _new_SELECTED+=("${_P_SELECTED[$_slot]}")
+  done < <(printf '%s' "$_sort_lines" | sort -f -s -t$'\t' -k1,1)
+  _P_ID=("${_new_ID[@]}")
+  _P_NAME=("${_new_NAME[@]}")
+  _P_DESC=("${_new_DESC[@]}")
+  _P_FILE=("${_new_FILE[@]}")
+  _P_SELECTED=("${_new_SELECTED[@]}")
+  unset _new_ID _new_NAME _new_DESC _new_FILE _new_SELECTED _sort_lines _name _slot _i
+fi
+
+# Build the PLUGINS array the TUI expects (id:name:desc:default)
+PLUGINS=()
+for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+  PLUGINS+=("${_P_ID[$_i]}:${_P_NAME[$_i]}:${_P_DESC[$_i]}:${_P_SELECTED[$_i]}")
 done
 unset _i
 
 # ---------------------------------------------------------------------------
-# TUI component selector
+# TUI plugin selector
 # ---------------------------------------------------------------------------
 show_tui() {
-  local count=${#COMPONENTS[@]}
+  local count=${#PLUGINS[@]}
   local cursor=0
   local key seq marker id name desc default
 
@@ -334,7 +376,7 @@ show_tui() {
   while true; do
     printf '\033[2J\033[H'
     echo -e "${GREEN}+------------------------------------------------------+${NC}"
-    echo -e "${GREEN}|${NC}  Select components to install                        ${GREEN}|${NC}"
+    echo -e "${GREEN}|${NC}  Select plugins to install                           ${GREEN}|${NC}"
     echo -e "${GREEN}+------------------------------------------------------+${NC}"
     echo -e "${GREEN}|${NC}  Up/Down or j/k: navigate   Space: toggle   Enter: go${GREEN}|${NC}"
     echo -e "${GREEN}|${NC}  q: quit                                             ${GREEN}|${NC}"
@@ -342,9 +384,9 @@ show_tui() {
     echo ""
 
     for ((i=0; i<count; i++)); do
-      IFS=: read -r id name desc default <<< "${COMPONENTS[$i]}"
+      IFS=: read -r id name desc default <<< "${PLUGINS[$i]}"
       marker="[ ]"
-      [[ "${_C_SELECTED[$i]}" == "1" ]] && marker="[x]"
+      [[ "${_P_SELECTED[$i]}" == "1" ]] && marker="[x]"
 
       if [[ $i -eq $cursor ]]; then
         printf "  \033[7m %s %-24s %s \033[0m\n" "$marker" "$name" "$desc"
@@ -368,10 +410,10 @@ show_tui() {
       'k') cursor=$(( (cursor - 1 + count) % count )) ;;
       'j') cursor=$(( (cursor + 1) % count )) ;;
       ' ')
-        if [[ "${_C_SELECTED[$cursor]}" == "1" ]]; then
-          _C_SELECTED[$cursor]=0
+        if [[ "${_P_SELECTED[$cursor]}" == "1" ]]; then
+          _P_SELECTED[$cursor]=0
         else
-          _C_SELECTED[$cursor]=1
+          _P_SELECTED[$cursor]=1
         fi
         ;;
       ''|$'\n') break ;;
@@ -388,7 +430,7 @@ show_tui() {
 }
 
 # ---------------------------------------------------------------------------
-# Core install functions (not components)
+# Core install functions (not plugins)
 # ---------------------------------------------------------------------------
 install_ohmyzsh() {
   log "Installing Oh My Zsh..."
@@ -416,44 +458,46 @@ ZSHEOF
 # ---------------------------------------------------------------------------
 # Component dispatch helpers
 # ---------------------------------------------------------------------------
-# Source a component file and call its functions. Each source overwrites
-# the component_* functions, so we process one at a time.
-_run_component_prompts() {
-  for _f in "$COMPONENTS_DIR"/*.sh; do
-    [[ -f "$_f" ]] || continue
-    source "$_f"
-    [[ "$(selected_get "$COMPONENT_ID")" != "1" ]] && continue
-    [[ "${COMPONENT_NEEDS_PROMPT:-0}" != "1" ]] && continue
-    component_prompt
+# Source a plugin file and call its functions. Each source overwrites
+# the plugin_* functions, so we process one at a time. We iterate _P_FILE
+# (sorted A-Z by PLUGIN_NAME during discovery) so install order matches the
+# TUI display order and is identical across hosts.
+_run_plugin_prompts() {
+  local i
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    source "${_P_FILE[$i]}"
+    [[ "$(selected_get "$PLUGIN_ID")" != "1" ]] && continue
+    [[ "${PLUGIN_NEEDS_PROMPT:-0}" != "1" ]] && continue
+    plugin_prompt
   done
 }
 
-_run_component_installs() {
+_run_plugin_installs() {
   local from_template="$1"
-  for _f in "$COMPONENTS_DIR"/*.sh; do
-    [[ -f "$_f" ]] || continue
-    source "$_f"
-    [[ "$(selected_get "$COMPONENT_ID")" != "1" ]] && continue
+  local i
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    source "${_P_FILE[$i]}"
+    [[ "$(selected_get "$PLUGIN_ID")" != "1" ]] && continue
 
     if [[ "$from_template" == "1" ]]; then
-      # Template launch: only run components that declare RUN_ON_LAUNCH
-      if [[ "${COMPONENT_RUN_ON_LAUNCH:-0}" == "1" ]]; then
-        if declare -F component_is_installed >/dev/null && component_is_installed; then
+      # Template launch: only run plugins that declare RUN_ON_LAUNCH
+      if [[ "${PLUGIN_RUN_ON_LAUNCH:-0}" == "1" ]]; then
+        if declare -F plugin_is_installed >/dev/null && plugin_is_installed; then
           # Already installed but needs on_launch hooks (symlinks, config, etc.)
-          if declare -F component_on_launch >/dev/null; then
-            component_on_launch
+          if declare -F plugin_on_launch >/dev/null; then
+            plugin_on_launch
           fi
         else
-          component_install
+          plugin_install
         fi
       fi
     else
       # Fresh install
-      if declare -F component_is_installed >/dev/null && component_is_installed; then
-        log "$COMPONENT_NAME already installed, skipping"
+      if declare -F plugin_is_installed >/dev/null && plugin_is_installed; then
+        log "$PLUGIN_NAME already installed, skipping"
         continue
       fi
-      component_install
+      plugin_install
     fi
   done
 }
@@ -509,7 +553,7 @@ while [[ $# -gt 0 ]]; do
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
     -*)
-      # Check if it's a component CLI flag
+      # Check if it's a plugin CLI flag
       if _flag_id=$(flag_to_id "$1"); then
         selected_set "$_flag_id" 1
         shift
@@ -559,7 +603,7 @@ if [[ ! "${MAP_CHOICE:-Y}" =~ ^[Nn]$ ]]; then
 fi
 
 # ---------------------------------------------------------------------------
-# TUI component selector
+# TUI plugin selector
 # ---------------------------------------------------------------------------
 if [[ "$NO_TUI" == "0" ]]; then
   show_tui
@@ -568,7 +612,7 @@ fi
 # ---------------------------------------------------------------------------
 # Component prompts — called once, after TUI decision
 # ---------------------------------------------------------------------------
-_run_component_prompts
+_run_plugin_prompts
 
 # ---------------------------------------------------------------------------
 # Dry-run summary
@@ -588,8 +632,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
   echo ""
-  echo "Selected components:"
-  for entry in "${COMPONENTS[@]}"; do
+  echo "Selected plugins:"
+  for entry in "${PLUGINS[@]}"; do
     IFS=: read -r id name desc default <<< "$entry"
     if [[ "$(selected_get "$id")" == "1" ]]; then
       echo "  [x] $name"
@@ -764,9 +808,9 @@ ZSHEOF
 fi  # end FROM_BASE_IMAGE == 0
 
 # ---------------------------------------------------------------------------
-# Install selected components
+# Install selected plugins
 # ---------------------------------------------------------------------------
-_run_component_installs "$FROM_BASE_IMAGE"
+_run_plugin_installs "$FROM_BASE_IMAGE"
 
 # Run mise install if the workspace has a config
 if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
@@ -876,7 +920,7 @@ fi
 echo "Write access: ${IDMAP_METHOD:-none}"
 echo ""
 echo "Installed:"
-for entry in "${COMPONENTS[@]}"; do
+for entry in "${PLUGINS[@]}"; do
   IFS=: read -r id name desc default <<< "$entry"
   [[ "$(selected_get "$id")" == "1" ]] && echo "  ✓ $name"
 done

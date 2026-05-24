@@ -1,13 +1,13 @@
-COMPONENT_ID="claude-code"
-COMPONENT_NAME="Claude Code"
-COMPONENT_DESC="AI coding assistant"
-COMPONENT_DEFAULT=0
+PLUGIN_ID="claude-code"
+PLUGIN_NAME="Claude Code"
+PLUGIN_DESC="AI coding assistant"
+PLUGIN_DEFAULT=0
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/claude"' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   log "Installing Claude Code..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'CLAUDE'
     set -e

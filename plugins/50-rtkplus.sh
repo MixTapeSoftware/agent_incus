@@ -1,10 +1,10 @@
-COMPONENT_ID="rtkplus"
-COMPONENT_NAME="rtk"
-COMPONENT_DESC="AI coding agent toolkit"
-COMPONENT_DEFAULT=0
-COMPONENT_NEEDS_PROMPT=1
+PLUGIN_ID="rtkplus"
+PLUGIN_NAME="rtk"
+PLUGIN_DESC="AI coding agent toolkit"
+PLUGIN_DEFAULT=0
+PLUGIN_NEEDS_PROMPT=1
 
-component_prompt() {
+plugin_prompt() {
   echo ""
   log "Select an agent for rtk init"
   echo "  CLI command output compression for token efficiency"
@@ -30,11 +30,11 @@ component_prompt() {
   esac
 }
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/rtk"' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   log "Installing rtk..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "bash -s" <<EOF
     set -e

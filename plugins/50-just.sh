@@ -1,13 +1,13 @@
-COMPONENT_ID="just"
-COMPONENT_NAME="just"
-COMPONENT_DESC="Command runner for project tasks"
-COMPONENT_DEFAULT=0
+PLUGIN_ID="just"
+PLUGIN_NAME="just"
+PLUGIN_DESC="Command runner for project tasks"
+PLUGIN_DEFAULT=0
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'test -x "$HOME/.local/bin/just"' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   log "Installing just..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e

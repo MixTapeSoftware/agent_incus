@@ -1,13 +1,13 @@
-COMPONENT_ID="codex"
-COMPONENT_NAME="Codex"
-COMPONENT_DESC="OpenAI coding agent"
-COMPONENT_DEFAULT=0
+PLUGIN_ID="codex"
+PLUGIN_NAME="Codex"
+PLUGIN_DESC="OpenAI coding agent"
+PLUGIN_DEFAULT=0
 
-component_is_installed() {
+plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v codex' &>/dev/null
 }
 
-component_install() {
+plugin_install() {
   log "Installing Codex..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
