@@ -239,6 +239,7 @@ NO_TUI=0
 SAVE_TEMPLATE=0
 NO_SUDO=0
 NO_MOUNT=0
+ACK_ENV=0
 MAP_USER=0
 IDMAP_METHOD=""
 
@@ -569,6 +570,7 @@ done
 # macOS pre-flight (noop on Linux)
 # ---------------------------------------------------------------------------
 source "$SCRIPT_DIR/incus.macos.setup"
+source "$SCRIPT_DIR/incus.envscan"
 
 # ---------------------------------------------------------------------------
 # Validate
@@ -587,6 +589,21 @@ fi
 
 if [[ "$SAVE_TEMPLATE" == "1" ]]; then
   NO_MOUNT=1
+fi
+
+# ---------------------------------------------------------------------------
+# .env warning — only when actually mounting the host workspace
+# ---------------------------------------------------------------------------
+ENV_FILES_LIST=""
+if [[ "$NO_MOUNT" == "0" ]]; then
+  ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"
+  if [[ -n "$ENV_FILES_LIST" ]]; then
+    echo ""
+    while IFS= read -r _line; do
+      echo -e "${YELLOW}${_line}${NC}" >&2
+    done < <(printf '%s\n' "$ENV_FILES_LIST" | format_env_warning_lines "$WORKSPACE_PATH")
+    confirm_env_acknowledgement "$ACK_ENV"
+  fi
 fi
 
 HOST_USER="$(whoami)"
