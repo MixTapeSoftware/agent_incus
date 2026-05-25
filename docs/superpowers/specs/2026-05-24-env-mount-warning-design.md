@@ -46,8 +46,9 @@ If `ENV_FILES` is empty, the rest of the feature is a no-op.
 
 Printed to stderr via the existing `warn()` helper (yellow `WARN:` prefix,
 incus.init:12-15) when `ENV_FILES` is non-empty. Paths are shown relative to
-`WORKSPACE_PATH`. If the list exceeds 20 entries, it is truncated with a
-`…and N more` line so the warning stays readable.
+`WORKSPACE_PATH`, sorted alphabetically (`LC_ALL=C`) so the listing is
+stable across filesystems and locales. If the list exceeds 20 entries, it
+is truncated with a `…and N more` line so the warning stays readable.
 
 ```
 WARN: The workspace mount will expose these .env files inside the container:
@@ -71,8 +72,9 @@ WARN: Safer pattern: use the 1Password CLI to hydrate env at runtime
   `read` (e.g., Ctrl-D / EOF) is treated as abort, not as an empty re-prompt,
   so closed stdin can't trap the loop.
 - **Non-interactive**: `error()` out immediately with a message that instructs
-  the user to pass `--ack-env`. The error message includes the same file list
-  so the user knows what they would be acknowledging.
+  the user to pass `--ack-env`. The warning block (which lists the detected
+  files) is printed to stderr immediately before the error, so the user can
+  see what they would be acknowledging — the error line itself stays terse.
 
 ## New flag
 
