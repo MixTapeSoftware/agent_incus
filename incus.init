@@ -41,6 +41,7 @@ Options:
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
   --no-mount                Clone repo into container instead of mounting host directory
+  --ack-env                 Acknowledge .env files in the workspace (skip prompt)
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --no-tui                  Skip interactive plugin selector, use defaults
   --dry-run                 Show what would be done without doing it
@@ -549,6 +550,7 @@ while [[ $# -gt 0 ]]; do
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
     --no-mount)      NO_MOUNT=1; shift ;;
+    --ack-env)       ACK_ENV=1; shift ;;
     --no-sudo)       NO_SUDO=1; shift ;;
     --no-tui)        NO_TUI=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
