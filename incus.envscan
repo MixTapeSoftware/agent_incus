@@ -34,3 +34,60 @@ detect_env_files() {
        ! -name '.env.dist' \
        -print \)
 }
+
+# ---------------------------------------------------------------------------
+# format_env_warning_lines WORKSPACE_ROOT
+#
+# Reads absolute .env* paths from stdin (one per line), prints the warning
+# block to stdout. Each line is prefixed with "[!] " so it composes cleanly
+# with the existing warn() helper's marker convention.
+#
+# - Paths shown relative to WORKSPACE_ROOT
+# - List truncated to 20 entries with "…and N more" line
+# - Block text is verbatim from the spec
+# ---------------------------------------------------------------------------
+format_env_warning_lines() {
+  local workspace="$1"
+  local -a paths=()
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    paths+=("${line#$workspace/}")
+  done
+
+  # Sort paths for consistent display
+  # Use a temporary file since bash 3.2 doesn't have mapfile/readarray
+  local tmpfile
+  tmpfile="$(mktemp)"
+  trap "rm -f '$tmpfile'" RETURN
+  printf '%s\n' "${paths[@]}" | sort > "$tmpfile"
+
+  local -a sorted_paths=()
+  while IFS= read -r line; do
+    sorted_paths+=("$line")
+  done < "$tmpfile"
+
+  local total=${#sorted_paths[@]}
+  local shown=$total
+  local remaining=0
+  if (( total > 20 )); then
+    shown=20
+    remaining=$(( total - 20 ))
+  fi
+
+  printf '[!] The workspace mount will expose these .env files inside the container:\n'
+  local i
+  for (( i=0; i<shown; i++ )); do
+    printf '[!]       %s\n' "${sorted_paths[$i]}"
+  done
+  if (( remaining > 0 )); then
+    printf '[!]       …and %d more\n' "$remaining"
+  fi
+  printf '[!] Anything running in the container — including coding agents — can read these.\n'
+  printf "[!] Adding a .env to the workspace later will also be visible; this warning only\n"
+  printf "[!] reflects what's present right now.\n"
+  printf '[!] Safer pattern: use the 1Password CLI to hydrate env at runtime\n'
+  printf '[!] (`op run --env-file=.env.tpl -- ./your-cmd`) with op:// references in place of\n'
+  printf '[!] plaintext secrets, and skip the 1pass plugin in agent containers so the agent\n'
+  printf "[!] can't resolve those references.\n"
+}
