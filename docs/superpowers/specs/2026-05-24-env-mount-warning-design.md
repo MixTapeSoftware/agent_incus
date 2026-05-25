@@ -67,7 +67,9 @@ WARN: Safer pattern: use the 1Password CLI to hydrate env at runtime
 
 - **Interactive** (`[[ -t 0 ]]` is true): `read -rp "Type 'yes' to continue, Ctrl-C to abort: "`
   in a loop. Only the exact string `yes` proceeds. Anything else re-prompts.
-  Ctrl-C aborts via the existing cleanup trap (incus.init:216-228).
+  Ctrl-C aborts via the existing cleanup trap (incus.init:216-228). A failed
+  `read` (e.g., Ctrl-D / EOF) is treated as abort, not as an empty re-prompt,
+  so closed stdin can't trap the loop.
 - **Non-interactive**: `error()` out immediately with a message that instructs
   the user to pass `--ack-env`. The error message includes the same file list
   so the user knows what they would be acknowledging.
@@ -83,8 +85,9 @@ Parsed in the existing argument loop (incus.init:540-555) by setting
 
 ## Dry-run integration
 
-The existing dry-run summary (incus.init:620-640) gains a line when
-`ENV_FILES` is non-empty:
+The existing dry-run summary (incus.init:620-640) gains a block when
+`ENV_FILES` is non-empty, inserted immediately after the `Workspace:` line so
+it sits next to the mount info it qualifies:
 
 ```
 .env files exposed: 3
