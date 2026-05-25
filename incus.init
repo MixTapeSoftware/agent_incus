@@ -649,6 +649,19 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
   fi
+  if [[ -n "$ENV_FILES_LIST" ]]; then
+    _env_count="$(printf '%s\n' "$ENV_FILES_LIST" | wc -l | tr -d ' ')"
+    echo ".env files exposed: $_env_count"
+    _shown=0
+    while IFS= read -r _envpath; do
+      if (( _shown >= 20 )); then
+        echo "  …and $(( _env_count - 20 )) more"
+        break
+      fi
+      echo "  ${_envpath#$WORKSPACE_PATH/}"
+      _shown=$(( _shown + 1 ))
+    done <<< "$ENV_FILES_LIST"
+  fi
   echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
   echo ""
   echo "Selected plugins:"
