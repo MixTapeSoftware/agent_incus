@@ -86,3 +86,38 @@ format_env_warning_lines() {
   printf '[!] plaintext secrets, and skip the 1pass plugin in agent containers so the agent\n'
   printf "[!] can't resolve those references.\n"
 }
+
+# ---------------------------------------------------------------------------
+# confirm_env_acknowledgement ACK_ENV
+#
+# Gate the launch on the user acknowledging the .env warning.
+#   ACK_ENV=1 → return 0 silently (caller already showed the warning).
+#   ACK_ENV=0 + TTY → loop on read until the user types exactly "yes".
+#   ACK_ENV=0 + no TTY → error() out and tell the user to pass --ack-env.
+#
+# A failed read (EOF / closed stdin) is treated as abort so that closed
+# stdin can't trap the loop.
+# ---------------------------------------------------------------------------
+confirm_env_acknowledgement() {
+  local ack_env="$1"
+
+  if [[ "$ack_env" == "1" ]]; then
+    return 0
+  fi
+
+  if [[ ! -t 0 ]]; then
+    error "Refusing to mount workspace with .env files in non-interactive mode. Pass --ack-env to acknowledge and proceed."
+  fi
+
+  local reply
+  while true; do
+    if ! read -rp "Type 'yes' to continue, Ctrl-C to abort: " reply; then
+      # EOF / Ctrl-D — treat as abort
+      echo ""
+      error "Aborted by closed stdin. Pass --ack-env to acknowledge in non-interactive runs."
+    fi
+    if [[ "$reply" == "yes" ]]; then
+      return 0
+    fi
+  done
+}
