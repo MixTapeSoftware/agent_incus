@@ -44,7 +44,7 @@ detect_env_files() {
 #
 # - Paths shown relative to WORKSPACE_ROOT
 # - List truncated to 20 entries with "…and N more" line
-# - Block text is verbatim from the spec
+# - Block text is verbatim from the spec; paths sorted alphabetically
 # ---------------------------------------------------------------------------
 format_env_warning_lines() {
   local workspace="$1"
@@ -54,6 +54,13 @@ format_env_warning_lines() {
     [[ -z "$line" ]] && continue
     paths+=("${line#$workspace/}")
   done
+
+  # Sort paths alphabetically for predictable user output.
+  if (( ${#paths[@]} > 0 )); then
+    local IFS=$'\n'
+    paths=( $(printf '%s\n' "${paths[@]}" | LC_ALL=C sort) )
+    unset IFS
+  fi
 
   local total=${#paths[@]}
   local shown=$total
