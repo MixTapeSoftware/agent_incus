@@ -86,5 +86,54 @@ assert_eq "only-excluded dir produces empty output" "" "$actual"
 rm -rf "$fixture"
 
 echo ""
+echo "format_env_warning_lines:"
+
+# Helper: build a temp fixture with given files, then run format_env_warning_lines.
+fmt_warning_for() {
+  local workspace="$1"; shift
+  local f
+  for f in "$@"; do
+    mkdir -p "$workspace/$(dirname "$f")"
+    : > "$workspace/$f"
+  done
+  detect_env_files "$workspace" | format_env_warning_lines "$workspace" 2>&1 || true
+}
+
+# Small list — no truncation
+fixture="$(mktemp -d)"
+actual="$(fmt_warning_for "$fixture" .env apps/web/.env.local services/api/.env.production)"
+expected="$(cat <<'EOF'
+[!] The workspace mount will expose these .env files inside the container:
+[!]       .env
+[!]       apps/web/.env.local
+[!]       services/api/.env.production
+[!] Anything running in the container — including coding agents — can read these.
+[!] Adding a .env to the workspace later will also be visible; this warning only
+[!] reflects what's present right now.
+[!] Safer pattern: use the 1Password CLI to hydrate env at runtime
+[!] (`op run --env-file=.env.tpl -- ./your-cmd`) with op:// references in place of
+[!] plaintext secrets, and skip the 1pass plugin in agent containers so the agent
+[!] can't resolve those references.
+EOF
+)"
+# Strip ANSI color codes from actual so the test is stable regardless of TTY.
+actual="$(printf '%s' "$actual" | sed 's/\x1b\[[0-9;]*m//g')"
+assert_eq "small list, no truncation" "$expected" "$actual"
+rm -rf "$fixture"
+
+# Long list — truncates after 20, appends "…and N more"
+fixture="$(mktemp -d)"
+files=()
+for i in $(seq 1 25); do files+=("dir$i/.env"); done
+actual="$(fmt_warning_for "$fixture" "${files[@]}")"
+actual="$(printf '%s' "$actual" | sed 's/\x1b\[[0-9;]*m//g')"
+truncation_line="$(printf '%s' "$actual" | grep -E '…and [0-9]+ more' || true)"
+assert_eq "long list shows truncation marker" "[!]       …and 5 more" "$truncation_line"
+# Count listed file entries (lines that start with "[!]       dir...")
+listed_count="$(printf '%s\n' "$actual" | grep -cE '^\[!\]       dir[0-9]+/\.env$' || true)"
+assert_eq "long list shows exactly 20 entries" "20" "$listed_count"
+rm -rf "$fixture"
+
+echo ""
 echo "Results: $PASS passed, $FAIL failed"
 [[ "$FAIL" -eq 0 ]]
