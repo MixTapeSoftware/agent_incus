@@ -55,19 +55,7 @@ format_env_warning_lines() {
     paths+=("${line#$workspace/}")
   done
 
-  # Sort paths for consistent display
-  # Use a temporary file since bash 3.2 doesn't have mapfile/readarray
-  local tmpfile
-  tmpfile="$(mktemp)"
-  trap "rm -f '$tmpfile'" RETURN
-  printf '%s\n' "${paths[@]}" | sort > "$tmpfile"
-
-  local -a sorted_paths=()
-  while IFS= read -r line; do
-    sorted_paths+=("$line")
-  done < "$tmpfile"
-
-  local total=${#sorted_paths[@]}
+  local total=${#paths[@]}
   local shown=$total
   local remaining=0
   if (( total > 20 )); then
@@ -78,7 +66,7 @@ format_env_warning_lines() {
   printf '[!] The workspace mount will expose these .env files inside the container:\n'
   local i
   for (( i=0; i<shown; i++ )); do
-    printf '[!]       %s\n' "${sorted_paths[$i]}"
+    printf '[!]       %s\n' "${paths[$i]}"
   done
   if (( remaining > 0 )); then
     printf '[!]       …and %d more\n' "$remaining"
