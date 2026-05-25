@@ -99,6 +99,12 @@ fmt_warning_for() {
   detect_env_files "$workspace" | format_env_warning_lines "$workspace" 2>&1 || true
 }
 
+# Strip ANSI color codes via bash ANSI-C quoting so the pattern is a literal
+# ESC byte. GNU sed's \xNN escape is not portable to BSD/macOS sed.
+strip_ansi() {
+  sed $'s/\033\\[[0-9;]*m//g'
+}
+
 # Small list — no truncation
 fixture="$(mktemp -d)"
 actual="$(fmt_warning_for "$fixture" .env apps/web/.env.local services/api/.env.production)"
@@ -117,7 +123,7 @@ expected="$(cat <<'EOF'
 EOF
 )"
 # Strip ANSI color codes from actual so the test is stable regardless of TTY.
-actual="$(printf '%s' "$actual" | sed 's/\x1b\[[0-9;]*m//g')"
+actual="$(printf '%s' "$actual" | strip_ansi)"
 assert_eq "small list, no truncation" "$expected" "$actual"
 rm -rf "$fixture"
 
@@ -126,7 +132,7 @@ fixture="$(mktemp -d)"
 files=()
 for i in $(seq 1 25); do files+=("dir$i/.env"); done
 actual="$(fmt_warning_for "$fixture" "${files[@]}")"
-actual="$(printf '%s' "$actual" | sed 's/\x1b\[[0-9;]*m//g')"
+actual="$(printf '%s' "$actual" | strip_ansi)"
 truncation_line="$(printf '%s' "$actual" | grep -E '…and [0-9]+ more' || true)"
 assert_eq "long list shows truncation marker" "[!]       …and 5 more" "$truncation_line"
 # Count listed file entries (lines that start with "[!]       dir...")
