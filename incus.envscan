@@ -1,0 +1,36 @@
+# incus.envscan
+# Detect .env* files in the workspace about to be mounted, format a warning,
+# and gate the launch on user acknowledgement.
+#
+# Sourced by incus.init — inherits colors, log/warn/error, set -euo pipefail.
+# Defines functions only; no top-level work, so it is safe to source from
+# tests without triggering side effects.
+
+# ---------------------------------------------------------------------------
+# detect_env_files DIR
+#
+# Print absolute paths of .env* files under DIR, one per line.
+# Excludes:
+#   - paths containing /node_modules/, /.git/, /vendor/, /target/, /dist/, /build/
+#   - basenames .env.example, .env.sample, .env.template, .env.dist
+# Output is empty (and exit 0) when nothing matches.
+# ---------------------------------------------------------------------------
+detect_env_files() {
+  local dir="$1"
+  find "$dir" \
+    \( -type d \( \
+        -name node_modules -o \
+        -name .git        -o \
+        -name vendor      -o \
+        -name target      -o \
+        -name dist        -o \
+        -name build \
+       \) -prune \) \
+    -o \
+    \( -type f -name '.env*' \
+       ! -name '.env.example' \
+       ! -name '.env.sample' \
+       ! -name '.env.template' \
+       ! -name '.env.dist' \
+       -print \)
+}
