@@ -782,6 +782,28 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 "
 
 # ---------------------------------------------------------------------------
+# Disable mise's gix-based git cloner. gix trips on some asdf plugin repos
+# (notably asdf-php) with "Failed to update references to their new position
+# to match their remote locations" and fails any mise install run by the
+# user later. System git handles the same clones fine.
+# ---------------------------------------------------------------------------
+log "Configuring mise to use system git (gix=false)..."
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'MISECFG'
+  set -e
+  mkdir -p "$HOME/.config/mise"
+  cfg="$HOME/.config/mise/config.toml"
+  if [[ ! -f "$cfg" ]] || ! grep -q '^\[settings\]' "$cfg"; then
+    printf '[settings]\ngix = false\n' >> "$cfg"
+  elif ! grep -qE '^gix *= *false' "$cfg"; then
+    # [settings] exists but no gix=false line — append under the section
+    awk '
+      /^\[settings\]/ { print; print "gix = false"; next }
+      { print }
+    ' "$cfg" > "$cfg.new" && mv "$cfg.new" "$cfg"
+  fi
+MISECFG
+
+# ---------------------------------------------------------------------------
 # Mount workspace or clone repo
 # ---------------------------------------------------------------------------
 if [[ "$NO_MOUNT" == "1" ]]; then
