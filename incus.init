@@ -460,13 +460,24 @@ ZSHEOF
 # ---------------------------------------------------------------------------
 # Component dispatch helpers
 # ---------------------------------------------------------------------------
-# Source a plugin file and call its functions. Each source overwrites
-# the plugin_* functions, so we process one at a time. We iterate _P_FILE
+# Source a plugin file and call its functions. We iterate _P_FILE
 # (sorted A-Z by PLUGIN_NAME during discovery) so install order matches the
 # TUI display order and is identical across hosts.
+#
+# Sourced plugin files do not overwrite metadata vars or functions they don't
+# declare, so without an explicit reset, values leak from one plugin to the
+# next (e.g. PLUGIN_NEEDS_PROMPT=1 and plugin_prompt from 1pass would carry
+# over to a later plugin that selected without one).
+_reset_plugin_state() {
+  PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
+  PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
+  unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch 2>/dev/null || true
+}
+
 _run_plugin_prompts() {
   local i
   for ((i=0; i<PLUGIN_COUNT; i++)); do
+    _reset_plugin_state
     source "${_P_FILE[$i]}"
     [[ "$(selected_get "$PLUGIN_ID")" != "1" ]] && continue
     [[ "${PLUGIN_NEEDS_PROMPT:-0}" != "1" ]] && continue
@@ -478,6 +489,7 @@ _run_plugin_installs() {
   local from_template="$1"
   local i
   for ((i=0; i<PLUGIN_COUNT; i++)); do
+    _reset_plugin_state
     source "${_P_FILE[$i]}"
     [[ "$(selected_get "$PLUGIN_ID")" != "1" ]] && continue
 
