@@ -494,16 +494,21 @@ _run_plugin_installs() {
     [[ "$(selected_get "$PLUGIN_ID")" != "1" ]] && continue
 
     if [[ "$from_template" == "1" ]]; then
-      # Template launch: only run plugins that declare RUN_ON_LAUNCH
-      if [[ "${PLUGIN_RUN_ON_LAUNCH:-0}" == "1" ]]; then
-        if declare -F plugin_is_installed >/dev/null && plugin_is_installed; then
-          # Already installed but needs on_launch hooks (symlinks, config, etc.)
-          if declare -F plugin_on_launch >/dev/null; then
-            plugin_on_launch
-          fi
-        else
-          plugin_install
-        fi
+      # Template launch dispatch:
+      #   not installed                     -> plugin_install (added on top of template)
+      #   installed + NEEDS_PROMPT=1        -> plugin_install (re-apply prompted token/config)
+      #   installed + RUN_ON_LAUNCH=1       -> plugin_on_launch (symlinks/config hooks)
+      #   otherwise                         -> skip (already baked in)
+      local _installed=0
+      if declare -F plugin_is_installed >/dev/null && plugin_is_installed; then
+        _installed=1
+      fi
+      if [[ "$_installed" == "0" ]]; then
+        plugin_install
+      elif [[ "${PLUGIN_NEEDS_PROMPT:-0}" == "1" ]]; then
+        plugin_install
+      elif [[ "${PLUGIN_RUN_ON_LAUNCH:-0}" == "1" ]] && declare -F plugin_on_launch >/dev/null; then
+        plugin_on_launch
       fi
     else
       # Fresh install
