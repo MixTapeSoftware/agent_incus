@@ -31,8 +31,16 @@ plugin_is_installed() {
 }
 
 plugin_install() {
-  log "Adding /dev/net/tun to $CONTAINER_NAME..."
-  if ! incus config device get "$CONTAINER_NAME" tun type &>/dev/null; then
+  # The container may already expose /dev/net/tun via its own devtmpfs /dev
+  # (true on newer kernels/incus). Bind-mounting a unix-char device on top of
+  # that existing node fails with EBUSY ("Failed to remove existing mount
+  # target /dev/net/tun"), so only add the device when tun is actually absent.
+  if incus exec "$CONTAINER_NAME" -- test -c /dev/net/tun; then
+    log "/dev/net/tun already present in $CONTAINER_NAME; skipping device add"
+  elif incus config device get "$CONTAINER_NAME" tun type &>/dev/null; then
+    log "tun device already configured on $CONTAINER_NAME"
+  else
+    log "Adding /dev/net/tun to $CONTAINER_NAME..."
     incus config device add "$CONTAINER_NAME" tun unix-char path=/dev/net/tun
   fi
 
