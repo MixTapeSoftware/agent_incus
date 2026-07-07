@@ -36,15 +36,29 @@ plugin_install() {
   log "Setting GitHub token via container environment..."
   incus config set "$CONTAINER_NAME" environment.GH_TOKEN="$GH_TOKEN_VALUE"
 
-  # Write to .zshenv so the token survives `su -` login shells
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "echo 'export GH_TOKEN=\"$GH_TOKEN_VALUE\"' >> ~/.zshenv"
+  # Persist the token in .zshenv so it survives `su -` login shells. Feed the
+  # export line over stdin with %q quoting rather than interpolating the value
+  # into a remote command string: a token/name/email containing a shell
+  # metacharacter (notably a single quote) otherwise breaks the remote shell
+  # with `zsh:1: unmatched "`. Mirrors the safe pattern in incs' cmd_set_env.
+  local export_line
+  printf -v export_line 'export GH_TOKEN=%q\n' "$GH_TOKEN_VALUE"
+  printf '%s' "$export_line" | incus exec "$CONTAINER_NAME" -- \
+    su - "$HOST_USER" -s /bin/sh -c '
+      touch ~/.zshenv
+      sed -i "/^export GH_TOKEN=/d" ~/.zshenv
+      cat >> ~/.zshenv
+    '
 
   log "Configuring git credential helper and identity..."
-  incus exec "$CONTAINER_NAME" --env "GH_TOKEN=$GH_TOKEN_VALUE" -- su - "$HOST_USER" -c "
-    gh auth setup-git
-    git config --global user.name '$GH_USER_NAME'
-    git config --global user.email '$GH_USER_EMAIL'
-  "
+  # Build the remote script on the host with %q quoting and run it from stdin,
+  # so values are never spliced into a command string and we don't depend on
+  # env surviving the `su -` login shell.
+  local git_script
+  printf -v git_script 'export GH_TOKEN=%q\ngh auth setup-git\ngit config --global user.name %q\ngit config --global user.email %q\n' \
+    "$GH_TOKEN_VALUE" "$GH_USER_NAME" "$GH_USER_EMAIL"
+  printf '%s' "$git_script" | incus exec "$CONTAINER_NAME" -- \
+    su - "$HOST_USER" -s /bin/sh
+
   unset GH_TOKEN_VALUE
 }

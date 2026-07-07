@@ -812,21 +812,36 @@ MISECFG
 # Mount workspace or clone repo
 # ---------------------------------------------------------------------------
 if [[ "$NO_MOUNT" == "1" ]]; then
-  # Check if mount path exists and has content (e.g. from a base image built without --no-mount)
+  # /workspace may already be populated when launching from a saved template:
+  # save_template bakes the clone into the published image, owned by the UID of
+  # whoever built the template. If our UID differs, those files are unwritable
+  # (git commit fails on .git/index.lock, etc.), so re-own the tree to the
+  # launching user instead of erroring. A genuinely unexpected non-empty
+  # workspace (not a template launch) still errors.
   if incus exec "$CONTAINER_NAME" -- sh -c "[ -d '$MOUNT_PATH' ] && [ \"\$(ls -A '$MOUNT_PATH')\" ]"; then
-    error "$MOUNT_PATH is not empty inside the container. Rebuild the base image with --no-mount."
-  fi
-  incus exec "$CONTAINER_NAME" -- sh -c \
-    "mkdir -p $MOUNT_PATH && chown $HOST_USER:$HOST_USER $MOUNT_PATH"
-  REPO_URL="$(git -C "$PWD" remote get-url origin 2>/dev/null || true)"
-  if [[ -n "$REPO_URL" ]]; then
-    REPO_BRANCH="$(git -C "$PWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-    log "Cloning repo into container (--no-mount)..."
-    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-      "git clone --branch ${REPO_BRANCH:-main} $REPO_URL $MOUNT_PATH"
+    if [[ "$FROM_BASE_IMAGE" == "1" ]]; then
+      log "Reusing workspace from template; re-owning to $HOST_USER..."
+      incus exec "$CONTAINER_NAME" -- chown -R "$HOST_USER:$HOST_USER" "$MOUNT_PATH"
+    else
+      error "$MOUNT_PATH is not empty inside the container. Rebuild the base image with --no-mount."
+    fi
   else
-    log "No git remote found — creating empty $MOUNT_PATH"
+    incus exec "$CONTAINER_NAME" -- sh -c \
+      "mkdir -p $MOUNT_PATH && chown $HOST_USER:$HOST_USER $MOUNT_PATH"
+    REPO_URL="$(git -C "$PWD" remote get-url origin 2>/dev/null || true)"
+    if [[ -n "$REPO_URL" ]]; then
+      REPO_BRANCH="$(git -C "$PWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+      log "Cloning repo into container (--no-mount)..."
+      incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+        "git clone --branch ${REPO_BRANCH:-main} $REPO_URL $MOUNT_PATH"
+    else
+      log "No git remote found — creating empty $MOUNT_PATH"
+    fi
   fi
+  # Belt-and-suspenders: even with correct ownership, git refuses "dubious
+  # ownership" repos; register the workspace as safe for the launching user.
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+    "git config --global --add safe.directory '$MOUNT_PATH' 2>/dev/null || true"
   IDMAP_METHOD="clone"
 else
   log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"

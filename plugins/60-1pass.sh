@@ -29,8 +29,17 @@ plugin_install() {
   log "Setting 1Password token via container environment..."
   incus config set "$CONTAINER_NAME" environment.OP_SERVICE_ACCOUNT_TOKEN="$ONEPASSWORD_SERVICE_KEY"
 
-  # Also write to .zshenv so the token survives `su -` login shells
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "echo 'export OP_SERVICE_ACCOUNT_TOKEN=\"$ONEPASSWORD_SERVICE_KEY\"' >> ~/.zshenv"
+  # Also write to .zshenv so the token survives `su -` login shells. Feed the
+  # export line over stdin with %q quoting rather than interpolating the value
+  # into a remote command string, so a token containing a shell metacharacter
+  # (e.g. a single quote) can't break the remote shell.
+  local export_line
+  printf -v export_line 'export OP_SERVICE_ACCOUNT_TOKEN=%q\n' "$ONEPASSWORD_SERVICE_KEY"
+  printf '%s' "$export_line" | incus exec "$CONTAINER_NAME" -- \
+    su - "$HOST_USER" -s /bin/sh -c '
+      touch ~/.zshenv
+      sed -i "/^export OP_SERVICE_ACCOUNT_TOKEN=/d" ~/.zshenv
+      cat >> ~/.zshenv
+    '
   unset ONEPASSWORD_SERVICE_KEY
 }
