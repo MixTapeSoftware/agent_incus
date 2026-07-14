@@ -43,18 +43,25 @@ plugins/50-nvim.sh
   plugin_install()       { ... }
 ```
 
-### CLI flags
+### CLI flag and environment variables
 
-For non-interactive use (templates, CI, scripted runs):
+The plugin framework (`incus.init`) only natively supports single-word `PLUGIN_CLI_FLAGS` like `--nvim` — it doesn't parse plugin-specific flags with values. To preserve non-interactive use (templates, CI, scripted runs) without expanding the framework, the plugin honors environment variables:
 
-| Flag | Effect |
+| Variable / flag | Effect |
 |---|---|
-| `--nvim` | Enable the plugin. |
-| `--nvim-distro={nvchad\|lazyvim\|none}` | Skip the distro prompt. |
-| `--nvim-overlay=URL` | Skip the overlay prompt; use this git URL as the overlay source. |
-| `--nvim-overlay=host` | Skip the overlay prompt; copy from host `~/.config/nvim`. |
+| `--nvim` | CLI flag — enable the plugin. |
+| `NVIM_DISTRO=nvchad\|lazyvim\|none` | Skip the distro prompt. |
+| `NVIM_OVERLAY_URL=<git-url>` | Skip the overlay prompt; clone this URL. |
+| `NVIM_OVERLAY_HOST=1` | Skip the overlay prompt; copy from host (path is distro-aware — see Stage C). |
 
-If `--nvim-distro` is omitted, the distro prompt runs. If `--nvim-overlay` is omitted, the overlay prompt runs. Omit both (with just `--nvim`) and you get a fully interactive install.
+`plugin_prompt()` checks each variable and only prompts for the ones that are unset. Example non-interactive call:
+
+```
+NVIM_DISTRO=nvchad NVIM_OVERLAY_URL=https://github.com/me/nvchad-custom \
+  incs -i --nvim my-container
+```
+
+Adding plugin-specific value-flags to the framework (e.g. `--nvim-distro=`) is a possible future enhancement but is out of scope for this change.
 
 ## Install Flow
 

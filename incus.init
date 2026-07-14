@@ -534,6 +534,17 @@ save_template() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
     "sed -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d' ~/.zshenv 2>/dev/null || true"
 
+  # Empty the workspace before publishing. A template is a reusable *provisioned
+  # base* (packages, mise, shell, tools) — not a frozen copy of one repo. Baking
+  # the clone in also drags the builder's UID into every future container, where
+  # it surfaces as the overflow UID 65534 (nobody). Leaving /workspace empty lets
+  # each launch populate it fresh, owned by the launching user. The guard keeps a
+  # misresolved MOUNT_PATH from ever expanding to `rm -rf /`.
+  if [[ -n "$MOUNT_PATH" && "$MOUNT_PATH" != "/" ]]; then
+    log "Emptying workspace so the template stays a clean base..."
+    incus exec "$CONTAINER_NAME" -- rm -rf "$MOUNT_PATH"
+  fi
+
   log "Stopping container for snapshot..."
   incus stop "$CONTAINER_NAME"
   incus publish "$CONTAINER_NAME" --alias "$alias"
@@ -600,21 +611,50 @@ require_commands incus curl sudo realpath
 [[ ! "$CONTAINER_NAME" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] && error "Invalid container name: must start with a letter, only letters/digits/hyphens"
 incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAME' already exists"
 
-if [[ "$NO_MOUNT" == "0" ]]; then
-  WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
-  WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
-  [[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
-fi
-
+# Template builds never mount the host workspace.
 if [[ "$SAVE_TEMPLATE" == "1" ]]; then
   NO_MOUNT=1
 fi
 
+HOST_USER="$(whoami)"
+HOST_UID="$(id -u)"
+HOST_GID="$(id -g)"
+
 # ---------------------------------------------------------------------------
-# .env warning — only when actually mounting the host workspace
+# Mount decision — mount the host workspace (writable as you) or clone the repo
+# into the container instead. --no-mount and --template force the clone path;
+# otherwise ask, defaulting to mount+map. Answering "n" means "don't touch my
+# host files": clone into the container rather than leave a degraded, unmapped
+# mount (owned by nobody but still writing through to the host). Non-interactive
+# (--no-tui) runs honor the flags without prompting.
+# ---------------------------------------------------------------------------
+if [[ "$NO_MOUNT" == "0" ]]; then
+  if [[ "$NO_TUI" == "0" ]]; then
+    echo ""
+    read -rp "Mount your host workspace, writable as you? [Y/n] " MOUNT_CHOICE
+    if [[ "${MOUNT_CHOICE:-Y}" =~ ^[Nn]$ ]]; then
+      NO_MOUNT=1          # clone into the container instead
+    else
+      MAP_USER=1          # mount + map host user for write access
+    fi
+  else
+    MAP_USER=1            # non-interactive default: mount with user mapping
+  fi
+fi
+
+# ---------------------------------------------------------------------------
+# Resolve the workspace path and warn about .env files. Host files enter the
+# container either way — a live bind mount (mount mode) or a copy including .git
+# (no-mount) — so the secret-exposure warning applies to both. Template builds
+# are the exception: save_template publishes an empty workspace, so nothing is
+# exposed and there is no host tree to resolve.
 # ---------------------------------------------------------------------------
 ENV_FILES_LIST=""
-if [[ "$NO_MOUNT" == "0" ]]; then
+if [[ "$SAVE_TEMPLATE" != "1" ]]; then
+  WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
+  WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
+  [[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
+
   ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"
   if [[ -n "$ENV_FILES_LIST" ]]; then
     echo ""
@@ -623,19 +663,6 @@ if [[ "$NO_MOUNT" == "0" ]]; then
     done < <(printf '%s\n' "$ENV_FILES_LIST" | format_env_warning_lines "$WORKSPACE_PATH")
     confirm_env_acknowledgement "$ACK_ENV"
   fi
-fi
-
-HOST_USER="$(whoami)"
-HOST_UID="$(id -u)"
-HOST_GID="$(id -g)"
-
-# ---------------------------------------------------------------------------
-# User mapping prompt — simple yes/no, implementation details are hidden
-# ---------------------------------------------------------------------------
-echo ""
-read -rp "Map host user into container for workspace write access? [Y/n] " MAP_CHOICE
-if [[ ! "${MAP_CHOICE:-Y}" =~ ^[Nn]$ ]]; then
-  MAP_USER=1
 fi
 
 # ---------------------------------------------------------------------------
@@ -662,7 +689,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "Image:       $BASE_IMAGE"
   echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
   if [[ "$NO_MOUNT" == "1" ]]; then
-    echo "Workspace:   git clone into $MOUNT_PATH (no host mount)"
+    echo "Workspace:   copy host tree into $MOUNT_PATH incl .git (no host mount)"
   else
     echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
   fi
@@ -679,7 +706,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
       _shown=$(( _shown + 1 ))
     done <<< "$ENV_FILES_LIST"
   fi
-  echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
+  if [[ "$NO_MOUNT" == "1" ]]; then
+    echo "Write access: yes (copied into container, owned by you)"
+  else
+    echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
+  fi
   echo ""
   echo "Selected plugins:"
   for entry in "${PLUGINS[@]}"; do
@@ -826,23 +857,25 @@ if [[ "$NO_MOUNT" == "1" ]]; then
       error "$MOUNT_PATH is not empty inside the container. Rebuild the base image with --no-mount."
     fi
   else
-    incus exec "$CONTAINER_NAME" -- sh -c \
-      "mkdir -p $MOUNT_PATH && chown $HOST_USER:$HOST_USER $MOUNT_PATH"
-    REPO_URL="$(git -C "$PWD" remote get-url origin 2>/dev/null || true)"
-    if [[ -n "$REPO_URL" ]]; then
-      REPO_BRANCH="$(git -C "$PWD" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
-      log "Cloning repo into container (--no-mount)..."
-      incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-        "git clone --branch ${REPO_BRANCH:-main} $REPO_URL $MOUNT_PATH"
-    else
-      log "No git remote found — creating empty $MOUNT_PATH"
+    # Fresh workspace: copy the host working tree in — including .git and any
+    # uncommitted work — via a tar pipe. Needs no git credentials or network
+    # (unlike a remote clone) and reproduces the exact on-disk state. Extract
+    # with --no-same-owner (files land as the container's root), then chown the
+    # whole tree to the launching user. Skipped for template builds, which
+    # publish an empty workspace.
+    incus exec "$CONTAINER_NAME" -- sh -c "mkdir -p '$MOUNT_PATH'"
+    if [[ "$SAVE_TEMPLATE" != "1" ]]; then
+      log "Copying workspace into container (--no-mount, includes .git)..."
+      tar -C "$WORKSPACE_PATH" -cf - . \
+        | incus exec "$CONTAINER_NAME" -- tar --no-same-owner -C "$MOUNT_PATH" -xf -
     fi
+    incus exec "$CONTAINER_NAME" -- chown -R "$HOST_USER:$HOST_USER" "$MOUNT_PATH"
   fi
   # Belt-and-suspenders: even with correct ownership, git refuses "dubious
   # ownership" repos; register the workspace as safe for the launching user.
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
     "git config --global --add safe.directory '$MOUNT_PATH' 2>/dev/null || true"
-  IDMAP_METHOD="clone"
+  IDMAP_METHOD="copy"
 else
   log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
 

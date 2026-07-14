@@ -146,12 +146,13 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
+| [cubic](https://www.cubic.dev/) | AI code review CLI |
 | [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
-| [OpenSpec](https://github.com/Fission-AI/OpenSpec) | Spec-driven development CLI |
+| [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
 
