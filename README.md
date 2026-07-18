@@ -262,6 +262,40 @@ incus image delete incus-init/my-base  # remove one
 ```
 
 
+### Virtual Machines
+
+Add `--vm` to provision a KVM virtual machine (its own kernel) instead of a
+system container. Everything else — provisioning, plugins, user, shell — is
+identical; only the workspace model and resources differ.
+
+```bash
+incs -i --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
+incs -i --vm --no-copy my-vm                # VM with an empty, sealed /workspace
+incs -i --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
+```
+
+**Workspace:** VMs never bind-mount the host. By default the working tree is
+**copied in** (including `.git`), owned by you and fully writable — no idmap
+juggling, because a VM runs its own kernel. Pass `--no-copy` for a sealed VM
+that starts with an empty workspace and never touches host files. Resource
+defaults are `20GiB` disk / `4GiB` memory / `4` vCPUs (override with
+`--vm-disk`/`--vm-memory`/`--vm-cpus`).
+
+**Templates work the same** — with one rule: `--vm` must be on **both** the
+build and the launch, because a published VM image can only launch as a VM.
+
+```bash
+incs -i --vm --template my-vm-base          # publishes a VM-type template
+incs -i --vm --from my-vm-base my-vm         # must include --vm
+```
+
+Omitting `--vm` on the launch (or adding it to a container template) fails early
+with a clear image-type message rather than a cryptic Incus error.
+
+> Requires a host that can run VMs (KVM / `/dev/kvm`). On macOS this is the
+> Colima VM that `incus.init` bootstraps.
+
+
 ### Expose Container Ports
 
 To access a service running inside a container from your host:

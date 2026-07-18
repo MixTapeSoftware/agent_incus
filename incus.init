@@ -720,16 +720,20 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
   if [[ "$IS_VM" == "1" ]]; then
     echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"
-    if [[ "$NO_COPY" == "1" ]]; then
-      echo "Workspace:   sealed (empty $MOUNT_PATH)"
-    else
-      echo "Workspace:   copy host tree into $MOUNT_PATH incl .git"
-    fi
-  elif [[ "$NO_MOUNT" == "1" ]]; then
-    echo "Type:        container"
-    echo "Workspace:   copy host tree into $MOUNT_PATH incl .git (no host mount)"
   else
     echo "Type:        container"
+  fi
+  # A template build publishes an empty workspace regardless of copy/mount mode,
+  # so report that rather than the copy/mount wording that never happens.
+  if [[ "$SAVE_TEMPLATE" == "1" ]]; then
+    echo "Workspace:   empty (template base)"
+  elif [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
+    echo "Workspace:   sealed (empty $MOUNT_PATH)"
+  elif [[ "$IS_VM" == "1" ]]; then
+    echo "Workspace:   copy host tree into $MOUNT_PATH incl .git"
+  elif [[ "$NO_MOUNT" == "1" ]]; then
+    echo "Workspace:   copy host tree into $MOUNT_PATH incl .git (no host mount)"
+  else
     echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
   fi
   if [[ -n "$ENV_FILES_LIST" ]]; then
@@ -745,7 +749,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
       _shown=$(( _shown + 1 ))
     done <<< "$ENV_FILES_LIST"
   fi
-  if [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
+  if [[ "$SAVE_TEMPLATE" == "1" ]]; then
+    echo "Write access: n/a (template base)"
+  elif [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
     echo "Write access: yes (sealed, owned by you)"
   elif [[ "$IS_VM" == "1" || "$NO_MOUNT" == "1" ]]; then
     echo "Write access: yes (copied in, owned by you)"
@@ -1098,18 +1104,17 @@ echo "Image:       $BASE_IMAGE"
 echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
 if [[ "$IS_VM" == "1" ]]; then
   echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"
-  if [[ "$NO_COPY" == "1" ]]; then
-    echo "Workspace:   sealed (empty $MOUNT_PATH)"
-  else
-    echo "Workspace:   copied host tree into $MOUNT_PATH (incl .git)"
-  fi
 else
   echo "Type:        container"
-  if [[ "$NO_MOUNT" == "1" ]]; then
-    echo "Workspace:   copied host tree into $MOUNT_PATH (incl .git)"
-  else
-    echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
-  fi
+fi
+if [[ "$SAVE_TEMPLATE" == "1" ]]; then
+  echo "Workspace:   empty (template base)"
+elif [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
+  echo "Workspace:   sealed (empty $MOUNT_PATH)"
+elif [[ "$IS_VM" == "1" || "$NO_MOUNT" == "1" ]]; then
+  echo "Workspace:   copied host tree into $MOUNT_PATH (incl .git)"
+else
+  echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
 fi
 echo "Write access: ${IDMAP_METHOD:-none}"
 echo ""
