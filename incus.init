@@ -41,6 +41,11 @@ Options:
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
   --no-mount                Clone repo into container instead of mounting host directory
+  --vm                      Provision a KVM virtual machine instead of a container
+  --no-copy                 VM only: start with an empty (sealed) workspace
+  --vm-disk SIZE            VM root disk size (default: 20GiB)
+  --vm-memory SIZE          VM memory (default: 4GiB)
+  --vm-cpus N               VM vCPUs (default: 4)
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --no-tui                  Skip interactive plugin selector, use defaults
@@ -243,6 +248,13 @@ NO_MOUNT=0
 ACK_ENV=0
 MAP_USER=0
 IDMAP_METHOD=""
+IS_VM=0
+NO_COPY=0
+VM_OPT_SET=0
+VM_DISK="20GiB"
+VM_MEMORY="4GiB"
+VM_CPUS="4"
+READY_TIMEOUT=30
 
 # ---------------------------------------------------------------------------
 # Plugin discovery — reads built-in plugins/*.sh plus user plugins from
@@ -577,6 +589,11 @@ while [[ $# -gt 0 ]]; do
     --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
+    --vm)            IS_VM=1; shift ;;
+    --no-copy)       NO_COPY=1; VM_OPT_SET=1; shift ;;
+    --vm-disk)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_DISK="$2"; VM_OPT_SET=1; shift 2 ;;
+    --vm-memory)     [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_MEMORY="$2"; VM_OPT_SET=1; shift 2 ;;
+    --vm-cpus)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_CPUS="$2"; VM_OPT_SET=1; shift 2 ;;
     --no-mount)      NO_MOUNT=1; shift ;;
     --ack-env)       ACK_ENV=1; shift ;;
     --no-sudo)       NO_SUDO=1; shift ;;
@@ -614,6 +631,15 @@ incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAM
 # Template builds never mount the host workspace.
 if [[ "$SAVE_TEMPLATE" == "1" ]]; then
   NO_MOUNT=1
+fi
+
+# VM flag validation. VM-only options are meaningless for containers: warn and
+# ignore rather than error, so an errant flag never blocks a build.
+if [[ "$IS_VM" == "1" ]]; then
+  [[ "$VM_CPUS" =~ ^[1-9][0-9]*$ ]] || error "--vm-cpus must be a positive integer (got: $VM_CPUS)"
+  READY_TIMEOUT=90
+elif [[ "$VM_OPT_SET" == "1" ]]; then
+  warn "VM options (--no-copy/--vm-disk/--vm-memory/--vm-cpus) are ignored without --vm"
 fi
 
 HOST_USER="$(whoami)"
