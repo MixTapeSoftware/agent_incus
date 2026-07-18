@@ -654,7 +654,7 @@ HOST_GID="$(id -g)"
 # mount (owned by nobody but still writing through to the host). Non-interactive
 # (--no-tui) runs honor the flags without prompting.
 # ---------------------------------------------------------------------------
-if [[ "$NO_MOUNT" == "0" ]]; then
+if [[ "$NO_MOUNT" == "0" && "$IS_VM" == "0" ]]; then
   if [[ "$NO_TUI" == "0" ]]; then
     echo ""
     read -rp "Mount your host workspace, writable as you? [Y/n] " MOUNT_CHOICE
@@ -714,9 +714,18 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "Container:   $CONTAINER_NAME"
   echo "Image:       $BASE_IMAGE"
   echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
-  if [[ "$NO_MOUNT" == "1" ]]; then
+  if [[ "$IS_VM" == "1" ]]; then
+    echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"
+    if [[ "$NO_COPY" == "1" ]]; then
+      echo "Workspace:   sealed (empty $MOUNT_PATH)"
+    else
+      echo "Workspace:   copy host tree into $MOUNT_PATH incl .git"
+    fi
+  elif [[ "$NO_MOUNT" == "1" ]]; then
+    echo "Type:        container"
     echo "Workspace:   copy host tree into $MOUNT_PATH incl .git (no host mount)"
   else
+    echo "Type:        container"
     echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
   fi
   if [[ -n "$ENV_FILES_LIST" ]]; then
@@ -732,8 +741,10 @@ if [[ "$DRY_RUN" == "1" ]]; then
       _shown=$(( _shown + 1 ))
     done <<< "$ENV_FILES_LIST"
   fi
-  if [[ "$NO_MOUNT" == "1" ]]; then
-    echo "Write access: yes (copied into container, owned by you)"
+  if [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
+    echo "Write access: yes (sealed, owned by you)"
+  elif [[ "$IS_VM" == "1" || "$NO_MOUNT" == "1" ]]; then
+    echo "Write access: yes (copied in, owned by you)"
   else
     echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
   fi
@@ -1057,10 +1068,20 @@ echo "========================================"
 echo "Container:   $CONTAINER_NAME"
 echo "Image:       $BASE_IMAGE"
 echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
-if [[ "$NO_MOUNT" == "1" ]]; then
-  echo "Workspace:   git clone into $MOUNT_PATH (no host mount)"
+if [[ "$IS_VM" == "1" ]]; then
+  echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"
+  if [[ "$NO_COPY" == "1" ]]; then
+    echo "Workspace:   sealed (empty $MOUNT_PATH)"
+  else
+    echo "Workspace:   copied host tree into $MOUNT_PATH (incl .git)"
+  fi
 else
-  echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+  echo "Type:        container"
+  if [[ "$NO_MOUNT" == "1" ]]; then
+    echo "Workspace:   copied host tree into $MOUNT_PATH (incl .git)"
+  else
+    echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+  fi
 fi
 echo "Write access: ${IDMAP_METHOD:-none}"
 echo ""
