@@ -562,7 +562,7 @@ save_template() {
   incus publish "$CONTAINER_NAME" --alias "$alias"
   log "Starting container back up..."
   incus start "$CONTAINER_NAME"
-  wait_for_container "$CONTAINER_NAME"
+  wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 
   # Restore saved tokens to the running container
   if [[ -n "$saved_tokens" ]]; then
@@ -778,6 +778,15 @@ if [[ "$BASE_IMAGE" != images:* ]]; then
   if ! incus image info "$BASE_IMAGE" &>/dev/null; then
     error "Template image '$BASE_IMAGE' not found. Run 'incus image list' to see available templates."
   fi
+  # Local templates are single-type: a VM template can't launch as a container
+  # and vice-versa. Catch the mismatch here with a clear message instead of
+  # letting Incus emit a cryptic error mid-launch.
+  _img_type="$(incus image info "$BASE_IMAGE" 2>/dev/null | awk -F': ' '/^Type:/{print $2; exit}')"
+  if [[ "$IS_VM" == "1" && "$_img_type" == "container" ]]; then
+    error "Template '$BASE_IMAGE' is a container image; drop --vm or rebuild it with --vm."
+  elif [[ "$IS_VM" == "0" && "$_img_type" == "virtual-machine" ]]; then
+    error "Template '$BASE_IMAGE' is a VM image; add --vm to launch it."
+  fi
   log "Using local template: $BASE_IMAGE"
 fi
 
@@ -785,11 +794,18 @@ fi
 # Create container
 # ---------------------------------------------------------------------------
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
-incus launch "$BASE_IMAGE" "$CONTAINER_NAME"
+if [[ "$IS_VM" == "1" ]]; then
+  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
+    -c limits.memory="$VM_MEMORY" \
+    -c limits.cpu="$VM_CPUS" \
+    -d root,size="$VM_DISK"
+else
+  incus launch "$BASE_IMAGE" "$CONTAINER_NAME"
+fi
 incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
 
-wait_for_container "$CONTAINER_NAME"
-wait_for_network "$CONTAINER_NAME"
+wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
+wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
 
 # ---------------------------------------------------------------------------
 # Provision (skipped when launching from a local base image)
