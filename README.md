@@ -100,6 +100,11 @@ Options:
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
   --no-mount                Clone repo into container instead of mounting host directory
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
+  --vm                      Provision a KVM virtual machine instead of a container
+  --no-copy                 VM only: start with an empty (sealed) workspace
+  --vm-disk SIZE            VM root disk size (default: 20GiB)
+  --vm-memory SIZE          VM memory (default: 4GiB)
+  --vm-cpus N               VM vCPUs (default: 4)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
