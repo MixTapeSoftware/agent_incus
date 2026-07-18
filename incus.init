@@ -571,7 +571,7 @@ $saved_tokens
 TOKENS"
   fi
 
-  wait_for_network "$CONTAINER_NAME"
+  wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
   log "Saved template: $alias"
   echo "  Reuse with: $(basename "$0") --from $CONTAINER_NAME <new-name>"
 }
@@ -673,7 +673,9 @@ fi
 # container either way — a live bind mount (mount mode) or a copy including .git
 # (no-mount) — so the secret-exposure warning applies to both. Template builds
 # are the exception: save_template publishes an empty workspace, so nothing is
-# exposed and there is no host tree to resolve.
+# exposed and there is no host tree to resolve. A sealed VM (--vm --no-copy) is
+# also exempt: the guest /workspace is created empty, so no host files enter it
+# and its (nonexistent) workspace is not scanned.
 # ---------------------------------------------------------------------------
 ENV_FILES_LIST=""
 if [[ "$SAVE_TEMPLATE" != "1" ]]; then
@@ -681,13 +683,15 @@ if [[ "$SAVE_TEMPLATE" != "1" ]]; then
   WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
   [[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
 
-  ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"
-  if [[ -n "$ENV_FILES_LIST" ]]; then
-    echo ""
-    while IFS= read -r _line; do
-      echo -e "${YELLOW}${_line}${NC}" >&2
-    done < <(printf '%s\n' "$ENV_FILES_LIST" | format_env_warning_lines "$WORKSPACE_PATH")
-    confirm_env_acknowledgement "$ACK_ENV"
+  if [[ ! ( "$IS_VM" == "1" && "$NO_COPY" == "1" ) ]]; then
+    ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"
+    if [[ -n "$ENV_FILES_LIST" ]]; then
+      echo ""
+      while IFS= read -r _line; do
+        echo -e "${YELLOW}${_line}${NC}" >&2
+      done < <(printf '%s\n' "$ENV_FILES_LIST" | format_env_warning_lines "$WORKSPACE_PATH")
+      confirm_env_acknowledgement "$ACK_ENV"
+    fi
   fi
 fi
 
@@ -948,11 +952,11 @@ else
 fi
 
 # Final readiness check
-wait_for_container "$CONTAINER_NAME"
+wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 incus exec "$CONTAINER_NAME" -- id "$HOST_USER" >/dev/null 2>&1 \
   || error "User $HOST_USER does not exist. User creation may have failed."
 
-wait_for_network "$CONTAINER_NAME"
+wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
 
 # ---------------------------------------------------------------------------
 # Shell setup (skipped when launching from a local base image)
@@ -990,8 +994,10 @@ fi  # end FROM_BASE_IMAGE == 0
 # ---------------------------------------------------------------------------
 _run_plugin_installs "$FROM_BASE_IMAGE"
 
-# Run mise install if the workspace has a config
-if [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
+# Run mise install if the workspace has a config. Skipped for a sealed VM
+# (--vm --no-copy): its /workspace is created empty, so there is no host
+# mise config to probe.
+if [[ ! ( "$IS_VM" == "1" && "$NO_COPY" == "1" ) ]] && [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
   log "Trusting workspace mise config..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise trust'
 
