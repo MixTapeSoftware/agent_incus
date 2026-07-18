@@ -152,6 +152,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
+| [mermaid-ascii](https://github.com/AlexanderGrooff/mermaid-ascii) | Render mermaid diagrams as ASCII art |
 | [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
