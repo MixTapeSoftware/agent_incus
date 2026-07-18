@@ -895,7 +895,7 @@ MISECFG
 # ---------------------------------------------------------------------------
 # Mount workspace or clone repo
 # ---------------------------------------------------------------------------
-if [[ "$NO_MOUNT" == "1" ]]; then
+if [[ "$NO_MOUNT" == "1" || "$IS_VM" == "1" ]]; then
   # /workspace may already be populated when launching from a saved template:
   # save_template bakes the clone into the published image, owned by the UID of
   # whoever built the template. If our UID differs, those files are unwritable
@@ -917,8 +917,10 @@ if [[ "$NO_MOUNT" == "1" ]]; then
     # whole tree to the launching user. Skipped for template builds, which
     # publish an empty workspace.
     incus exec "$CONTAINER_NAME" -- sh -c "mkdir -p '$MOUNT_PATH'"
-    if [[ "$SAVE_TEMPLATE" != "1" ]]; then
-      log "Copying workspace into container (--no-mount, includes .git)..."
+    # Copy the host tree in unless this is a template build (publishes an empty
+    # workspace) or a sealed VM (--no-copy: start empty on purpose).
+    if [[ "$SAVE_TEMPLATE" != "1" && ! ( "$IS_VM" == "1" && "$NO_COPY" == "1" ) ]]; then
+      log "Copying workspace into instance (includes .git)..."
       tar -C "$WORKSPACE_PATH" -cf - . \
         | incus exec "$CONTAINER_NAME" -- tar --no-same-owner -C "$MOUNT_PATH" -xf -
     fi
@@ -928,7 +930,11 @@ if [[ "$NO_MOUNT" == "1" ]]; then
   # ownership" repos; register the workspace as safe for the launching user.
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
     "git config --global --add safe.directory '$MOUNT_PATH' 2>/dev/null || true"
-  IDMAP_METHOD="copy"
+  if [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
+    IDMAP_METHOD="sealed"
+  else
+    IDMAP_METHOD="copy"
+  fi
 else
   log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
 
