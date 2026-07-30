@@ -17,11 +17,17 @@ plugin_prompt() {
   echo ""
 
   if [[ -n "$TS_AUTH_KEY" ]]; then
-    log "Optionally expose a local dev port over HTTPS via tailscale serve."
-    echo "  e.g. 5173 (Vite), 4000 (Phoenix), 3000 (Next). Blank to skip."
-    read -rp "Dev port to serve on :443: " TS_SERVE_PORT
-    if [[ -n "$TS_SERVE_PORT" && ! "$TS_SERVE_PORT" =~ ^[0-9]+$ ]]; then
-      error "TS_SERVE_PORT must be a number, got: $TS_SERVE_PORT"
+    # The Supabase serve preset already maps :443 (and six more ports); asking
+    # for a single :443 target here would just be clobbered by the preset.
+    if [[ "$(selected_get supabase-serve)" == "1" ]]; then
+      log "Supabase serve preset selected — port mappings come from the preset."
+    else
+      log "Optionally expose a local dev port over HTTPS via tailscale serve."
+      echo "  e.g. 5173 (Vite), 4000 (Phoenix), 3000 (Next). Blank to skip."
+      read -rp "Dev port to serve on :443: " TS_SERVE_PORT
+      if [[ -n "$TS_SERVE_PORT" && ! "$TS_SERVE_PORT" =~ ^[0-9]+$ ]]; then
+        error "TS_SERVE_PORT must be a number, got: $TS_SERVE_PORT"
+      fi
     fi
   fi
 }
@@ -35,7 +41,11 @@ plugin_install() {
   # (true on newer kernels/incus). Bind-mounting a unix-char device on top of
   # that existing node fails with EBUSY ("Failed to remove existing mount
   # target /dev/net/tun"), so only add the device when tun is actually absent.
-  if incus exec "$CONTAINER_NAME" -- test -c /dev/net/tun; then
+  # VMs never take this path: they have a native /dev/net/tun from their own
+  # kernel, and unix-char devices are container-only in Incus anyway.
+  if [[ "${IS_VM:-0}" == "1" ]]; then
+    log "VM has native /dev/net/tun; skipping tun device passthrough"
+  elif incus exec "$CONTAINER_NAME" -- test -c /dev/net/tun; then
     log "/dev/net/tun already present in $CONTAINER_NAME; skipping device add"
   elif incus config device get "$CONTAINER_NAME" tun type &>/dev/null; then
     log "tun device already configured on $CONTAINER_NAME"

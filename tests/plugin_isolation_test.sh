@@ -56,6 +56,7 @@ PLUGIN_NAME="A"
 PLUGIN_DESC="A plugin"
 PLUGIN_NEEDS_PROMPT=1
 PLUGIN_RUN_ON_LAUNCH=1
+PLUGIN_REQUIRES="tailscale docker"
 plugin_prompt() { echo "A_PROMPT_FIRED"; }
 plugin_is_installed() { return 0; }
 plugin_install() { echo "A_INSTALL"; }
@@ -76,6 +77,7 @@ PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
 _reset_plugin_state
 source "$fixture/plug_a.sh"
 assert_eq "A: PLUGIN_NEEDS_PROMPT set"   "1" "${PLUGIN_NEEDS_PROMPT:-0}"
+assert_eq "A: PLUGIN_REQUIRES set"       "tailscale docker" "${PLUGIN_REQUIRES:-}"
 assert_eq "A: PLUGIN_RUN_ON_LAUNCH set"  "1" "${PLUGIN_RUN_ON_LAUNCH:-0}"
 assert_eq "A: plugin_prompt defined"     "plugin_prompt" "$(declare -F plugin_prompt 2>/dev/null || echo "")"
 assert_eq "A: plugin_on_launch defined"  "plugin_on_launch" "$(declare -F plugin_on_launch 2>/dev/null || echo "")"
@@ -85,9 +87,40 @@ source "$fixture/plug_b.sh"
 assert_eq "B: PLUGIN_ID overwritten"      "b" "$PLUGIN_ID"
 assert_eq "B: PLUGIN_NEEDS_PROMPT cleared"   "0" "${PLUGIN_NEEDS_PROMPT:-0}"
 assert_eq "B: PLUGIN_RUN_ON_LAUNCH cleared"  "0" "${PLUGIN_RUN_ON_LAUNCH:-0}"
+assert_eq "B: PLUGIN_REQUIRES cleared"       "" "${PLUGIN_REQUIRES:-}"
 assert_eq "B: plugin_prompt unset"        "" "$(declare -F plugin_prompt 2>/dev/null || echo "")"
 assert_eq "B: plugin_on_launch unset"     "" "$(declare -F plugin_on_launch 2>/dev/null || echo "")"
 assert_eq "B: plugin_is_installed unset"  "" "$(declare -F plugin_is_installed 2>/dev/null || echo "")"
+
+# ---------------------------------------------------------------------------
+# _run_plugin_hook: one plugin's failure must not abort the run loop, must be
+# recorded, and the failing plugin itself must stop at its first error.
+# ---------------------------------------------------------------------------
+hook_src="$(awk '
+  /^_run_plugin_hook\(\)/ {capture=1}
+  capture {print}
+  capture && /^}/ {exit}
+' "$REPO_ROOT/incus.init")"
+if [[ -z "$hook_src" ]]; then
+  echo "FAIL: _run_plugin_hook not found in incus.init"
+  exit 1
+fi
+eval "$hook_src"
+warn() { :; }
+
+FAILED_PLUGIN_NAMES=()
+marker="$fixture/hook_kept_going"
+boom() { false; touch "$marker"; }
+PLUGIN_NAME="Boom"
+_run_plugin_hook boom
+assert_eq "hook: plugin stops at its first error"  "absent" "$([[ -f "$marker" ]] && echo present || echo absent)"
+assert_eq "hook: failure recorded"                 "Boom" "${FAILED_PLUGIN_NAMES[0]:-}"
+
+fine() { :; }
+PLUGIN_NAME="Fine"
+_run_plugin_hook fine
+assert_eq "hook: success not recorded"             "1" "${#FAILED_PLUGIN_NAMES[@]}"
+assert_eq "hook: script still alive after failure" "alive" "alive"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"

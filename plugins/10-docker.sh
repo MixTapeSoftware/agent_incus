@@ -9,6 +9,22 @@ plugin_is_installed() {
 }
 
 plugin_install() {
+  # VMs run their own kernel, so Docker installs natively — none of the
+  # container sandbox relaxation below applies. More importantly, the config
+  # keys it uses (security.nesting, security.syscalls.intercept.*, raw.lxc)
+  # are container-only: Incus rejects them on a VM, which would abort the
+  # whole build under set -e.
+  if [[ "${IS_VM:-0}" == "1" ]]; then
+    if plugin_is_installed; then
+      log "Docker binary already installed, skipping package install"
+    else
+      log "Installing Docker (native, VM)..."
+      _docker_install_packages
+    fi
+    incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER"
+    return
+  fi
+
   # Container config is always needed -- not preserved in templates.
   #
   # Security tradeoff: Docker-in-Incus requires relaxing the inner container's
@@ -49,14 +65,12 @@ plugin_install() {
   incus config set "$CONTAINER_NAME" raw.lxc="lxc.apparmor.profile=unconfined"
   # raw.lxc is only read at container start, so restart to apply it.
   incus restart "$CONTAINER_NAME"
-  wait_for_container "$CONTAINER_NAME"
-  wait_for_network "$CONTAINER_NAME"
+  wait_for_container "$CONTAINER_NAME" "${READY_TIMEOUT:-30}"
+  wait_for_network "$CONTAINER_NAME" "${READY_TIMEOUT:-30}"
 
   if plugin_is_installed; then
     log "Docker binary already installed, skipping package install"
-    incus restart "$CONTAINER_NAME"
-    wait_for_container "$CONTAINER_NAME"
-    wait_for_network "$CONTAINER_NAME"
+    incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER"
     return
   fi
 
@@ -89,6 +103,12 @@ UNIT
     fi
 APPARMOR_EOF
 
+  _docker_install_packages
+  incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER"
+  wait_for_container "$CONTAINER_NAME" "${READY_TIMEOUT:-30}"
+}
+
+_docker_install_packages() {
   incus exec "$CONTAINER_NAME" -- sh -s <<'DOCKER_EOF'
     export DEBIAN_FRONTEND=noninteractive
     apt-get update && apt-get install -y ca-certificates curl gnupg
@@ -99,8 +119,6 @@ APPARMOR_EOF
     apt-get update && apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
     systemctl enable docker && systemctl start docker
 DOCKER_EOF
-  incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER"
-  wait_for_container "$CONTAINER_NAME"
 }
 
 # Docker container config (nesting, apparmor) isn't preserved in templates.

@@ -114,6 +114,7 @@ PLUGIN_DEFAULT=$DEFAULT_ON   # 0=off by default, 1=on
 # PLUGIN_CLI_FLAGS="--$SLUG"      # adds CLI flag to pre-select without the TUI
 # PLUGIN_NEEDS_PROMPT=1           # call plugin_prompt() before plugin_install
 # PLUGIN_RUN_ON_LAUNCH=1          # also re-run on template launch (for symlinks etc.)
+# PLUGIN_REQUIRES="other-id"      # auto-select these plugins when this one is selected
 
 plugin_is_installed() {
   # Idempotency check. Return 0 if already installed, 1 otherwise.

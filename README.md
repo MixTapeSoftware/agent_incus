@@ -161,6 +161,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
+| Tailscale + Supabase serve | Preset `tailscale serve` map for app + Supabase ports (443→3000, 4410→3010, 4431→3001, 5432→54321, 5433→54323, 5434→54324, 8443→8000); auto-selects Tailscale |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`).
 
@@ -197,6 +198,7 @@ Optional extras:
 - `PLUGIN_CLI_FLAGS="--my-tool"` — adds a CLI flag to pre-select without the TUI
 - `PLUGIN_NEEDS_PROMPT=1` + `plugin_prompt()` — collect user input before install
 - `PLUGIN_RUN_ON_LAUNCH=1` + `plugin_on_launch()` — re-run setup when launching from a template (for symlinks, config that doesn't survive snapshots)
+- `PLUGIN_REQUIRES="other-id ..."` — auto-select these plugins whenever this one is selected (single level: a required plugin's own requirements aren't chased)
 
 **Overriding a built-in:** define a plugin in your user dir with the same `PLUGIN_ID` as a built-in. You'll see a `[!] Plugin 'foo' from ... overrides ...` warning at discovery time.
 
@@ -280,6 +282,11 @@ juggling, because a VM runs its own kernel. Pass `--no-copy` for a sealed VM
 that starts with an empty workspace and never touches host files. Resource
 defaults are `20GiB` disk / `4GiB` memory / `4` vCPUs (override with
 `--vm-disk`/`--vm-memory`/`--vm-cpus`).
+
+**Plugins are VM-aware:** Docker installs natively inside a VM (no
+`security.nesting`/AppArmor workarounds — those config keys are container-only
+and would be rejected by Incus), and Tailscale uses the VM's native
+`/dev/net/tun` instead of a device passthrough.
 
 **Templates work the same** — with one rule: `--vm` must be on **both** the
 build and the launch, because a published VM image can only launch as a VM.

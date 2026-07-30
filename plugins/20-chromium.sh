@@ -5,7 +5,10 @@ PLUGIN_DEFAULT=0
 PLUGIN_RUN_ON_LAUNCH=1
 
 plugin_is_installed() {
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx playwright --version' &>/dev/null
+  # Shims on PATH so the mise-provisioned node (not apt's) resolves npx even in
+  # this non-interactive shell.
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+    'export PATH="$HOME/.local/share/mise/shims:$PATH"; npx playwright --version' &>/dev/null
 }
 
 plugin_install() {
@@ -15,8 +18,18 @@ plugin_install() {
 
   if ! plugin_is_installed; then
     log "Installing Playwright + Chromium browser..."
-    incus exec "$CONTAINER_NAME" -- npm install -g playwright
-    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'npx -y playwright install --with-deps chromium'
+    # Playwright requires node >= 20 but apt's nodejs on Ubuntu 24.04 is v18,
+    # so provision node via mise (user-level) instead of relying on the system
+    # node or on the workspace's tool versions being installed yet. Browser
+    # shared libs come from _chromium_ensure_deps, so no --with-deps (which
+    # would need sudo and break under --no-sudo).
+    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'PWEOF'
+      set -e
+      mise use -g node@22
+      export PATH="$HOME/.local/share/mise/shims:$PATH"
+      npm install -g playwright
+      npx playwright install chromium
+PWEOF
   else
     log "Playwright already installed, skipping"
   fi

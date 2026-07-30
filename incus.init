@@ -483,6 +483,7 @@ ZSHEOF
 _reset_plugin_state() {
   PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
   PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
+  PLUGIN_REQUIRES=""
   unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch 2>/dev/null || true
 }
 
@@ -495,6 +496,33 @@ _run_plugin_prompts() {
     [[ "${PLUGIN_NEEDS_PROMPT:-0}" != "1" ]] && continue
     plugin_prompt
   done
+}
+
+# Run a plugin hook in a subshell so one plugin's failure can't kill the whole
+# build. Under plain set -e, a failing plugin_install aborted the script and
+# silently skipped every plugin sorted after it — e.g. a Playwright install
+# failure meant Claude Code, GitHub Auth, and Tailscale never ran. The subshell
+# re-enables set -e so the plugin itself still stops at its first error; the
+# parent records the failure and moves on. Failures are listed in the summary.
+FAILED_PLUGIN_NAMES=()
+_run_plugin_hook() {
+  local hook="$1" rc=0
+  set +e
+  ( set -e; "$hook" )
+  rc=$?
+  set -e
+  if [[ $rc -ne 0 ]]; then
+    warn "$PLUGIN_NAME: $hook failed (exit $rc) — continuing with remaining plugins"
+    FAILED_PLUGIN_NAMES+=("$PLUGIN_NAME")
+  fi
+}
+
+_plugin_failed() {
+  local n
+  for n in ${FAILED_PLUGIN_NAMES[@]+"${FAILED_PLUGIN_NAMES[@]}"}; do
+    [[ "$n" == "$1" ]] && return 0
+  done
+  return 1
 }
 
 _run_plugin_installs() {
@@ -516,11 +544,11 @@ _run_plugin_installs() {
         _installed=1
       fi
       if [[ "$_installed" == "0" ]]; then
-        plugin_install
+        _run_plugin_hook plugin_install
       elif [[ "${PLUGIN_NEEDS_PROMPT:-0}" == "1" ]]; then
-        plugin_install
+        _run_plugin_hook plugin_install
       elif [[ "${PLUGIN_RUN_ON_LAUNCH:-0}" == "1" ]] && declare -F plugin_on_launch >/dev/null; then
-        plugin_on_launch
+        _run_plugin_hook plugin_on_launch
       fi
     else
       # Fresh install
@@ -528,7 +556,7 @@ _run_plugin_installs() {
         log "$PLUGIN_NAME already installed, skipping"
         continue
       fi
-      plugin_install
+      _run_plugin_hook plugin_install
     fi
   done
 }
@@ -701,6 +729,36 @@ fi
 if [[ "$NO_TUI" == "0" ]]; then
   show_tui
 fi
+
+# Resolve plugin requirements. A selected plugin may declare
+# PLUGIN_REQUIRES="<id> <id>..."; those plugins are auto-selected here — after
+# all user selection input (CLI flags + TUI) but before the prompt loop, so a
+# required plugin's own prompt still fires. Resolution is single-level: a
+# required plugin's own requirements are not chased.
+for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+  [[ "${_P_SELECTED[$_i]}" == "1" ]] || continue
+  _reset_plugin_state
+  source "${_P_FILE[$_i]}"
+  for _req in $PLUGIN_REQUIRES; do
+    [[ "$(selected_get "$_req")" == "1" ]] && continue
+    if selected_set "$_req" 1; then
+      log "Auto-selected '$_req' (required by ${_P_NAME[$_i]})"
+    else
+      warn "${_P_NAME[$_i]} requires unknown plugin '$_req' — ignored"
+    fi
+  done
+done
+unset _req
+
+# Echo the final selection before acting on it. In the TUI, space toggles and
+# Enter launches — a mis-keyed toggle otherwise fails silently: the plugin's
+# prompt and install just never happen, with nothing on screen to say why.
+_sel_names=""
+for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+  [[ "${_P_SELECTED[$_i]}" == "1" ]] && _sel_names+="${_sel_names:+, }${_P_NAME[$_i]}"
+done
+log "Plugins selected: ${_sel_names:-none}"
+unset _i _sel_names
 
 # ---------------------------------------------------------------------------
 # Component prompts — called once, after TUI decision
@@ -1068,7 +1126,10 @@ PY
 PRECLONE
 
   log "Running mise install for workspace..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise install'
+  # Non-fatal: a broken tool version in the workspace config shouldn't nuke an
+  # otherwise-complete instance (plugins and env are already applied by now).
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise install' || \
+    warn "mise install failed — fix tool versions and rerun 'mise install' inside the instance"
 fi
 
 # Expose mise shims to non-interactive shells (e.g. Claude Code's Bash tool)
@@ -1096,7 +1157,11 @@ trap - ERR
 # ---------------------------------------------------------------------------
 # Done
 # ---------------------------------------------------------------------------
-log "Container ready!"
+if [[ ${#FAILED_PLUGIN_NAMES[@]} -gt 0 ]]; then
+  warn "Some plugins FAILED: ${FAILED_PLUGIN_NAMES[*]}"
+else
+  log "Container ready!"
+fi
 echo ""
 echo "========================================"
 echo "Container:   $CONTAINER_NAME"
@@ -1117,11 +1182,24 @@ else
   echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
 fi
 echo "Write access: ${IDMAP_METHOD:-none}"
+# Env var names (never values) that made it into the instance config — answers
+# "did the token take?" at a glance after a long build.
+_env_keys="$(incus config show "$CONTAINER_NAME" 2>/dev/null \
+  | awk '/^  environment\./{k=$1; sub(/^environment\./,"",k); sub(/:$/,"",k); print k}' \
+  | tr '\n' ' ')"
+echo "Env vars:    ${_env_keys:-none}"
+unset _env_keys
 echo ""
 echo "Installed:"
 for entry in "${PLUGINS[@]}"; do
   IFS=: read -r id name desc default <<< "$entry"
-  [[ "$(selected_get "$id")" == "1" ]] && echo "  ✓ $name"
+  if [[ "$(selected_get "$id")" == "1" ]]; then
+    if _plugin_failed "$name"; then
+      echo "  ✗ $name (FAILED — see warnings above)"
+    else
+      echo "  ✓ $name"
+    fi
+  fi
 done
 echo "========================================"
 echo ""
