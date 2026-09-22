@@ -1,8 +1,9 @@
 # AgentIncus
 
-AgentIncus, inspired by [Code in Incus (COI)](https://github.com/mensfeld/code-on-incus), is a set of shell scripts that automate the creation of [Incus](https://linuxcontainers.org/incus/) containers for AI agents and secure development. See COI's [Why Incus](https://github.com/mensfeld/code-on-incus?tab=readme-ov-file#why-incus-over-docker) for why Incus over Docker.
+A set of shell scripts that automate the creation of [Incus](https://linuxcontainers.org/incus/) containers for AI agents and secure development. See COI's [Why Incus](https://github.com/mensfeld/code-on-incus?tab=readme-ov-file#why-incus-over-docker) for why Incus over Docker.
 
 Why shell scripts? They introduce no dependencies, are ergonomic enough for simple systems administration tasks, and transparently convey their purpose.
+
 ## Contents
 
 - [Prerequisites](#prerequisites)
@@ -13,7 +14,9 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [What incus.init does](#what-incusinit-does)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
-  - [Base Images](#base-images)
+  - [Templates](#templates)
+  - [Virtual Machines](#virtual-machines)
+  - [Tailscale](#tailscale)
   - [Expose Container Ports](#expose-container-ports)
   - [Snapshots](#snapshots)
 - [Runtime Management](#runtime-management)
@@ -303,6 +306,79 @@ with a clear image-type message rather than a cryptic Incus error.
 > Colima VM that `incus.init` bootstraps.
 
 
+### Tailscale
+
+[Tailscale](https://tailscale.com/) is a private network ("tailnet") between your own devices. Every device that joins gets a stable name and address, and can reach every other device directly, wherever they are. Nothing is exposed to the public internet.
+
+We use it to reach dev servers running inside a container from anywhere on the tailnet: your laptop, your phone, another machine. No port forwarding, no `localhost` juggling, no self-signed certs. Because Tailscale can terminate HTTPS with a real certificate, browser features that need a secure origin (service workers, camera, OAuth callbacks, mobile testing) just work.
+
+There are two ways to set it up. The plugin is the recommended one.
+
+**Option 1: Tailscale inside the container (plugin).** Pick the Tailscale plugin in the TUI or pass `--tailscale`. The container joins the tailnet as its own machine, named after the container:
+
+```bash
+incs -i --tailscale project-dev
+```
+
+During creation you're asked for two things:
+
+- **An auth key.** Create one at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys). Use a *tagged* key (for example `tag:incus-dev`) so the container joins as a machine with only the access your ACLs give that tag, not as you with all of your access. Leave it blank to join later by hand.
+- **A dev port to serve.** Optional. If you enter `3000`, the plugin runs `tailscale serve` so that `https://project-dev.<tailnet>.ts.net/` goes to port 3000 inside the container. Leave it blank if you'd rather set this up yourself.
+
+When it finishes, the plugin prints the machine's HTTPS URL. Open that URL from any device on your tailnet and you're looking at the app running in the container.
+
+If you skipped the auth key, join later with:
+
+```bash
+incs -s project-dev "sudo tailscale up --operator=$USER"
+```
+
+To add or change served ports after the fact, run `tailscale serve` inside the container (no sudo needed, since your user is the Tailscale operator):
+
+```bash
+# Serve port 5173 on the default HTTPS port (443)
+tailscale serve --bg --https=443 http://localhost:5173
+
+# Serve a second app on another HTTPS port
+tailscale serve --bg --https=8443 http://localhost:4000
+
+# See what's being served, or reset it
+tailscale serve status
+tailscale serve reset
+```
+
+Since Tailscale runs inside the container, your dev server can bind to `localhost` as usual. The 0.0.0.0 advice below only applies to port proxying.
+
+**Supabase preset.** If your project runs the local Supabase stack, the "Tailscale + Supabase serve" plugin (`--supabase-serve`) applies a ready-made set of mappings so you don't have to type them each time. It pulls in the Tailscale plugin automatically.
+
+| Tailnet HTTPS port | Container port | What it is |
+|---|---|---|
+| 443 | 3000 | App dev server |
+| 4410 | 3010 | Secondary app |
+| 4431 | 3001 | Secondary app |
+| 5432 | 54321 | Supabase API (Kong) |
+| 5433 | 54323 | Supabase Studio |
+| 5434 | 54324 | Mailpit / Inbucket |
+| 8443 | 8000 | Kong http |
+
+So Supabase Studio is at `https://project-dev.<tailnet>.ts.net:5433/`, and so on.
+
+**Templates.** The Tailscale plugin re-runs when you launch from a template, so each new container joins as its own machine. Serve mappings are stored by Tailscale and survive restarts. The Supabase preset re-applies on every launch too, so a template built with it keeps working.
+
+**Option 2: Tailscale on the host.** If the host machine is already on your tailnet and you don't want the container joining separately, proxy the port to the host with `incs -n` and let the host's Tailscale serve it:
+
+```bash
+# Forward host:4000 -> container:4000
+incs -n project-dev 4000:4000
+
+# On the host, terminate TLS with the tailnet cert and proxy to the local port
+tailscale serve --bg --https=443 http://127.0.0.1:4000
+```
+
+The app is then at `https://<host>.<tailnet>.ts.net/`. In this setup the dev server *must* bind to 0.0.0.0 (see below), since traffic arrives from outside the container. The trade-off is that all containers share the host's single name and set of ports, whereas with the plugin each container gets its own.
+
+**Requirements.** Both options need MagicDNS and HTTPS certificates turned on in the [tailnet admin console](https://login.tailscale.com/admin/dns). Access is tailnet-only and follows your ACLs. VMs (`--vm`) are supported; the plugin uses the VM's own `/dev/net/tun`.
+
 ### Expose Container Ports
 
 To access a service running inside a container from your host:
@@ -326,19 +402,7 @@ incs -n project-dev -r 4000
 
 Or use the container/VM IP directly — find it with `incus list` (Linux) or `colima list` (macOS). On macOS, the Colima VM IP (e.g. `192.168.64.6`) is a private address only accessible from your Mac.
 
-#### HTTPS over Tailscale
-
-Combine `incs -n` with [`tailscale serve`](https://tailscale.com/kb/1312/serve) to expose a container app over tailnet HTTPS (tailnet-only, respects ACLs):
-
-```bash
-# Forward host:4000 -> container:4000
-incs -n project-dev 4000:4000
-
-# On the host, terminate TLS with the tailnet cert and proxy to the local port
-tailscale serve --bg --https=443 http://127.0.0.1:4000
-```
-
-Then reach the app from any tailnet device at `https://<host>.<tailnet>.ts.net/`. Requires MagicDNS and HTTPS certificates enabled in the tailnet admin console.
+To reach the app from other devices over HTTPS, see [Tailscale](#tailscale).
 
 **Important: bind to 0.0.0.0** — most dev servers bind to `localhost` by default, which blocks access from outside the container. You need to bind to all interfaces:
 
