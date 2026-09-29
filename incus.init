@@ -565,14 +565,17 @@ save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
 
-  # Save token lines from .zshenv, then strip them so they don't leak into the image
+  # Save token lines from .zshenv, then strip them so they don't leak into the
+  # image. Lines written by a credential proxy attach (marked "# incs-proxy")
+  # go too: a placeholder and proxy address belong to one container, and a
+  # container launched from the template must not inherit them.
   local saved_tokens
   saved_tokens=$(incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=' ~/.zshenv 2>/dev/null || true")
+    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=|# incs-proxy\$' ~/.zshenv 2>/dev/null || true")
 
   log "Scrubbing secrets from image..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "sed -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d' ~/.zshenv 2>/dev/null || true"
+    "sed -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d; /# incs-proxy\$/d' ~/.zshenv 2>/dev/null || true"
 
   # Empty the workspace before publishing. A template is a reusable *provisioned
   # base* (packages, mise, shell, tools) — not a frozen copy of one repo. Baking

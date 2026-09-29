@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks: install_shortcuts links incs into ~/.local/bin, and sibling
+# scripts must be found next to the real file, not next to the link.
+SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -33,6 +35,13 @@ Commands:
   new-plugin <slug> [opts]       Generate a new plugin file from a template
   -h, help                       Show this help
 
+Credential proxy (real tokens stay out of containers; see: incs proxy help):
+  proxy new <name>               Create a proxy
+  proxy add <container> <proxy>  Attach a container to a proxy
+  proxy rm <container>           Detach a container
+  proxy list                     Show proxies and attached containers
+  proxy delete <name>            Delete a proxy
+
 Cron:
   cron install [HOUR]            Install nightly update cron (default: 19)
   cron remove                    Remove the update cron
@@ -54,6 +63,8 @@ Examples:
   incs -ka                       Stop all agent-incus containers
   incs -u your-container                     Update packages in your-container
   incs -ua                       Update all agent-incus containers
+  incs proxy new work                        Create a credential proxy named work
+  incs proxy add your-container work         Give your-container GitHub access via work
   incs cron install              Install 7pm daily update cron
   incs cron install 3            Install 3am daily update cron
 EOF
@@ -309,6 +320,9 @@ case "$1" in
   -d|delete)
     shift
     [[ $# -lt 1 ]] && error "Usage: incs delete <container>"
+    # shellcheck source=incus.proxy
+    source "$SCRIPT_DIR/incus.proxy"
+    proxy_before_delete "$1"
     incus delete --force "$1"
     log "Deleted $1"
     ;;
@@ -340,6 +354,10 @@ case "$1" in
   cron)
     shift
     cmd_cron "$@"
+    ;;
+  proxy)
+    shift
+    exec "$SCRIPT_DIR/incus.proxy" "$@"
     ;;
   new-plugin)
     shift
