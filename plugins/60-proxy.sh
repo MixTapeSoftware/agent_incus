@@ -30,7 +30,7 @@ plugin_prompt() {
   else
     log "Credential proxies:"
     printf '%s\n' "$proxies" | sed 's/^/    /'
-    read -rp "Proxy to attach: " PROXY_NAME
+    read_value PROXY_NAME "Proxy to attach: "
   fi
   if ! printf '%s\n' "$proxies" | grep -qxF -- "$PROXY_NAME"; then
     error "Not a credential proxy: '$PROXY_NAME'"
@@ -52,14 +52,13 @@ plugin_prompt() {
       vault="$(incus config get "$PROXY_NAME" user.incs.proxy-vault 2>/dev/null)"
       default_ref="op://${vault:-agent-tokens}/$CONTAINER_NAME/credential"
       echo "Store this container's GitHub token in 1Password, then give its reference."
-      read -rp "1Password reference [$default_ref]: " PROXY_REF
+      read_value PROXY_REF "1Password reference [$default_ref]: "
       PROXY_REF="${PROXY_REF:-$default_ref}"
     fi
   else
     log "Proxy '$PROXY_NAME' has no 1Password account; the token is stored in the proxy."
     echo "Create a fine-grained token at: https://github.com/settings/tokens?type=beta"
-    read -rsp "GitHub token for $CONTAINER_NAME (input hidden): " PROXY_TOKEN
-    echo ""
+    read_secret PROXY_TOKEN "GitHub token for $CONTAINER_NAME (input hidden): "
     if [[ -z "$PROXY_TOKEN" ]]; then error "GitHub token required"; fi
   fi
 

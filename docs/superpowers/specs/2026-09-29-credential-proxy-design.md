@@ -86,6 +86,13 @@ Proxies are **not** tagged `user.managed-by=agent-incus`, so `incs -ka` and
   bridge leased, stops it, and pins that address with a device override. No
   address has to be chosen by hand. Container DNS names are avoided because
   Tailscale can take over name resolution inside agent containers.
+- **Pasted values are cleaned.** Terminals can wrap a paste in escape
+  sequences the user never sees: focus reporting (`ESC [ O`, `ESC [ I`) and
+  bracketed paste. A token saved with them fails with a bare 401, and a
+  reference with them would make the proxy config unparseable. `incus.prompt`
+  provides `read_secret` and `read_value`, which strip them; every prompt that
+  takes a pasted value uses them, including the existing GitHub Auth,
+  1Password, and Tailscale plugins and `incs -e`.
 - **Secrets never travel in argv.** The service account token and `--token`
   values are pushed over stdin with `incus file push -`.
 - **Tag before registering.** Attach sets `user.incs.proxy` before it touches

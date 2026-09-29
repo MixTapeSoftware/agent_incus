@@ -10,8 +10,7 @@ plugin_prompt() {
   log "GitHub auth requires a fine-grained personal access token"
   echo "Create one at: https://github.com/settings/tokens?type=beta"
   echo "Recommended scopes: Contents (read/write), Metadata (read)"
-  read -rsp "Enter GitHub token: " GH_TOKEN_VALUE
-  echo ""
+  read_secret GH_TOKEN_VALUE "Enter GitHub token: "
   if [[ -z "$GH_TOKEN_VALUE" ]]; then error "GitHub token required"; fi
 
   local default_name default_email

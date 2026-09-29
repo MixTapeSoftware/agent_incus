@@ -4,6 +4,8 @@ set -euo pipefail
 # Resolve symlinks: install_shortcuts links incs into ~/.local/bin, and sibling
 # scripts must be found next to the real file, not next to the link.
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=incus.prompt
+source "$SCRIPT_DIR/incus.prompt"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -214,8 +216,7 @@ cmd_set_env() {
   fi
 
   local value
-  read -rsp "Enter value for $var_name (input hidden, paste ok): " value
-  echo ""
+  read_secret value "Enter value for $var_name (input hidden, paste ok): "
   [[ -z "$value" ]] && error "Value required"
 
   incus config set "$container" "environment.$var_name=$value"

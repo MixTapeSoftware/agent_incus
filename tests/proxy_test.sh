@@ -126,6 +126,13 @@ fresh_state
 printf 'tok\n' | incs proxy new acme --vault acme-agents >/dev/null 2>&1 || true
 assert_eq "--vault overrides the default vault" "acme-agents" "$(cfg acme user.incs.proxy-vault)"
 
+# Terminals can wrap a paste in focus-reporting escape sequences.
+fresh_state
+printf '\033[Oops_PASTED_token\033[I\n' | incs proxy new pasted >/dev/null 2>&1 || true
+assert_eq "service token pasted with terminal escapes is stored clean" \
+  "OP_SERVICE_ACCOUNT_TOKEN=ops_PASTED_token" \
+  "$(grep '^OP_SERVICE_ACCOUNT_TOKEN=' "$(fs pasted /etc/iron-proxy/env)" 2>/dev/null || true)"
+
 fresh_state
 printf '\n' | incs proxy new plain >/dev/null 2>&1 || true
 assert_eq "blank token: no 1Password line in the env file" \
@@ -277,6 +284,16 @@ assert_not_contains "--token: never appears in argv" "github_pat_TYPED_in" "$(ca
 assert_not_contains "--token: not echoed"            "github_pat_TYPED_in" "$out"
 assert_eq "--token: nothing in the agent container holds the real token" \
   "" "$(grep -rl 'github_pat_TYPED_in' "$FAKE_INCUS_STATE/instances/proj" 2>/dev/null || true)"
+
+fresh_state
+make_proxy work
+make_agent proj
+printf '\033[200~github_pat_PASTED\033[201~\n' | incs proxy add proj work --token >/dev/null 2>&1
+assert_eq "--token pasted with terminal escapes is stored clean" \
+  "github_pat_PASTED" "$(cat "$(fs work /etc/iron-proxy/tokens/proj--github)" 2>/dev/null; echo)"
+
+out="$(incs proxy add proj work --ref "$(printf 'op://v/i/f\033[I')" 2>&1)" && rc=0 || rc=$?
+assert_eq "--ref containing a control character is refused" "1" "$rc"
 
 # Refusals.
 fresh_state
@@ -588,6 +605,24 @@ assert_eq "plugin: GitHub Auth is deselected so it cannot write a real token" \
   "gh-auth=0" "$(cat "$FAKE_INCUS_STATE/selected.log" 2>/dev/null || true)"
 assert_eq "plugin: …and the container holds the placeholder" \
   "match" "$([[ "$(cfg proj environment.GH_TOKEN)" =~ ^ghp_[0-9a-f]{36}$ ]] && echo match || echo no)"
+
+# Pasted answers arrive wrapped in terminal escapes.
+fresh_state
+make_proxy work; make_proxy acme
+make_agent proj
+out="$(printf '\033[Oacme\033[I\n\033[Oop://Shared/GitHub proj/token\033[I\nAda\nada@example.com\n' \
+  | run_plugin proj 2>&1)" && rc=0 || rc=$?
+assert_eq "plugin: a pasted proxy name is cleaned" "acme" "$(cfg proj user.incs.proxy)"
+assert_contains "plugin: a pasted reference is cleaned" \
+  'secret_ref: "op://Shared/GitHub proj/token"' "$(cat "$(fs acme /etc/iron-proxy/entries/proj--github.yaml)" 2>/dev/null || true)"
+
+fresh_state
+printf '\n' | incs proxy new bare >/dev/null 2>&1
+echo CERT > "$(fs bare /etc/iron-proxy/ca.crt)"
+make_agent proj
+printf '\033[Ogithub_pat_PLUGIN_PASTED\033[I\nAda\nada@example.com\n' | run_plugin proj >/dev/null 2>&1 || true
+assert_eq "plugin: a pasted token is stored clean" \
+  "github_pat_PLUGIN_PASTED" "$(cat "$(fs bare /etc/iron-proxy/tokens/proj--github)" 2>/dev/null; echo)"
 
 fresh_state
 printf '\n' | incs proxy new bare >/dev/null 2>&1

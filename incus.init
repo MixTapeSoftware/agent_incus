@@ -649,6 +649,8 @@ done
 # ---------------------------------------------------------------------------
 source "$SCRIPT_DIR/incus.macos.setup"
 source "$SCRIPT_DIR/incus.envscan"
+# read_secret / read_value, for plugin prompts that take pasted values.
+source "$SCRIPT_DIR/incus.prompt"
 
 # ---------------------------------------------------------------------------
 # Validate

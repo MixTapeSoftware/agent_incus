@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# incus.prompt
+# Reading pasted values from a terminal.
+#
+# Terminals can wrap a paste in escape sequences the user never sees. Focus
+# reporting sends ESC [ O when the window loses focus (say, to copy a token
+# from a password manager) and ESC [ I when it comes back. Bracketed paste
+# wraps the pasted text in ESC [ 200~ and ESC [ 201~. `read` keeps all of it,
+# so a token saved as read fails later with a bare 401, and a reference written
+# into a config file can make that file unparseable.
+#
+# Every prompt that takes a pasted value should use read_secret or read_value.
+# Sourced by incs, incus.init (and so every plugin), and incus.proxy.
+# Kept compatible with bash 3.2 and BSD sed (macOS).
+
+# Filter: drop terminal escape sequences and control characters, then trim
+# spaces from both ends. Spaces inside the value are kept.
+clean_pasted_value() {
+  # A control sequence: ESC [, parameter bytes, intermediate bytes, one final
+  # byte (ECMA-48). `|` is the delimiter because `/` appears in the pattern.
+  LC_ALL=C sed -e $'s|\e\\[[0-?]*[ -/]*[@-~]||g' \
+    | LC_ALL=C tr -d '\000-\037\177' \
+    | sed -e 's/^ *//' -e 's/ *$//'
+}
+
+# read_secret <var> <prompt>
+# Reads a hidden value into <var>, cleaned. Leaves <var> empty at end of input
+# rather than failing, so callers decide whether empty is allowed.
+read_secret() {
+  local _rs_var="$1" _rs_prompt="$2" _rs_raw=""
+  IFS= read -rsp "$_rs_prompt" _rs_raw || true
+  # Hidden input does not echo the Enter key.
+  if [[ -t 0 ]]; then echo "" >&2; fi
+  printf -v "$_rs_var" '%s' "$(printf '%s' "$_rs_raw" | clean_pasted_value)"
+}
+
+# read_value <var> <prompt>
+# Like read_secret, but the input is shown. For pasted values that are not
+# secret, such as a 1Password reference.
+read_value() {
+  local _rv_var="$1" _rv_prompt="$2" _rv_raw=""
+  IFS= read -rp "$_rv_prompt" _rv_raw || true
+  printf -v "$_rv_var" '%s' "$(printf '%s' "$_rv_raw" | clean_pasted_value)"
+}

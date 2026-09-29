@@ -23,6 +23,12 @@ PROXY_DIR="/etc/iron-proxy"
 PROXY_DEFAULT_VAULT="agent-tokens"
 PROXY_READY_TIMEOUT="${INCS_PROXY_READY_TIMEOUT:-60}"
 
+# read_secret / read_value, unless the caller already loaded them.
+if ! declare -F read_secret >/dev/null; then
+  # shellcheck source=incus.prompt
+  source "$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)/incus.prompt"
+fi
+
 # Logging helpers — reuse the caller's when sourced from incs / incus.init.
 declare -F log   >/dev/null || log()   { echo -e "\033[0;32m[+]\033[0m $1"; }
 declare -F warn  >/dev/null || warn()  { echo -e "\033[1;33m[!]\033[0m $1"; }
@@ -200,8 +206,7 @@ proxy_cmd_new() {
   echo "A 1Password service account token lets this proxy read tokens from a vault."
   echo "Scope the account to one vault, read-only. Leave blank to store tokens in"
   echo "the proxy container instead (see: incs proxy add --token)."
-  read -rsp "1Password service account token (input hidden): " token || true
-  echo ""
+  read_secret token "1Password service account token (input hidden): "
   [[ "$token" =~ [[:space:]] ]] && error "Token must not contain whitespace"
 
   log "Creating proxy container: $name"
@@ -440,10 +445,14 @@ proxy_attach() {
   if [[ -z "$token" ]]; then
     [[ "$source" == op://* ]] || error "Reference must start with op:// (got: $source)"
   fi
-  # The source is written into a double-quoted YAML string.
+  # The source is written into a double-quoted YAML string, where a control
+  # character would make the whole proxy config unparseable.
   case "$source" in
-    *\"*|*\\*|*$'\n'*) error "Reference must not contain quotes, backslashes, or newlines" ;;
+    *\"*|*\\*) error "Reference must not contain quotes or backslashes" ;;
   esac
+  if [[ "$(printf '%s' "$source" | LC_ALL=C tr -d '\000-\037\177')" != "$source" ]]; then
+    error "Reference must not contain control characters"
+  fi
 
   local ip
   ip="$(incus config get "$proxy" user.incs.proxy-ip 2>/dev/null)"
@@ -521,8 +530,7 @@ proxy_cmd_add() {
 
   local token=""
   if [[ "$want_token" == "1" ]]; then
-    read -rsp "Token for $container (input hidden, stored in proxy '$proxy'): " token || true
-    echo ""
+    read_secret token "Token for $container (input hidden, stored in proxy '$proxy'): "
     [[ -z "$token" ]] && error "Token required"
   fi
   proxy_attach "$container" "$proxy" "$ref" "$token"
