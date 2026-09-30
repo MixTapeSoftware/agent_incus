@@ -55,7 +55,8 @@ create_instance() {
   [[ -f "$S/ip-counter" ]] && n="$(cat "$S/ip-counter")"
   n=$((n + 1))
   echo "$n" > "$S/ip-counter"
-  echo "${FAKE_INCUS_NEXT_IP:-10.99.$((n / 250)).$((10 + n % 250))}" > "$d/ipv4"
+  # Last octet stays within 10-249; the third octet advances every 240.
+  echo "${FAKE_INCUS_NEXT_IP:-10.99.$((n / 240)).$((10 + n % 240))}" > "$d/ipv4"
 }
 
 cmd="${1:-}"; shift || true

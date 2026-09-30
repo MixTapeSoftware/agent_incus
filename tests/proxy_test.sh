@@ -373,16 +373,21 @@ out="$(FAKE_INCUS_FAIL_CALL='^file pull .*\.zshenv' incs proxy add proj work 2>&
 assert_contains "~/.zshenv survives a failed read: user's first line kept"  "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
 assert_contains "~/.zshenv survives a failed read: user's second line kept" "export SECRET_SAUCE=1" "$(cat "$(fs proj "$ZSHENV")")"
 
-if [[ "$(id -u)" != "0" ]]; then
-  fresh_state
-  make_proxy work
-  make_agent proj
-  printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
-  chmod 000 "$(fs proj "$ZSHENV")"
+# Mode 000 only makes a file unreadable for a process without root or the
+# DAC override capability, so check that the read really fails before relying on it.
+fresh_state
+make_proxy work
+make_agent proj
+printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
+chmod 000 "$(fs proj "$ZSHENV")"
+if ! cat "$(fs proj "$ZSHENV")" >/dev/null 2>&1; then
   out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
   chmod 600 "$(fs proj "$ZSHENV")"
   assert_eq "unreadable ~/.zshenv: attach fails rather than overwriting" "1" "$([[ $rc -ne 0 ]] && echo 1 || echo 0)"
   assert_eq "unreadable ~/.zshenv: the user's lines are untouched" "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
+else
+  chmod 600 "$(fs proj "$ZSHENV")"
+  echo "  skip  unreadable ~/.zshenv (this process can read mode 000 files)"
 fi
 
 # A stopped container or proxy is started rather than failing.
