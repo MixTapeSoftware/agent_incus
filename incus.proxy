@@ -23,10 +23,22 @@ PROXY_DIR="/etc/iron-proxy"
 PROXY_DEFAULT_VAULT="agent-tokens"
 PROXY_READY_TIMEOUT="${INCS_PROXY_READY_TIMEOUT:-60}"
 
+# Follow symlinks to the real file. macOS 12 and earlier have no realpath.
+# (A copy of _incs_resolve in incs: each is needed before anything is sourced.)
+_proxy_resolve() {
+  if command -v realpath >/dev/null 2>&1; then realpath "$1"; return; fi
+  local p="$1" link
+  while [[ -L "$p" ]]; do
+    link="$(readlink "$p")"
+    case "$link" in /*) p="$link" ;; *) p="$(dirname "$p")/$link" ;; esac
+  done
+  echo "$p"
+}
+
 # read_secret / read_value, unless the caller already loaded them.
 if ! declare -F read_secret >/dev/null; then
   # shellcheck source=incus.prompt
-  source "$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)/incus.prompt"
+  source "$(cd "$(dirname "$(_proxy_resolve "${BASH_SOURCE[0]}")")" && pwd)/incus.prompt"
 fi
 
 # Logging helpers — reuse the caller's when sourced from incs / incus.init.
@@ -70,7 +82,14 @@ proxy_rebuild_script() {
 # Managed by incs.
 set -eu
 dir="${IRON_PROXY_DIR:-/etc/iron-proxy}"
-tmp="$dir/proxy.yaml.new"
+# Attaches and detaches can run at once. Take a lock so a slower rebuild never
+# publishes a config that is missing an entry a newer one just added.
+if command -v flock >/dev/null 2>&1; then
+  exec 9>"$dir/.rebuild.lock"
+  flock 9
+fi
+tmp="$(mktemp "$dir/proxy.yaml.XXXXXX")"
+trap 'rm -f "$tmp"' EXIT
 cat "$dir/base.yaml" > "$tmp"
 for f in "$dir"/entries/*.yaml; do
   if [ -f "$f" ]; then cat "$f" >> "$tmp"; fi
@@ -193,7 +212,7 @@ proxy_cmd_new() {
     case "$1" in
       --vault) [[ $# -lt 2 ]] && error "$1 requires an argument"; vault="$2"; shift 2 ;;
       -*)      error "Unknown option: $1" ;;
-      *)       name="$1"; shift ;;
+      *)       [[ -n "$name" ]] && error "Unexpected argument: $1"; name="$1"; shift ;;
     esac
   done
 
@@ -329,12 +348,6 @@ SSL_CERT_FILE=$PROXY_CA_BUNDLE
 EOF
 }
 
-# Filter: drop everything a previous attach wrote, plus any GH_TOKEN export —
-# a real token left by the GitHub auth plugin must not survive an attach.
-proxy_strip_env() {
-  grep -v -e "$PROXY_ENV_MARK\$" -e '^export GH_TOKEN=' || true
-}
-
 # "<uid>:<gid>:<home>" for a user inside an instance.
 proxy_user_info() {
   local container="$1" user="$2" line
@@ -344,19 +357,25 @@ proxy_user_info() {
 }
 
 # Rewrite ~/.zshenv: keep the user's own lines, replace ours with <stdin>.
+# This runs as the user inside the container and replaces the file in one
+# rename, so a failure at any step, including an unreadable file, leaves the
+# user's lines exactly as they were.
 proxy_write_zshenv() {
-  local container="$1" user="$2" info uid gid home current block
-  info="$(proxy_user_info "$container" "$user")" || \
-    error "User '$user' not found in $container"
-  uid="${info%%:*}"; info="${info#*:}"
-  gid="${info%%:*}"; home="${info#*:}"
-  block="$(cat)"
-  current="$(incus file pull -q "$container$home/.zshenv" - 2>/dev/null | proxy_strip_env || true)"
-  {
-    [[ -n "$current" ]] && printf '%s\n' "$current"
-    [[ -n "$block" ]] && printf '%s\n' "$block"
-    true
-  } | incus file push -q --uid "$uid" --gid "$gid" --mode 0600 - "$container$home/.zshenv"
+  local container="$1" user="$2"
+  incus exec "$container" -- su - "$user" -s /bin/sh -c '
+    set -eu
+    f="$HOME/.zshenv"
+    tmp="$(mktemp "$HOME/.zshenv.XXXXXX")"
+    trap "rm -f \"$tmp\"" EXIT
+    if [ -e "$f" ]; then
+      rc=0
+      grep -v -e "'"$PROXY_ENV_MARK"'\$" -e "^export GH_TOKEN=" "$f" > "$tmp" || rc=$?
+      [ "$rc" -le 1 ] || exit 1
+    fi
+    cat >> "$tmp"
+    chmod 600 "$tmp"
+    mv "$tmp" "$f"
+  '
 }
 
 # Report real GitHub credentials stored outside GH_TOKEN. They are the user's
@@ -430,6 +449,12 @@ proxy_attach() {
     error "$container is attached to '$attached'. Detach first: incs proxy rm $container"
   fi
 
+  # A real token never contains whitespace; one with a space would be stored
+  # as is and fail later with a bare 401.
+  if [[ "$token" =~ [[:space:]] ]]; then
+    error "Token must not contain whitespace"
+  fi
+
   if [[ -z "$token" ]] && ! proxy_has_1password "$proxy"; then
     error "Proxy '$proxy' has no 1Password account, so it cannot read a vault.
        Store the token in the proxy instead: incs proxy add $container $proxy --token"
@@ -479,6 +504,11 @@ proxy_attach() {
   proxy_render_entry "$placeholder" "$source" github.com api.github.com \
     | proxy_push "$proxy" "$PROXY_DIR/entries/$container--$service.yaml" 0600
   incus exec "$proxy" -- iron-rebuild </dev/null
+  # Moving from a stored token to a vault reference: the config no longer uses
+  # the stored copy, so it must not stay behind.
+  if [[ -z "$token" ]]; then
+    incus file delete -q "$proxy$PROXY_DIR/tokens/$container--$service" >/dev/null 2>&1 || true
+  fi
 
   log "Trusting the proxy's certificate authority in $container..."
   incus file pull -q "$proxy$PROXY_DIR/ca.crt" - \
@@ -580,7 +610,7 @@ proxy_attached_containers() {
 # ---------------------------------------------------------------------------
 proxy_cmd_rm() {
   local container="${1:-}"
-  [[ -z "$container" ]] && error "Usage: incs proxy rm <container>"
+  [[ -z "$container" || $# -gt 1 ]] && error "Usage: incs proxy rm <container>"
   proxy_instance_exists "$container" || error "Container not found: $container"
 
   local proxy
@@ -625,7 +655,7 @@ proxy_cmd_delete() {
     case "$1" in
       -f|--force) force=1; shift ;;
       -*)         error "Unknown option: $1" ;;
-      *)          name="$1"; shift ;;
+      *)          [[ -n "$name" ]] && error "Unexpected argument: $1"; name="$1"; shift ;;
     esac
   done
   [[ -z "$name" ]] && error "Usage: incs proxy delete <name> [--force]"
@@ -654,16 +684,19 @@ proxy_cmd_delete() {
 }
 
 # ---------------------------------------------------------------------------
-# Hook for `incs -d <container>`: keep proxies consistent with what exists.
+# Hooks for `incs -d <container>`: keep proxies consistent with what exists.
 # ---------------------------------------------------------------------------
-proxy_before_delete() {
-  local container="$1" proxy
-  proxy_instance_exists "$container" || return 0
-  if proxy_is_proxy "$container"; then
-    error "'$container' is a credential proxy. Use: incs proxy delete $container"
+proxy_refuse_delete_of_proxy() {
+  if proxy_instance_exists "$1" && proxy_is_proxy "$1"; then
+    error "'$1' is a credential proxy. Use: incs proxy delete $1"
   fi
-  proxy="$(proxy_attached_to "$container")"
-  [[ -z "$proxy" ]] && return 0
+}
+
+# Stop honoring a deleted container's placeholder. Called only after the
+# delete succeeded, so a failed delete leaves the container fully attached.
+proxy_after_delete() {
+  local container="$1" proxy="${2:-}"
+  [[ -n "$proxy" ]] || return 0
   proxy_instance_exists "$proxy" || return 0
   proxy_try proxy_detach_proxy_side "$container" "$proxy" >/dev/null 2>&1
   if [[ $PROXY_TRY_RC -eq 0 ]]; then

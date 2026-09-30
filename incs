@@ -2,8 +2,18 @@
 set -euo pipefail
 
 # Resolve symlinks: install_shortcuts links incs into ~/.local/bin, and sibling
-# scripts must be found next to the real file, not next to the link.
-SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
+# scripts must be found next to the real file, not next to the link. macOS 12
+# and earlier have no realpath, so fall back to following the links by hand.
+_incs_resolve() {
+  if command -v realpath >/dev/null 2>&1; then realpath "$1"; return; fi
+  local p="$1" link
+  while [[ -L "$p" ]]; do
+    link="$(readlink "$p")"
+    case "$link" in /*) p="$link" ;; *) p="$(dirname "$p")/$link" ;; esac
+  done
+  echo "$p"
+}
+SCRIPT_DIR="$(cd "$(dirname "$(_incs_resolve "${BASH_SOURCE[0]}")")" && pwd)"
 # shellcheck source=incus.prompt
 source "$SCRIPT_DIR/incus.prompt"
 
@@ -323,9 +333,11 @@ case "$1" in
     [[ $# -lt 1 ]] && error "Usage: incs delete <container>"
     # shellcheck source=incus.proxy
     source "$SCRIPT_DIR/incus.proxy"
-    proxy_before_delete "$1"
+    proxy_refuse_delete_of_proxy "$1"
+    attached_proxy="$(proxy_attached_to "$1" || true)"
     incus delete --force "$1"
     log "Deleted $1"
+    proxy_after_delete "$1" "$attached_proxy"
     ;;
   -k|kill)
     shift

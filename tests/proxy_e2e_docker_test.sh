@@ -89,7 +89,7 @@ install -m 0644 /work/base.yaml /etc/iron-proxy/base.yaml
 install -m 0755 /work/iron-rebuild /usr/local/bin/iron-rebuild
 
 bash /work/provision.sh
-result "binary_runs=$(/usr/local/bin/iron-proxy -config /nonexistent >/dev/null 2>&1; [ -x /usr/local/bin/iron-proxy ] && echo yes)"
+result "binary_runs=$(/usr/local/bin/iron-proxy -h 2>&1 | grep -q -- '-config' && echo yes || echo no)"
 result "ca_is_a_ca=$(openssl x509 -in /etc/iron-proxy/ca.crt -noout -text | grep -c 'CA:TRUE')"
 result "ca_key_mode=$(stat -c %a /etc/iron-proxy/ca.key)"
 result "tokens_dir_mode=$(stat -c %a /etc/iron-proxy/tokens)"

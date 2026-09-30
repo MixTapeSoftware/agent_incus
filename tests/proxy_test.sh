@@ -118,6 +118,11 @@ assert_eq "refuses a name already in use: exit code" "1" "$rc"
 assert_contains "refuses a name already in use: message" "already exists" "$out"
 
 fresh_state
+out="$(printf 'tok\n' | incs proxy new one two 2>&1)" && rc=0 || rc=$?
+assert_eq "new: a second name is refused" "1" "$rc"
+assert_eq "new: …and nothing is created" "" "$(incus list --format csv --columns n)"
+
+fresh_state
 out="$(printf 'tok\n' | incs proxy new 'bad name!' 2>&1)" && rc=0 || rc=$?
 assert_eq "rejects an invalid name" "1" "$rc"
 assert_eq "invalid name creates nothing" "" "$(incus list --format csv --columns n)"
@@ -228,6 +233,7 @@ out="$(incs proxy add proj work 2>&1)"
 assert_not_contains "no warning when no other credentials exist" "hosts.yml" "$out"
 
 # Re-adding rotates the placeholder and leaves no duplicates behind.
+ph="$(cfg proj environment.GH_TOKEN)"
 incs proxy add proj work >/dev/null 2>&1
 ph2="$(cfg proj environment.GH_TOKEN)"
 zshenv="$(cat "$(fs proj "$ZSHENV")")"
@@ -295,6 +301,25 @@ assert_eq "--token pasted with terminal escapes is stored clean" \
 out="$(incs proxy add proj work --ref "$(printf 'op://v/i/f\033[I')" 2>&1)" && rc=0 || rc=$?
 assert_eq "--ref containing a control character is refused" "1" "$rc"
 
+# Switching a container from a stored token to 1Password removes the token.
+fresh_state
+make_proxy work
+make_agent proj
+printf 'github_pat_STORED\n' | incs proxy add proj work --token >/dev/null 2>&1
+incs proxy add proj work >/dev/null 2>&1
+assert_contains "switching to 1Password: entry now reads the vault" \
+  "type: 1password" "$(cat "$(fs work /etc/iron-proxy/entries/proj--github.yaml)")"
+assert_eq "switching to 1Password: the stored token is deleted" \
+  "gone" "$([[ -e "$(fs work /etc/iron-proxy/tokens/proj--github)" ]] && echo present || echo gone)"
+
+fresh_state
+make_proxy work
+make_agent proj
+out="$(printf 'github_pat_with a_space\n' | incs proxy add proj work --token 2>&1)" && rc=0 || rc=$?
+assert_eq "--token containing whitespace is refused" "1" "$rc"
+assert_eq "--token containing whitespace stores nothing" \
+  "gone" "$([[ -e "$(fs work /etc/iron-proxy/tokens/proj--github)" ]] && echo present || echo gone)"
+
 # Refusals.
 fresh_state
 make_proxy work
@@ -339,6 +364,27 @@ assert_eq "failure partway: proxy rm can still clean up" "0" "$rc"
 assert_eq "failure partway: no entry is left on the proxy" \
   "0" "$(grep -c 'proxy_value' "$(fs work /etc/iron-proxy/proxy.yaml)" || true)"
 
+# ~/.zshenv is rewritten in place; a failure must never lose the user's lines.
+fresh_state
+make_proxy work
+make_agent proj
+printf 'export EDITOR=nvim\nexport SECRET_SAUCE=1\n' | incus file push -p - "proj$ZSHENV"
+out="$(FAKE_INCUS_FAIL_CALL='^file pull .*\.zshenv' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+assert_contains "~/.zshenv survives a failed read: user's first line kept"  "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
+assert_contains "~/.zshenv survives a failed read: user's second line kept" "export SECRET_SAUCE=1" "$(cat "$(fs proj "$ZSHENV")")"
+
+if [[ "$(id -u)" != "0" ]]; then
+  fresh_state
+  make_proxy work
+  make_agent proj
+  printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
+  chmod 000 "$(fs proj "$ZSHENV")"
+  out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+  chmod 600 "$(fs proj "$ZSHENV")"
+  assert_eq "unreadable ~/.zshenv: attach fails rather than overwriting" "1" "$([[ $rc -ne 0 ]] && echo 1 || echo 0)"
+  assert_eq "unreadable ~/.zshenv: the user's lines are untouched" "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
+fi
+
 # A stopped container or proxy is started rather than failing.
 fresh_state
 make_proxy work
@@ -377,6 +423,10 @@ assert_eq "rm: tag is cleared" "" "$(cfg proj user.incs.proxy)"
 
 out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "rm: a container with no proxy is refused" "1" "$rc"
+incs proxy add keep work >/dev/null 2>&1
+out="$(incs proxy rm keep proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm: a second container name is refused" "1" "$rc"
+assert_eq "rm: …and nothing is detached" "work" "$(cfg keep user.incs.proxy)"
 out="$(incs proxy rm nope 2>&1)" && rc=0 || rc=$?
 assert_eq "rm: unknown container is refused" "1" "$rc"
 
@@ -424,6 +474,12 @@ make_proxy work
 make_agent proj
 printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
 incs proxy add proj work >/dev/null 2>&1
+
+make_proxy other
+out="$(incs proxy delete work --force other 2>&1)" && rc=0 || rc=$?
+assert_eq "delete: a second proxy name is refused" "1" "$rc"
+assert_eq "delete: …and neither proxy is deleted" \
+  "other work" "$(incus list user.incs.role=proxy --format csv --columns n | sort | tr '\n' ' ' | sed 's/ $//')"
 
 out="$(incs proxy delete work 2>&1)" && rc=0 || rc=$?
 assert_eq "delete: refused while containers are attached" "1" "$rc"
@@ -475,6 +531,16 @@ assert_eq "incs -d: its stored token is deleted from the proxy" \
   "gone" "$([[ -e "$(fs work /etc/iron-proxy/tokens/proj--github)" ]] && echo present || echo gone)"
 assert_contains "incs -d: other containers keep their entries" "op://agent-tokens/keep/credential" "$built"
 
+make_agent survivor
+printf 'github_pat_KEEP\n' | incs proxy add survivor work --token >/dev/null 2>&1
+out="$(FAKE_INCUS_FAIL_CALL='^delete --force survivor$' incs -d survivor 2>&1)" && rc=0 || rc=$?
+assert_eq "incs -d, delete fails: reports failure" "1" "$([[ $rc -ne 0 ]] && echo 1 || echo 0)"
+assert_eq "incs -d, delete fails: container keeps its proxy" "work" "$(cfg survivor user.incs.proxy)"
+assert_eq "incs -d, delete fails: its stored token is kept" \
+  "github_pat_KEEP" "$(cat "$(fs work /etc/iron-proxy/tokens/survivor--github)" 2>/dev/null; echo)"
+assert_contains "incs -d, delete fails: its entry is still honored" \
+  "survivor--github" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+
 out="$(incs -d plain 2>&1)" && rc=0 || rc=$?
 assert_eq "incs -d: a container with no proxy is still deleted" "" "$(incus list '^plain$' --format csv --columns n)"
 
@@ -487,6 +553,53 @@ assert_eq "incs -d: the proxy survives" "work" "$(incus list '^work$' --format c
 out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild' incs -d keep 2>&1)" && rc=0 || rc=$?
 assert_eq "incs -d: proxy update failure does not block the delete" "" "$(incus list '^keep$' --format csv --columns n)"
 assert_contains "incs -d: …but is reported" "proxy" "$out"
+
+# ===========================================================================
+echo "concurrent changes to one proxy"
+# ===========================================================================
+if command -v flock >/dev/null 2>&1; then
+  fresh_state
+  make_proxy work
+  make_agent proj
+  incs proxy add proj work >/dev/null 2>&1
+  lockdir="$(fs work /etc/iron-proxy)"
+  # Another attach or detach is mid-rebuild and holds the lock.
+  flock "$lockdir/.rebuild.lock" -c 'sleep 2' &
+  holder=$!
+  sleep 0.5
+  start=$(date +%s)
+  incus exec work -- iron-rebuild
+  elapsed=$(( $(date +%s) - start ))
+  wait "$holder"
+  assert_eq "a rebuild waits for one already in progress" "waited" "$([[ $elapsed -ge 1 ]] && echo waited || echo "did not wait (${elapsed}s)")"
+  assert_eq "a rebuild leaves no temporary files behind" \
+    "" "$(compgen -G "$lockdir/proxy.yaml.*" || true)"
+else
+  echo "  skip  concurrent rebuilds (flock not installed)"
+fi
+
+# ===========================================================================
+echo "incs without realpath (macOS 12 and earlier)"
+# ===========================================================================
+fresh_state
+make_proxy work
+norp="$SANDBOX/no-realpath-bin"
+mkdir -p "$norp" "$SANDBOX/linkbin"
+ln -sf "$REPO_ROOT/incs" "$SANDBOX/linkbin/incs"
+IFS=: read -r -a _dirs <<< "$PATH"
+for _d in "${_dirs[@]}"; do
+  [[ -d "$_d" ]] || continue
+  for _f in "$_d"/*; do
+    _n="$(basename "$_f")"
+    [[ "$_n" == "realpath" || -e "$norp/$_n" || ! -x "$_f" ]] && continue
+    ln -s "$_f" "$norp/$_n"
+  done
+done
+out="$(cd "$SANDBOX" && PATH="$norp" "$SANDBOX/linkbin/incs" -h 2>&1)" && rc=0 || rc=$?
+assert_eq "incs -h works without realpath" "0" "$rc"
+out="$(cd "$SANDBOX" && PATH="$norp" "$SANDBOX/linkbin/incs" proxy list 2>&1)" && rc=0 || rc=$?
+assert_eq "incs proxy works without realpath" "0" "$rc"
+assert_contains "…and finds the proxy" "work" "$out"
 
 # ===========================================================================
 echo "incs through a symlink"
@@ -615,6 +728,29 @@ out="$(printf '\033[Oacme\033[I\n\033[Oop://Shared/GitHub proj/token\033[I\nAda\
 assert_eq "plugin: a pasted proxy name is cleaned" "acme" "$(cfg proj user.incs.proxy)"
 assert_contains "plugin: a pasted reference is cleaned" \
   'secret_ref: "op://Shared/GitHub proj/token"' "$(cat "$(fs acme /etc/iron-proxy/entries/proj--github.yaml)" 2>/dev/null || true)"
+
+fresh_state
+make_proxy work
+make_agent proj
+printf '\n\033[OAda Lovelace\033[I\n\033[Oada@example.com\033[I\n' | run_plugin proj >/dev/null 2>&1 || true
+gitconfig="$(fs proj "/home/$USER_NAME/.gitconfig")"
+assert_eq "plugin: a pasted git name is cleaned" \
+  "Ada Lovelace" "$(git config --file "$gitconfig" user.name 2>/dev/null || true)"
+assert_eq "plugin: a pasted git email is cleaned" \
+  "ada@example.com" "$(git config --file "$gitconfig" user.email 2>/dev/null || true)"
+
+fresh_state
+make_proxy work
+make_agent proj
+# Input ends after the reference: the optional git identity is skipped.
+# Called as a plain command, not inside `&&`/`||`, so set -e is live in the
+# plugin exactly as it is in incus.init.
+set +e
+out="$(printf '\n' | run_plugin proj 2>&1)"
+rc=$?
+set -e
+assert_eq "plugin: end of input at the git identity prompts is not an error" "0" "$rc"
+assert_eq "plugin: …and the container is still attached" "work" "$(cfg proj user.incs.proxy)"
 
 fresh_state
 printf '\n' | incs proxy new bare >/dev/null 2>&1

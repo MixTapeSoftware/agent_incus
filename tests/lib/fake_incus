@@ -18,11 +18,17 @@
 # Knobs (env):
 #   FAKE_INCUS_FAIL_EXEC   regex; an exec whose command matches exits 1
 #   FAKE_INCUS_NEXT_IP     address handed to the next created instance
+#   FAKE_INCUS_FAIL_CALL   regex; any invocation whose argv matches exits 1
 set -uo pipefail
 
 S="${FAKE_INCUS_STATE:?FAKE_INCUS_STATE must be set}"
 mkdir -p "$S/instances" "$S/exec-stdin"
 printf '%s\n' "$*" >> "$S/calls.log"
+
+if [[ -n "${FAKE_INCUS_FAIL_CALL:-}" && "$*" =~ $FAKE_INCUS_FAIL_CALL ]]; then
+  echo "Error: injected failure" >&2
+  exit 1
+fi
 
 die() { echo "Error: $*" >&2; exit 1; }
 inst_dir() { echo "$S/instances/$1"; }
@@ -43,9 +49,13 @@ create_instance() {
   [[ -d "$d" ]] && die "Instance already exists: $name"
   mkdir -p "$d/config" "$d/root"
   echo "$status" > "$d/status"
-  local n
-  n=$(find "$S/instances" -mindepth 1 -maxdepth 1 -type d | wc -l | tr -d ' ')
-  echo "${FAKE_INCUS_NEXT_IP:-10.99.0.$((10 + n))}" > "$d/ipv4"
+  # A counter that only grows, so an address is never handed out twice, even
+  # after an instance is deleted.
+  local n=0
+  [[ -f "$S/ip-counter" ]] && n="$(cat "$S/ip-counter")"
+  n=$((n + 1))
+  echo "$n" > "$S/ip-counter"
+  echo "${FAKE_INCUS_NEXT_IP:-10.99.$((n / 250)).$((10 + n % 250))}" > "$d/ipv4"
 }
 
 cmd="${1:-}"; shift || true

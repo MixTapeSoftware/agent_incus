@@ -17,11 +17,11 @@ plugin_prompt() {
   default_name="$(git config --global user.name 2>/dev/null || true)"
   default_email="$(git config --global user.email 2>/dev/null || true)"
 
-  read -rp "Git user.name [${default_name:-}]: " GH_USER_NAME
+  read_value GH_USER_NAME "Git user.name [${default_name:-}]: "
   GH_USER_NAME="${GH_USER_NAME:-$default_name}"
   if [[ -z "$GH_USER_NAME" ]]; then error "Git user.name required"; fi
 
-  read -rp "Git user.email [${default_email:-}]: " GH_USER_EMAIL
+  read_value GH_USER_EMAIL "Git user.email [${default_email:-}]: "
   GH_USER_EMAIL="${GH_USER_EMAIL:-$default_email}"
   if [[ -z "$GH_USER_EMAIL" ]]; then error "Git user.email required"; fi
 }

@@ -65,9 +65,9 @@ plugin_prompt() {
   local default_name default_email
   default_name="$(git config --global user.name 2>/dev/null || true)"
   default_email="$(git config --global user.email 2>/dev/null || true)"
-  read -rp "Git user.name [${default_name:-}]: " PROXY_GIT_NAME
+  read_value PROXY_GIT_NAME "Git user.name [${default_name:-}]: "
   PROXY_GIT_NAME="${PROXY_GIT_NAME:-$default_name}"
-  read -rp "Git user.email [${default_email:-}]: " PROXY_GIT_EMAIL
+  read_value PROXY_GIT_EMAIL "Git user.email [${default_email:-}]: "
   PROXY_GIT_EMAIL="${PROXY_GIT_EMAIL:-$default_email}"
 }
 

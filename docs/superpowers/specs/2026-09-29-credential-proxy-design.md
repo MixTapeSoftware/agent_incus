@@ -85,7 +85,10 @@ Proxies are **not** tagged `user.managed-by=agent-incus`, so `incs -ka` and
 - **Address pinning.** `proxy new` starts the container, reads the address the
   bridge leased, stops it, and pins that address with a device override. No
   address has to be chosen by hand. Container DNS names are avoided because
-  Tailscale can take over name resolution inside agent containers.
+  Tailscale can take over name resolution inside agent containers. If the
+  override fails, for example on a network Incus does not manage, `proxy new`
+  warns and records the leased address anyway. That address is only as stable
+  as the lease, and attached containers must be re-added if it changes.
 - **Pasted values are cleaned.** Terminals can wrap a paste in escape
   sequences the user never sees: focus reporting (`ESC [ O`, `ESC [ I`) and
   bracketed paste. A token saved with them fails with a bare 401, and a
