@@ -124,7 +124,7 @@ Options:
 1. Launches an Ubuntu 24.04 container (override with `--image`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID with passwordless sudo
-5. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
+5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+)
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional plugins (see below)
 
