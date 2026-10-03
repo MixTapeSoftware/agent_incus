@@ -1,6 +1,6 @@
 PLUGIN_ID="nvchad"
-PLUGIN_NAME="NvChad"
-PLUGIN_DESC="Neovim + NvChad with Chad's config"
+PLUGIN_NAME="Chadception"
+PLUGIN_DESC="Chad's nvChad"
 PLUGIN_DEFAULT=0
 
 plugin_is_installed() {
