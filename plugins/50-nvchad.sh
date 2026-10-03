@@ -8,9 +8,10 @@ plugin_is_installed() {
 }
 
 plugin_install() {
-  log "Installing Neovim..."
+  log "Installing Neovim and dependencies..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
     set -e
+    sudo apt-get install -y ripgrep
     curl -fsSLO https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz
     sudo tar -C /usr/local --strip-components=1 -xzf nvim-linux-x86_64.tar.gz
     rm nvim-linux-x86_64.tar.gz
