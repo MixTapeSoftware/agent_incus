@@ -107,7 +107,6 @@ Options:
   -t, --template            Save container as a reusable local template (implies --no-mount)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
   --no-mount                Clone repo into container instead of mounting host directory
-  --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 VM only: start with an empty (sealed) workspace
   --vm-disk SIZE            VM root disk size (default: 20GiB)
@@ -123,7 +122,7 @@ Options:
 
 1. Launches an Ubuntu 24.04 container (override with `--image`)
 3. Installs build tools, dev libraries, Python, and Node.js
-4. Creates a user matching your host UID/GID with passwordless sudo
+4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
 5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+)
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional plugins (see below)
@@ -217,7 +216,7 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-A recommended setup uses two containers sharing the same workspace. The agent container runs with `--no-sudo` so AI tools cannot escalate privileges, while the dev container has full access and credentials:
+A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, so AI agents cannot escalate privileges. Use `incs shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
 graph TB
@@ -228,18 +227,21 @@ graph TB
 ```
 
 ```bash
-# Agent container — no sudo, no credentials
-incs -i --no-sudo project-agent
+# Agent container — no credentials
+incs -i project-agent
 
 # Dev container — with credentials
 incs -i --1pass --gh-token project-dev
 
 # Agent container that can push, without ever holding the token
-incs -i --no-sudo --proxy project-agent
+incs -i --proxy project-agent
+
+# Shell in with temporary sudo to install something
+incs shell --with-sudo project-dev
 
 # Save as reusable template, then spin up new containers instantly
 incs -i --template project-base
-incs -i --from project-base --no-sudo project-agent-2
+incs -i --from project-base project-agent-2
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
@@ -339,7 +341,7 @@ If you gave an auth key, the plugin prints the machine's HTTPS URL when it finis
 If you skipped the auth key, join later with:
 
 ```bash
-incs -s project-dev "sudo tailscale up --operator=$USER"
+incs shell --with-sudo project-dev "sudo tailscale up --operator=$USER"
 ```
 
 To add or change served ports after the fact, run `tailscale serve` inside the container (no sudo needed, since your user is the Tailscale operator):
@@ -515,7 +517,7 @@ npm run dev -- --host 0.0.0.0
 
 ### Updating Containers
 
-Containers don't have sudo by default, so package updates run from the host via `incus exec`:
+Containers don't have sudo by default (use `incs shell --with-sudo` for one-off installs), so package updates run from the host via `incus exec`:
 
 ```bash
 # Update a single container

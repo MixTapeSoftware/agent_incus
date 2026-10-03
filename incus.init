@@ -47,7 +47,6 @@ Options:
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
-  --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --no-tui                  Skip interactive plugin selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
@@ -165,7 +164,6 @@ CONTAINER_NAME=""
 DRY_RUN=0
 NO_TUI=0
 SAVE_TEMPLATE=0
-NO_SUDO=0
 NO_MOUNT=0
 ACK_ENV=0
 MAP_USER=0
@@ -549,7 +547,6 @@ while [[ $# -gt 0 ]]; do
     --vm-cpus)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_CPUS="$2"; VM_OPT_SET=1; shift 2 ;;
     --no-mount)      NO_MOUNT=1; shift ;;
     --ack-env)       ACK_ENV=1; shift ;;
-    --no-sudo)       NO_SUDO=1; shift ;;
     --no-tui)        NO_TUI=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
@@ -856,13 +853,8 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 
   id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
 
-  # Sudo: always enforce current flag state (base image may differ)
-  if [ \"$NO_SUDO\" = \"1\" ]; then
-    rm -f /etc/sudoers.d/$HOST_USER
-  else
-    echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
-    chmod 0440 /etc/sudoers.d/$HOST_USER
-  fi
+  # No sudo by default; use 'incs shell --with-sudo' for interactive sessions
+  rm -f /etc/sudoers.d/$HOST_USER
 "
 
 # ---------------------------------------------------------------------------

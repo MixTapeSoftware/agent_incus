@@ -35,7 +35,8 @@ Usage: incs [command] [args...]
 
 Commands:
   <container>                    Shell into container (default)
-  -s, shell <container> [cmd]    Shell into container
+  -s, shell [--with-sudo] <container> [cmd]
+                                 Shell into container (--with-sudo grants temporary sudo)
   -i, init [args...]             Create/provision a new container
   -n, net <container> [ports...] Manage port proxies
   -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)

@@ -1,8 +1,26 @@
 #!/bin/bash
 set -euo pipefail
-CONTAINER="${1:-${CLAUDE_CONTAINER:-}}"
+
+WITH_SUDO=0
+CONTAINER=""
+CMD_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --with-sudo) WITH_SUDO=1; shift ;;
+    *)
+      if [[ -z "$CONTAINER" ]]; then
+        CONTAINER="$1"; shift
+      else
+        CMD_ARGS+=("$1"); shift
+      fi
+      ;;
+  esac
+done
+
+CONTAINER="${CONTAINER:-${CLAUDE_CONTAINER:-}}"
 if [[ -z "$CONTAINER" ]]; then
-  echo "Usage: $(basename "$0") <container> [command...]"
+  echo "Usage: $(basename "$0") [--with-sudo] <container> [command...]"
   exit 1
 fi
 STATUS=$(incus list "^${CONTAINER}$" --format csv --columns s 2>/dev/null)
@@ -43,14 +61,23 @@ else
   GROUP_FLAGS=(--group "$HOST_GID")
 fi
 
-if [[ $# -gt 1 ]]; then
-  shift
+if [[ "$WITH_SUDO" == "1" ]]; then
+  SUDOERS_FILE="/etc/sudoers.d/$HOST_USER"
+  incus exec "$CONTAINER" -- bash -c \
+    "echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > $SUDOERS_FILE && chmod 0440 $SUDOERS_FILE"
+  revoke_sudo() {
+    incus exec "$CONTAINER" -- rm -f "$SUDOERS_FILE" 2>/dev/null || true
+  }
+  trap revoke_sudo EXIT
+fi
+
+if [[ ${#CMD_ARGS[@]} -gt 0 ]]; then
   exec incus exec "$CONTAINER" \
     --user "$HOST_UID" "${GROUP_FLAGS[@]}" \
     --cwd /workspace \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
-    -- zsh -lic "$*"
+    -- zsh -lic "${CMD_ARGS[*]}"
 else
   exec incus exec "$CONTAINER" \
     --user "$HOST_UID" "${GROUP_FLAGS[@]}" \
