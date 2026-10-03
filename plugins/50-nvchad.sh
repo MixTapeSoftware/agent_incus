@@ -29,6 +29,10 @@ EOF
     'nvim --headless "+Lazy! sync" +qa 2>/dev/null' || \
     warn "Lazy sync returned non-zero — open nvim to finish plugin setup"
 
+  log "Installing tree-sitter CLI..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+    'sudo npm install -g tree-sitter-cli'
+
   log "Installing treesitter parsers..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
     'nvim --headless "+TSInstall lua go python typescript bash elixir" +qa 2>/dev/null' || \
