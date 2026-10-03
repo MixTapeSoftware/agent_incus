@@ -853,7 +853,14 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 
   id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
 
-  # Grant sudo for the build (plugins need it); revoked after plugin installs
+  # Group-gated sudo: only sessions launched with --with-sudo get the _sudo
+  # group via incus exec --group, so only they can escalate.
+  groupadd -f _sudo
+  echo '%_sudo ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/_sudo
+  chmod 0440 /etc/sudoers.d/_sudo
+
+  # Grant user-level sudo for the build (plugins need it); swapped for
+  # group-only rule after plugin installs.
   echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
   chmod 0440 /etc/sudoers.d/$HOST_USER
 "

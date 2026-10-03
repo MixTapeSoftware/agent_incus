@@ -6,9 +6,7 @@ CONTAINER=""
 CMD_ARGS=()
 
 while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --with-sudo) WITH_SUDO=1; shift ;;
-    *)
+  case "$1" in --with-sudo) WITH_SUDO=1; shift ;; *)
       if [[ -z "$CONTAINER" ]]; then
         CONTAINER="$1"; shift
       else
@@ -62,13 +60,12 @@ else
 fi
 
 if [[ "$WITH_SUDO" == "1" ]]; then
-  SUDOERS_FILE="/etc/sudoers.d/$HOST_USER"
-  incus exec "$CONTAINER" -- bash -c \
-    "echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > $SUDOERS_FILE && chmod 0440 $SUDOERS_FILE"
-  revoke_sudo() {
-    incus exec "$CONTAINER" -- rm -f "$SUDOERS_FILE" 2>/dev/null || true
-  }
-  trap revoke_sudo EXIT
+  SUDO_GID=$(incus exec "$CONTAINER" -- getent group _sudo 2>/dev/null | cut -d: -f3)
+  if [[ -z "$SUDO_GID" ]]; then
+    echo "Error: _sudo group not found in container (was it built with a recent incus.init?)" >&2
+    exit 1
+  fi
+  GROUP_FLAGS+=(--group "$SUDO_GID")
 fi
 
 if [[ ${#CMD_ARGS[@]} -gt 0 ]]; then
