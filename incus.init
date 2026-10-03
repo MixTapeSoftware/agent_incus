@@ -47,7 +47,6 @@ Options:
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
-  --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --no-tui                  Skip interactive plugin selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
@@ -123,97 +122,19 @@ wait_for_network() {
 }
 
 # ---------------------------------------------------------------------------
-# subuid / subgid helpers (internal plumbing for raw.idmap fallback)
-# ---------------------------------------------------------------------------
-id_in_subid_file() {
-  local id=$1 file=$2
-  [[ ! -f "$file" ]] && return 1
-  while IFS=: read -r name start count || [[ -n "$name" ]]; do
-    [[ -z "$name" || "$name" == \#* || "$name" != "root" ]] && continue
-    local end=$((start + count - 1))
-    [[ $id -ge $start && $id -le $end ]] && return 0
-  done < "$file"
-  return 1
-}
-
-entry_exists_in_file() {
-  local entry=$1 file=$2
-  [[ ! -f "$file" ]] && return 1
-  grep -qxF "$entry" "$file" 2>/dev/null
-}
-
-ensure_subid_entries() {
-  local uid="$1" gid="$2"
-  local subuid_ok=0 subgid_ok=0
-
-  id_in_subid_file "$uid" /etc/subuid && subuid_ok=1
-  id_in_subid_file "$gid" /etc/subgid && subgid_ok=1
-
-  [[ "$subuid_ok" == "1" && "$subgid_ok" == "1" ]] && return 0
-
-  echo ""
-  echo "Your UID/GID must be in /etc/subuid and /etc/subgid for write access."
-  local entries=()
-  [[ "$subuid_ok" == "0" ]] && ! entry_exists_in_file "root:$uid:1" /etc/subuid && \
-    entries+=("/etc/subuid: root:$uid:1")
-  [[ "$subgid_ok" == "0" ]] && ! entry_exists_in_file "root:$gid:1" /etc/subgid && \
-    entries+=("/etc/subgid: root:$gid:1")
-
-  [[ ${#entries[@]} -eq 0 ]] && return 0
-
-  echo "Need to add (requires sudo):"
-  printf '  %s\n' "${entries[@]}"
-  read -rp "Add these entries? [Y/n] " reply
-  [[ "$reply" =~ ^[Nn]$ ]] && return 1
-
-  [[ "$subuid_ok" == "0" ]] && ! entry_exists_in_file "root:$uid:1" /etc/subuid && \
-    echo "root:$uid:1" | sudo tee -a /etc/subuid > /dev/null
-  [[ "$subgid_ok" == "0" ]] && ! entry_exists_in_file "root:$gid:1" /etc/subgid && \
-    echo "root:$gid:1" | sudo tee -a /etc/subgid > /dev/null
-}
-
-# ---------------------------------------------------------------------------
-# Mount workspace with user mapping
-#
-# Tries shift=true first (clean, kernel-level, no config needed).
-# Falls back to raw.idmap (broader compat, needs subuid/subgid).
-# If both fail, mounts without mapping (read-only for container user).
+# Mount workspace with user mapping (requires kernel 5.12+ idmapped mounts)
 # ---------------------------------------------------------------------------
 mount_workspace() {
-  local container="$1" source="$2" target="$3" uid="$4" gid="$5"
+  local container="$1" source="$2" target="$3"
 
-  # Attempt 1: shift=true (kernel idmapped mounts, 5.12+)
-  log "Trying shift=true mount..."
   if incus config device add "$container" workspace disk \
-      source="$source" path="$target" shift=true 2>/dev/null; then
+      source="$source" path="$target" shift=true raw.mount.options=nosuid 2>/dev/null; then
     log "Mounted with shift=true"
     return 0
   fi
 
-  # shift failed, clean up
   incus config device remove "$container" workspace 2>/dev/null || true
-
-  # Attempt 2: raw.idmap
-  log "shift=true not supported, trying raw.idmap..."
-  if ensure_subid_entries "$uid" "$gid"; then
-    incus config device add "$container" workspace disk \
-      source="$source" path="$target"
-    incus config set "$container" raw.idmap="both $uid $uid"
-    log "Restarting container for raw.idmap..."
-    incus restart "$container"
-    wait_for_container "$container"
-    wait_for_network "$container"
-    log "Mounted with raw.idmap"
-    IDMAP_METHOD="raw"
-    return 0
-  fi
-
-  # Attempt 3: no mapping
-  warn "Could not configure user mapping. Mounting without write access."
-  incus config device add "$container" workspace disk \
-    source="$source" path="$target"
-  IDMAP_METHOD="none"
-  return 0
+  error "shift=true mount failed. Requires Linux 5.12+ with idmapped mount support."
 }
 
 # ---------------------------------------------------------------------------
@@ -243,7 +164,6 @@ CONTAINER_NAME=""
 DRY_RUN=0
 NO_TUI=0
 SAVE_TEMPLATE=0
-NO_SUDO=0
 NO_MOUNT=0
 ACK_ENV=0
 MAP_USER=0
@@ -565,14 +485,17 @@ save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
 
-  # Save token lines from .zshenv, then strip them so they don't leak into the image
+  # Save token lines from .zshenv, then strip them so they don't leak into the
+  # image. Lines written by a credential proxy attach (marked "# incs-proxy")
+  # go too: a placeholder and proxy address belong to one container, and a
+  # container launched from the template must not inherit them.
   local saved_tokens
   saved_tokens=$(incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=' ~/.zshenv 2>/dev/null || true")
+    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=|# incs-proxy\$' ~/.zshenv 2>/dev/null || true")
 
   log "Scrubbing secrets from image..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "sed -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d' ~/.zshenv 2>/dev/null || true"
+    "sed -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d; /# incs-proxy\$/d' ~/.zshenv 2>/dev/null || true"
 
   # Empty the workspace before publishing. A template is a reusable *provisioned
   # base* (packages, mise, shell, tools) — not a frozen copy of one repo. Baking
@@ -624,7 +547,6 @@ while [[ $# -gt 0 ]]; do
     --vm-cpus)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_CPUS="$2"; VM_OPT_SET=1; shift 2 ;;
     --no-mount)      NO_MOUNT=1; shift ;;
     --ack-env)       ACK_ENV=1; shift ;;
-    --no-sudo)       NO_SUDO=1; shift ;;
     --no-tui)        NO_TUI=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
@@ -646,6 +568,8 @@ done
 # ---------------------------------------------------------------------------
 source "$SCRIPT_DIR/incus.macos.setup"
 source "$SCRIPT_DIR/incus.envscan"
+# read_secret / read_value, for plugin prompts that take pasted values.
+source "$SCRIPT_DIR/incus.prompt"
 
 # ---------------------------------------------------------------------------
 # Validate
@@ -814,7 +738,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   elif [[ "$IS_VM" == "1" || "$NO_MOUNT" == "1" ]]; then
     echo "Write access: yes (copied in, owned by you)"
   else
-    echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
+    echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (shift=true)" || echo "no" )"
   fi
   echo ""
   echo "Selected plugins:"
@@ -929,13 +853,16 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 
   id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
 
-  # Sudo: always enforce current flag state (base image may differ)
-  if [ \"$NO_SUDO\" = \"1\" ]; then
-    rm -f /etc/sudoers.d/$HOST_USER
-  else
-    echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
-    chmod 0440 /etc/sudoers.d/$HOST_USER
-  fi
+  # Group-gated sudo: only sessions launched with --with-sudo get the _sudo
+  # group via incus exec --group, so only they can escalate.
+  groupadd -f _sudo
+  echo '%_sudo ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/_sudo
+  chmod 0440 /etc/sudoers.d/_sudo
+
+  # Grant user-level sudo for the build (plugins need it); swapped for
+  # group-only rule after plugin installs.
+  echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
+  chmod 0440 /etc/sudoers.d/$HOST_USER
 "
 
 # ---------------------------------------------------------------------------
@@ -1007,7 +934,7 @@ else
   log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
 
   if [[ "$MAP_USER" == "1" ]]; then
-    mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH" "$HOST_UID" "$HOST_GID"
+    mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH"
   else
     incus config device add "$CONTAINER_NAME" workspace disk \
       source="$WORKSPACE_PATH" path="$MOUNT_PATH"
@@ -1057,6 +984,10 @@ fi  # end FROM_BASE_IMAGE == 0
 # Install selected plugins
 # ---------------------------------------------------------------------------
 _run_plugin_installs "$FROM_BASE_IMAGE"
+
+# Revoke build-time sudo now that plugins are done
+log "Revoking build-time sudo..."
+incus exec "$CONTAINER_NAME" -- rm -f "/etc/sudoers.d/$HOST_USER"
 
 # Run mise install if the workspace has a config. Skipped for a sealed VM
 # (--vm --no-copy): its /workspace is created empty, so there is no host

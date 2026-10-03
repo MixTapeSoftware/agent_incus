@@ -9,10 +9,10 @@
     "allow": [
       "Bash(*)",
       "Read(**)",
-      "Write(**)",
+      "Write",
       "Edit(**)",
       "WebSearch",
-      "NotebookEdit(**)",
+      "NotebookEdit",
       "SlashCommand(*)",
       "Skill(*)",
       "WebFetch(*)"

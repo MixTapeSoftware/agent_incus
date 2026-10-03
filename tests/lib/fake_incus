@@ -1,0 +1,271 @@
+#!/usr/bin/env bash
+# tests/lib/fake_incus
+# A stand-in for the `incus` CLI used by the proxy tests. It keeps real state
+# on disk so tests can assert outcomes (config keys, file contents) instead of
+# only the calls that were made.
+#
+# State lives under $FAKE_INCUS_STATE:
+#   calls.log                      one line per invocation (argv, space-joined)
+#   exec.log                       one line per `exec`: "<instance> :: <command>"
+#   exec-stdin/<n>                 stdin captured for the nth exec, when piped
+#   instances/<name>/status        RUNNING | STOPPED
+#   instances/<name>/ipv4          leased address
+#   instances/<name>/config/<key>  one file per config key
+#   instances/<name>/root/...      the instance filesystem
+#   images/<alias>/root/...        filesystem captured by `publish`
+#   gh.log                         arguments of each `gh` run inside an instance
+#
+# Knobs (env):
+#   FAKE_INCUS_FAIL_EXEC   regex; an exec whose command matches exits 1
+#   FAKE_INCUS_NEXT_IP     address handed to the next created instance
+#   FAKE_INCUS_FAIL_CALL   regex; any invocation whose argv matches exits 1
+set -uo pipefail
+
+S="${FAKE_INCUS_STATE:?FAKE_INCUS_STATE must be set}"
+mkdir -p "$S/instances" "$S/exec-stdin"
+printf '%s\n' "$*" >> "$S/calls.log"
+
+if [[ -n "${FAKE_INCUS_FAIL_CALL:-}" && "$*" =~ $FAKE_INCUS_FAIL_CALL ]]; then
+  echo "Error: injected failure" >&2
+  exit 1
+fi
+
+die() { echo "Error: $*" >&2; exit 1; }
+inst_dir() { echo "$S/instances/$1"; }
+need_inst() { [[ -d "$(inst_dir "$1")" ]] || die "Instance not found: $1"; }
+
+# Split "<instance>/<path>" into the fake filesystem location.
+fs_path() {
+  local spec="$1" name path
+  name="${spec%%/*}"
+  path="/${spec#*/}"
+  need_inst "$name"
+  echo "$(inst_dir "$name")/root$path"
+}
+
+create_instance() {
+  local name="$1" status="$2" d
+  d="$(inst_dir "$name")"
+  [[ -d "$d" ]] && die "Instance already exists: $name"
+  mkdir -p "$d/config" "$d/root"
+  echo "$status" > "$d/status"
+  # A counter that only grows, so an address is never handed out twice, even
+  # after an instance is deleted.
+  local n=0
+  [[ -f "$S/ip-counter" ]] && n="$(cat "$S/ip-counter")"
+  n=$((n + 1))
+  echo "$n" > "$S/ip-counter"
+  # Last octet stays within 10-249; the third octet advances every 240.
+  echo "${FAKE_INCUS_NEXT_IP:-10.99.$((n / 240)).$((10 + n % 240))}" > "$d/ipv4"
+}
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  info)
+    need_inst "${1:-}" 2>/dev/null || exit 1
+    echo "Name: $1"
+    ;;
+
+  init|launch)
+    # incus init <image> <name> [flags]
+    name="${2:-}"
+    [[ -n "$name" ]] || die "name required"
+    if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
+    else create_instance "$name" STOPPED; fi
+    ;;
+
+  start)   need_inst "$1"; echo RUNNING > "$(inst_dir "$1")/status" ;;
+  stop)    need_inst "$1"; echo STOPPED > "$(inst_dir "$1")/status" ;;
+  restart) need_inst "$1"; echo RUNNING > "$(inst_dir "$1")/status" ;;
+
+  delete)
+    name=""
+    for a in "$@"; do [[ "$a" == -* ]] || name="$a"; done
+    need_inst "$name"
+    rm -rf "$(inst_dir "$name")"
+    ;;
+
+  publish)
+    # incus publish <name> --alias <alias>: snapshot the filesystem as it is now.
+    name="$1"; alias=""
+    while [[ $# -gt 0 ]]; do
+      [[ "$1" == "--alias" ]] && alias="$2"
+      shift
+    done
+    need_inst "$name"
+    [[ "$(cat "$(inst_dir "$name")/status")" == "STOPPED" ]] || die "Instance must be stopped"
+    mkdir -p "$S/images/$alias"
+    cp -R "$(inst_dir "$name")/root" "$S/images/$alias/root"
+    ;;
+
+  config)
+    sub="${1:-}"; shift || true
+    case "$sub" in
+      set)
+        name="$1"; shift
+        need_inst "$name"
+        if [[ $# -eq 1 ]]; then key="${1%%=*}"; val="${1#*=}"
+        else key="$1"; val="$2"; fi
+        printf '%s' "$val" > "$(inst_dir "$name")/config/$key"
+        ;;
+      get)
+        need_inst "$1"
+        f="$(inst_dir "$1")/config/$2"
+        [[ -f "$f" ]] && cat "$f"
+        echo
+        ;;
+      unset)
+        need_inst "$1"
+        rm -f "$(inst_dir "$1")/config/$2"
+        ;;
+      device)
+        # incus config device override <name> <device> key=value
+        op="$1"; name="$2"; dev="$3"; kv="${4:-}"
+        need_inst "$name"
+        [[ "$op" == "override" ]] || die "unsupported device op: $op"
+        printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+        ;;
+      *) die "unsupported config subcommand: $sub" ;;
+    esac
+    ;;
+
+  list)
+    filters=(); columns="ns"
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --format)  shift 2 ;;
+        --columns|-c) columns="$2"; shift 2 ;;
+        -*)        shift ;;
+        *)         filters+=("$1"); shift ;;
+      esac
+    done
+    for d in "$S/instances"/*/; do
+      [[ -d "$d" ]] || continue
+      name="$(basename "$d")"
+      status="$(cat "$d/status")"
+      show=1
+      for f in ${filters[@]+"${filters[@]}"}; do
+        if [[ "$f" == *=* ]]; then
+          key="${f%%=*}"; want="${f#*=}"
+          if [[ "$key" == "status" ]]; then
+            [[ "$(echo "$status" | tr 'A-Z' 'a-z')" == "$(echo "$want" | tr 'A-Z' 'a-z')" ]] || show=0
+          else
+            have=""
+            [[ -f "$d/config/$key" ]] && have="$(cat "$d/config/$key")"
+            # Incus matches these server side as a case-insensitive regex,
+            # anchored unless the value has its own ^ or $
+            # (internal/filter/match.go, DefaultParseRegexp). Names used here
+            # contain no regex metacharacters, so equality covers it.
+            [[ "$(echo "$have" | tr 'A-Z' 'a-z')" == "$(echo "$want" | tr 'A-Z' 'a-z')" ]] || show=0
+          fi
+        else
+          [[ "$name" =~ $f ]] || show=0
+        fi
+      done
+      [[ "$show" == "1" ]] || continue
+      row=""
+      for ((i=0; i<${#columns}; i++)); do
+        case "${columns:$i:1}" in
+          n) cell="$name" ;;
+          s) cell="$status" ;;
+          4) if [[ "$status" == "RUNNING" ]]; then cell="$(cat "$d/ipv4") (eth0)"; else cell=""; fi ;;
+          *) cell="" ;;
+        esac
+        row+="${row:+,}$cell"
+      done
+      echo "$row"
+    done
+    ;;
+
+  file)
+    sub="${1:-}"; shift || true
+    args=()
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        --mode|--uid|--gid) shift 2 ;;
+        --mode=*|--uid=*|--gid=*|-p|--create-dirs|-q|--quiet) shift ;;
+        *) args+=("$1"); shift ;;
+      esac
+    done
+    case "$sub" in
+      push)
+        src="${args[0]}"; dst="$(fs_path "${args[1]}")" || exit 1
+        mkdir -p "$(dirname "$dst")"
+        if [[ "$src" == "-" ]]; then cat > "$dst"; else cp "$src" "$dst"; fi
+        ;;
+      pull)
+        src="$(fs_path "${args[0]}")" || exit 1
+        [[ -f "$src" ]] || die "Not Found"
+        if [[ "${args[1]}" == "-" ]]; then cat "$src"; else cp "$src" "${args[1]}"; fi
+        ;;
+      delete)
+        dst="$(fs_path "${args[0]}")" || exit 1
+        [[ -e "$dst" ]] || die "Not Found"
+        rm -f "$dst"
+        ;;
+      *) die "unsupported file subcommand: $sub" ;;
+    esac
+    ;;
+
+  exec)
+    name="$1"; shift
+    need_inst "$name"
+    [[ "$(cat "$(inst_dir "$name")/status")" == "RUNNING" ]] || die "Instance is not running"
+    while [[ $# -gt 0 && "$1" != "--" ]]; do shift; done
+    shift || true
+    command_line="$*"
+    echo "$name :: $command_line" >> "$S/exec.log"
+    n=$(wc -l < "$S/exec.log" | tr -d ' ')
+    if [[ ! -t 0 ]]; then cat > "$S/exec-stdin/$n"; fi
+
+    if [[ -n "${FAKE_INCUS_FAIL_EXEC:-}" && "$command_line" =~ $FAKE_INCUS_FAIL_EXEC ]]; then
+      exit 1
+    fi
+
+    root="$(inst_dir "$name")/root"
+    stub="$S/stub-bin"; mkdir -p "$stub"
+    printf '#!/bin/sh\nexit 0\n' > "$stub/systemctl"
+    printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\nexit 0\n' "$S" > "$stub/gh"
+    chmod +x "$stub/systemctl" "$stub/gh"
+
+    # `su - <user> [-s <shell>] [-c <cmd>]`: run it for real with HOME inside
+    # the fake filesystem, so commands that edit ~/ files have real effects.
+    if [[ "${1:-}" == "su" ]]; then
+      shift; su_user=""; su_cmd=""; has_cmd=0
+      while [[ $# -gt 0 ]]; do
+        case "$1" in
+          -)  shift ;;
+          -s) shift 2 ;;
+          -c) su_cmd="$2"; has_cmd=1; shift 2 ;;
+          *)  su_user="$1"; shift ;;
+        esac
+      done
+      home="$root/home/$su_user"; mkdir -p "$home"
+      stdin_file="$S/exec-stdin/$n"; [[ -f "$stdin_file" ]] || stdin_file=/dev/null
+      if [[ "$has_cmd" == "1" ]]; then
+        env -i HOME="$home" USER="$su_user" PATH="$stub:$PATH" sh -c "$su_cmd" < "$stdin_file"
+      else
+        env -i HOME="$home" USER="$su_user" PATH="$stub:$PATH" sh < "$stdin_file"
+      fi
+      exit $?
+    fi
+
+    case "$command_line" in
+      "getent passwd "*)
+        user="${command_line#getent passwd }"
+        echo "$user:x:1000:1000::/home/$user:/usr/bin/zsh"
+        ;;
+      "iron-rebuild")
+        # Run the real rebuild script the code under test installed, against
+        # the fake filesystem, with service management stubbed out.
+        script="$root/usr/local/bin/iron-rebuild"
+        [[ -f "$script" ]] || die "iron-rebuild: command not found"
+        IRON_PROXY_DIR="$root/etc/iron-proxy" PATH="$stub:$PATH" sh "$script"
+        ;;
+      "systemctl is-active"*) echo active ;;
+      *) : ;;
+    esac
+    ;;
+
+  *) die "fake_incus: unsupported command: $cmd" ;;
+esac

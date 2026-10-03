@@ -17,6 +17,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [Templates](#templates)
   - [Virtual Machines](#virtual-machines)
   - [Tailscale](#tailscale)
+  - [Credential Proxy](#credential-proxy)
   - [Expose Container Ports](#expose-container-ports)
   - [Snapshots](#snapshots)
 - [Runtime Management](#runtime-management)
@@ -59,6 +60,7 @@ incs my-project claude
 | `incus.init` | `inci` | Create and provision a container |
 | `incus.shell` | — | Open a login shell (or run a command) in a container |
 | `incus.network` | `incn` | Manage port proxy devices |
+| `incus.proxy` | — | Credential proxies: keep real tokens out of containers (`incs proxy`) |
 | `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
 | `incs.new-plugin` | — | Scaffold a new plugin file from a template (also `incs new-plugin`) |
 | `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin` |
@@ -81,6 +83,9 @@ incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
+incs proxy new work                    # Create a credential proxy
+incs proxy add my-project work         # Give a container GitHub access through it
+incs proxy list                        # Show proxies and attached containers
 incs cron install                      # Install 7pm daily update cron
 incs cron install 3                    # Install 3am daily update cron
 incs cron status                       # Show current cron schedule
@@ -102,7 +107,6 @@ Options:
   -t, --template            Save container as a reusable local template (implies --no-mount)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
   --no-mount                Clone repo into container instead of mounting host directory
-  --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 VM only: start with an empty (sealed) workspace
   --vm-disk SIZE            VM root disk size (default: 20GiB)
@@ -118,8 +122,8 @@ Options:
 
 1. Launches an Ubuntu 24.04 container (override with `--image`)
 3. Installs build tools, dev libraries, Python, and Node.js
-4. Creates a user matching your host UID/GID with passwordless sudo
-5. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
+4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
+5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+)
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional plugins (see below)
 
@@ -154,6 +158,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
+| [Credential Proxy](#credential-proxy) | GitHub access through a proxy; the real token never enters the container. Replaces GitHub Auth |
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
 | [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
@@ -211,7 +216,7 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-A recommended setup uses two containers sharing the same workspace. The agent container runs with `--no-sudo` so AI tools cannot escalate privileges, while the dev container has full access and credentials:
+A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, so AI agents cannot escalate privileges. Use `incs shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
 graph TB
@@ -222,15 +227,21 @@ graph TB
 ```
 
 ```bash
-# Agent container — no sudo, no credentials
-incs -i --no-sudo project-agent
+# Agent container — no credentials
+incs -i project-agent
 
 # Dev container — with credentials
 incs -i --1pass --gh-token project-dev
 
+# Agent container that can push, without ever holding the token
+incs -i --proxy project-agent
+
+# Shell in with temporary sudo to install something
+incs shell --with-sudo project-dev
+
 # Save as reusable template, then spin up new containers instantly
 incs -i --template project-base
-incs -i --from project-base --no-sudo project-agent-2
+incs -i --from project-base project-agent-2
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
@@ -325,12 +336,12 @@ During creation you're asked for two things:
 - **An auth key.** Create one at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys). Use a *tagged* key (for example `tag:incus-dev`) so the container joins as a machine with only the access your ACLs give that tag, not as you with all of your access. Leave it blank to join later by hand.
 - **A dev port to serve.** Optional. If you enter `3000`, the plugin runs `tailscale serve` so that `https://project-dev.<tailnet>.ts.net/` goes to port 3000 inside the container. Leave it blank if you'd rather set this up yourself.
 
-When it finishes, the plugin prints the machine's HTTPS URL. Open that URL from any device on your tailnet and you're looking at the app running in the container.
+If you gave an auth key, the plugin prints the machine's HTTPS URL when it finishes. The URL reaches your app once a `tailscale serve` mapping points at it: the dev port you entered, the Supabase preset, or a mapping you add later (see below). Open it from any device on your tailnet and you're looking at the app running in the container. If you join later by hand, `tailscale status` inside the container shows the machine's name.
 
 If you skipped the auth key, join later with:
 
 ```bash
-incs -s project-dev "sudo tailscale up --operator=$USER"
+incs shell --with-sudo project-dev "sudo tailscale up --operator=$USER"
 ```
 
 To add or change served ports after the fact, run `tailscale serve` inside the container (no sudo needed, since your user is the Tailscale operator):
@@ -378,6 +389,84 @@ tailscale serve --bg --https=443 http://127.0.0.1:4000
 The app is then at `https://<host>.<tailnet>.ts.net/`. In this setup the dev server *must* bind to 0.0.0.0 (see below), since traffic arrives from outside the container. The trade-off is that all containers share the host's single name and set of ports, whereas with the plugin each container gets its own.
 
 **Requirements.** Both options need MagicDNS and HTTPS certificates turned on in the [tailnet admin console](https://login.tailscale.com/admin/dns). Access is tailnet-only and follows your ACLs. VMs (`--vm`) are supported; the plugin uses the VM's own `/dev/net/tun`.
+
+### Credential Proxy
+
+A token inside a container can be read by anything running there, including an AI agent that has been talked into looking for it. A credential proxy removes the token from the container. The container holds a random **placeholder**. The proxy, which runs in its own container, swaps the placeholder for the real token on the way to GitHub.
+
+```mermaid
+graph LR
+    A["Agent container<br/>GH_TOKEN = placeholder"] -->|"HTTPS via proxy"| P["Proxy container<br/>iron-proxy"]
+    P -->|"real token"| G["github.com"]
+    P -.->|"reads token"| O["1Password vault"]
+```
+
+It is built on [iron-proxy](https://github.com/paradigmxyz/iron-proxy), pinned to a specific release and verified by checksum.
+
+**1. Create a proxy.** One per 1Password account is typical, for example one for work and one for personal projects.
+
+```bash
+incs proxy new work                      # default vault: agent-tokens
+incs proxy new acme --vault acme-agents  # a different vault
+```
+
+You are asked for a 1Password **service account token**. Give that account read-only access to a single vault that holds only these tokens. Leave it blank to skip 1Password and store tokens in the proxy container instead.
+
+**2. Store the container's token in 1Password.** Create a fine-grained GitHub token for the project, and save it as an item named after the container, in a field named `credential`. The default reference is `op://<vault>/<container>/credential`.
+
+**3. Attach the container.**
+
+```bash
+incs proxy add my-project work
+incs proxy add my-project work --ref "op://Private/GitHub my-project/token"
+incs proxy add my-project work --token   # paste the token; it is stored in the proxy
+```
+
+Or attach at creation. This replaces `--gh-token`:
+
+```bash
+incs -i my-project --proxy
+```
+
+`git` and `gh` then work as usual inside the container, with no changes to how you use them.
+
+**Manage:**
+
+```bash
+incs proxy list             # proxies, addresses, attached containers
+incs proxy rm my-project    # detach; the placeholder stops working at once
+incs proxy delete work      # refused while containers are attached, unless --force
+```
+
+Deleting a container with `incs -d` also removes it from its proxy. Proxies are skipped by `incs -ka` and `incs -ua`.
+
+**What attaching does:**
+
+- Registers the placeholder with the proxy, bound to `github.com` and `api.github.com`. A placeholder sent anywhere else is not swapped.
+- Installs the proxy's certificate authority in the container, since the proxy has to read HTTPS requests to rewrite them. Each proxy has its own authority.
+- Sets `GH_TOKEN` to the placeholder, replacing any real token already there, and points `HTTPS_PROXY` at the proxy in `~/.zshenv`. Only your shell sessions use the proxy. Package updates and system services connect directly.
+
+**What it does not do:**
+
+- **It does not restrict where the container can connect.** The proxy settings are ordinary environment variables, and a process can ignore them. That is safe for credentials: a request that skips the proxy carries only the placeholder, and GitHub rejects it. It is not an egress firewall.
+- **It does not stop the agent from using the credential.** The agent cannot read the token, but it can do whatever the token permits. Keep tokens narrowly scoped.
+- **It does not scrub responses.** An endpoint that echoes request headers back would reveal the real token. GitHub does not do this. Be careful before binding a token to other hosts.
+- **It does not cover Claude's own login or the 1Password CLI plugin.** Those still place real credentials in the container.
+
+**Troubleshooting:**
+
+- **A tool fails with a certificate error.** It is probably using its own trust store. Add its host to `NO_PROXY` in `~/.zshenv` so it connects directly.
+- **GitHub returns 401.** The proxy could not read the token. Check the reference and the service account's access, then look at the proxy's log, which records each swap and each unavailable secret:
+
+  ```bash
+  incus exec work -- journalctl -u iron-proxy -n 50
+  ```
+
+- **Tailscale is unaffected.** Its daemon runs as a system service and does not read the shell's proxy settings, and `.ts.net` names bypass the proxy.
+
+**Templates.** Saving a template strips the placeholder and proxy settings from the image. Launch with `--proxy` to attach the new container with a placeholder of its own. The proxy's certificate authority does remain trusted in the image.
+
+**Existing containers.** A token that has already lived in a container should be treated as exposed. After attaching, create a new token, store it in 1Password, and revoke the old one.
 
 ### Expose Container Ports
 
@@ -428,7 +517,7 @@ npm run dev -- --host 0.0.0.0
 
 ### Updating Containers
 
-Containers don't have sudo by default, so package updates run from the host via `incus exec`:
+Containers don't have sudo by default (use `incs shell --with-sudo` for one-off installs), so package updates run from the host via `incus exec`:
 
 ```bash
 # Update a single container
@@ -496,7 +585,7 @@ Or add a `mise.toml` to your project — `incus.init` runs `mise install` automa
 If UFW is enabled on the host, its default DROP policy will block traffic on the Incus bridge. See the [Incus firewall documentation](https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge) for setup instructions. The things you'll need to allow:
 
 - **DHCP + DNS** — containers need these to get an IP address and resolve names
-- **Outbound forwarding** — containers need a route through the host to reach the internet. Optionally, if you use `--proxy`, the proxy port on the host must also accept connections from the bridge
+- **Outbound forwarding** — containers need a route through the host to reach the internet. If you use a [credential proxy](#credential-proxy), containers must also be able to reach each other on the bridge, since the proxy is itself a container
 
 ### IPv6
 
