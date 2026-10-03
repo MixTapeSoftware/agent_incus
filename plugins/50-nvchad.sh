@@ -28,4 +28,14 @@ EOF
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
     'nvim --headless "+Lazy! sync" +qa 2>/dev/null' || \
     warn "Lazy sync returned non-zero — open nvim to finish plugin setup"
+
+  log "Installing treesitter parsers..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+    'nvim --headless "+TSInstall lua go python typescript bash elixir" +qa 2>/dev/null' || \
+    warn "TSInstall returned non-zero — run :TSInstall inside nvim to retry"
+
+  log "Installing LSPs via Mason..."
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+    'nvim --headless "+MasonInstall lua-language-server gopls pyright typescript-language-server bash-language-server elixir-ls" +qa 2>/dev/null' || \
+    warn "MasonInstall returned non-zero — run :Mason inside nvim to retry"
 }
