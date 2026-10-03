@@ -853,8 +853,9 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 
   id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
 
-  # No sudo by default; use 'incs shell --with-sudo' for interactive sessions
-  rm -f /etc/sudoers.d/$HOST_USER
+  # Grant sudo for the build (plugins need it); revoked after plugin installs
+  echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
+  chmod 0440 /etc/sudoers.d/$HOST_USER
 "
 
 # ---------------------------------------------------------------------------
@@ -976,6 +977,10 @@ fi  # end FROM_BASE_IMAGE == 0
 # Install selected plugins
 # ---------------------------------------------------------------------------
 _run_plugin_installs "$FROM_BASE_IMAGE"
+
+# Revoke build-time sudo now that plugins are done
+log "Revoking build-time sudo..."
+incus exec "$CONTAINER_NAME" -- rm -f "/etc/sudoers.d/$HOST_USER"
 
 # Run mise install if the workspace has a config. Skipped for a sealed VM
 # (--vm --no-copy): its /workspace is created empty, so there is no host
