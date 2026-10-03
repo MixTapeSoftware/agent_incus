@@ -128,7 +128,7 @@ mount_workspace() {
   local container="$1" source="$2" target="$3"
 
   if incus config device add "$container" workspace disk \
-      source="$source" path="$target" shift=true 2>/dev/null; then
+      source="$source" path="$target" shift=true raw.mount.options=nosuid 2>/dev/null; then
     log "Mounted with shift=true"
     return 0
   fi
