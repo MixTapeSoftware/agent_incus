@@ -8,6 +8,17 @@ plugin_is_installed() {
     'command -v nvim && test -f ~/.config/nvim/lua/chadrc.lua' &>/dev/null
 }
 
+# Run a bash script (stdin) as the container user. Headless nvim is noisy, so
+# its output is held back and printed only when the step fails.
+_nvchad_quiet() {
+  local out
+  if out="$(incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' 2>&1)"; then
+    return 0
+  fi
+  printf '%s\n' "$out" >&2
+  return 1
+}
+
 plugin_install() {
   log "Installing Neovim and dependencies..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'EOF'
@@ -38,23 +49,41 @@ EOF
 EOF
 
   log "Running headless Neovim to install plugins..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    'nvim --headless "+Lazy! sync" +qa 2>/dev/null' || \
-    warn "Lazy sync returned non-zero — open nvim to finish plugin setup"
+  _nvchad_quiet <<'EOF' || warn "Lazy sync failed (output above) — open nvim to finish plugin setup"
+    nvim --headless "+Lazy! sync" +qa
+EOF
 
   log "Installing tree-sitter CLI..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
     'sudo npm install -g tree-sitter-cli'
 
-  # install() is async; :wait() keeps nvim open until the parsers are built.
+  # The Lua goes through a file: nvim exits 0 after a Lua error in a -c
+  # command, so the script reports failure itself with cquit.
   log "Installing treesitter parsers..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "nvim --headless -c \"lua require('lazy').load({ plugins = { 'nvim-treesitter' } }); require('nvim-treesitter').install({ 'lua', 'go', 'python', 'typescript', 'bash', 'elixir' }):wait(300000)\" -c qa 2>/dev/null" || \
-    warn "Treesitter install returned non-zero — run :TSInstall inside nvim to retry"
+  _nvchad_quiet <<'EOF' || warn "Treesitter parser install failed (output above) — run :TSInstall inside nvim to retry"
+    set -e
+    script="$(mktemp --suffix=.lua)"
+    trap 'rm -f "$script"' EXIT
+    cat > "$script" <<'LUA'
+-- install() is async; wait() blocks until every parser is built.
+require('lazy').load({ plugins = { 'nvim-treesitter' } })
+local ok, built = pcall(function()
+  return require('nvim-treesitter')
+    .install({ 'lua', 'go', 'python', 'typescript', 'bash', 'elixir' })
+    :wait(300000)
+end)
+if not (ok and built) then
+  io.stderr:write('treesitter install failed: ' .. tostring(built) .. '\n')
+  vim.cmd('cquit 1')
+end
+LUA
+    nvim --headless -c "luafile $script" -c qa
+EOF
 
-  # MasonInstall blocks until done when nvim is headless.
+  # MasonInstall blocks until done when nvim is headless, and exits non-zero
+  # if a package fails.
   log "Installing LSPs via Mason..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    'nvim --headless "+MasonInstall lua-language-server gopls pyright typescript-language-server bash-language-server elixir-ls" +qa 2>/dev/null' || \
-    warn "MasonInstall returned non-zero — run :Mason inside nvim to retry"
+  _nvchad_quiet <<'EOF' || warn "Mason install failed (output above) — run :Mason inside nvim to retry"
+    nvim --headless -c "MasonInstall lua-language-server gopls pyright typescript-language-server bash-language-server elixir-ls" -c qa
+EOF
 }

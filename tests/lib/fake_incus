@@ -12,6 +12,8 @@
 #   instances/<name>/ipv4          leased address
 #   instances/<name>/config/<key>  one file per config key
 #   instances/<name>/root/...      the instance filesystem
+#   instances/<name>/root/etc/group   answers `getent group <name>`
+#   instances/<name>/root/etc/id-G    answers `id -G <user>` (absent: exit 1)
 #   instances/<name>/profiles      profiles passed with -p at init/launch, one per line
 #   images/<alias>/root/...        filesystem captured by `publish`
 #   profiles/<name>/<key>          one file per profile config key
@@ -291,12 +293,16 @@ case "$cmd" in
       "getent group "*)
         grep "^${command_line#getent group }:" "$root/etc/group" 2>/dev/null || exit 2
         ;;
-      "iron-rebuild")
+      "id -G "*)
+        # The user's group IDs, primary first, as a test wrote them.
+        cat "$root/etc/id-G" 2>/dev/null || exit 1
+        ;;
+      "iron-rebuild"|"iron-rebuild "*)
         # Run the real rebuild script the code under test installed, against
         # the fake filesystem, with service management stubbed out.
         script="$root/usr/local/bin/iron-rebuild"
         [[ -f "$script" ]] || die "iron-rebuild: command not found"
-        IRON_PROXY_DIR="$root/etc/iron-proxy" PATH="$stub:$PATH" sh "$script"
+        IRON_PROXY_DIR="$root/etc/iron-proxy" PATH="$stub:$PATH" sh "$script" "${@:2}"
         ;;
       "systemctl is-active"*) echo active ;;
       *) : ;;

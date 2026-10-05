@@ -33,42 +33,57 @@ chmod +x "$SANDBOX/bin/incus"
 export PATH="$SANDBOX/bin:$PATH"
 unset CLAUDE_CONTAINER
 
-# Must differ from the host GID, which incus.shell always passes.
-SUDO_GID=4242
-[[ "$(id -g)" == "$SUDO_GID" ]] && SUDO_GID=4243
+USER_GID=4100; DOCKER_GID=4101; SUDO_GID=4242
+HOST_UID_NOW="$(id -u)"
+HOST_GID_NOW="$(id -g)"
 
 fresh_box() {
   export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
   mkdir -p "$FAKE_INCUS_STATE"
   incus launch images:ubuntu/24.04 box
-}
-with_sudo_group() {
   mkdir -p "$FAKE_INCUS_STATE/instances/box/root/etc"
-  echo "_sudo:x:$SUDO_GID:" > "$FAKE_INCUS_STATE/instances/box/root/etc/group"
 }
+# The container user: primary group first, then docker.
+with_user_groups() { echo "$USER_GID $DOCKER_GID" > "$FAKE_INCUS_STATE/instances/box/root/etc/id-G"; }
+with_sudo_group()  { echo "_sudo:x:$SUDO_GID:" > "$FAKE_INCUS_STATE/instances/box/root/etc/group"; }
 shell() { bash "$REPO_ROOT/incus.shell" "$@"; }
 last_call() { tail -1 "$FAKE_INCUS_STATE/calls.log"; }
+# The command incus runs inside the container (everything after the first --).
+launched() { local c; c="$(last_call)"; echo "${c#* -- }"; }
 
 echo "incus.shell"
 
-fresh_box
+fresh_box; with_user_groups; with_sudo_group
 shell box >/dev/null 2>&1
-assert_not_contains "plain shell: no _sudo group" "--group $SUDO_GID " "$(last_call)"
-assert_contains     "plain shell: interactive login shell" "-- zsh -li" "$(last_call)"
+assert_eq "plain shell: user's own groups, primary first, no _sudo" \
+  "setpriv --reuid=$HOST_UID_NOW --regid=$USER_GID --groups=$USER_GID,$DOCKER_GID --inh-caps=-all -- zsh -li" \
+  "$(launched)"
+# incus exec --group holds one GID; repeating it silently drops the others.
+assert_not_contains "plain shell: no incus --group flag" " --group " "$(last_call)"
+assert_not_contains "plain shell: no incus --user flag"  " --user "  "$(last_call)"
 
-fresh_box; with_sudo_group
+fresh_box; with_user_groups; with_sudo_group
 shell --with-sudo box >/dev/null 2>&1
-assert_contains "--with-sudo before the name adds the _sudo group" "--group $SUDO_GID " "$(last_call)"
+assert_eq "--with-sudo: adds _sudo, keeps the primary group and docker" \
+  "setpriv --reuid=$HOST_UID_NOW --regid=$USER_GID --groups=$USER_GID,$DOCKER_GID,$SUDO_GID --inh-caps=-all -- zsh -li" \
+  "$(launched)"
 
-fresh_box; with_sudo_group
+fresh_box; with_user_groups; with_sudo_group
 shell box echo --with-sudo >/dev/null 2>&1
-assert_not_contains "--with-sudo after the name is not a flag" "--group $SUDO_GID " "$(last_call)"
-assert_contains     "…it is passed to the command instead" "zsh -lic echo --with-sudo" "$(last_call)"
+assert_eq "--with-sudo after the name is passed to the command, not treated as a flag" \
+  "setpriv --reuid=$HOST_UID_NOW --regid=$USER_GID --groups=$USER_GID,$DOCKER_GID --inh-caps=-all -- zsh -lic echo --with-sudo" \
+  "$(launched)"
 
-fresh_box
+fresh_box; with_user_groups
 out="$(shell --with-sudo box 2>&1)" && rc=0 || rc=$?
 assert_eq       "missing _sudo group: exit code" "1" "$rc"
 assert_contains "missing _sudo group: explains why" "_sudo group not found" "$out"
+
+fresh_box
+shell box >/dev/null 2>&1
+assert_eq "group lookup unavailable: falls back to the host GID" \
+  "setpriv --reuid=$HOST_UID_NOW --regid=$HOST_GID_NOW --groups=$HOST_GID_NOW --inh-caps=-all -- zsh -li" \
+  "$(launched)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

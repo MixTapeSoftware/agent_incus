@@ -216,7 +216,7 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, so AI agents cannot escalate privileges. Use `incs shell --with-sudo` when you need to install packages interactively:
+A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin, on by default, puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container itself as the boundary. Use `incs shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
 graph TB
@@ -442,7 +442,7 @@ Deleting a container with `incs -d` also removes it from its proxy. Proxies are 
 
 **What attaching does:**
 
-- Registers the placeholder with the proxy, bound to `github.com` and `api.github.com`. A placeholder sent anywhere else is not swapped.
+- Registers the placeholder with the proxy, bound to `github.com`, `api.github.com` and `uploads.github.com`. A placeholder sent anywhere else is not swapped.
 - Installs the proxy's certificate authority in the container, since the proxy has to read HTTPS requests to rewrite them. Each proxy has its own authority.
 - Sets `GH_TOKEN` to the placeholder, replacing any real token already there, and points `HTTPS_PROXY` at the proxy in `~/.zshenv`. Only your shell sessions use the proxy. Package updates and system services connect directly.
 
@@ -450,6 +450,7 @@ Deleting a container with `incs -d` also removes it from its proxy. Proxies are 
 
 - **It does not restrict where the container can connect.** The proxy settings are ordinary environment variables, and a process can ignore them. That is safe for credentials: a request that skips the proxy carries only the placeholder, and GitHub rejects it. It is not an egress firewall.
 - **It does not stop the agent from using the credential.** The agent cannot read the token, but it can do whatever the token permits. Keep tokens narrowly scoped.
+- **It does not insist on HTTPS.** The proxy also swaps the placeholder in a plain `http://` request to a bound host, and the real token then crosses the network unencrypted. Attach does not set `HTTP_PROXY`, so tools do not do this by accident, but a process that sends such a request through the proxy on purpose can.
 - **It does not scrub responses.** An endpoint that echoes request headers back would reveal the real token. GitHub does not do this. Be careful before binding a token to other hosts.
 - **It does not cover Claude's own login or the 1Password CLI plugin.** Those still place real credentials in the container.
 

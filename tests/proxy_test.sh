@@ -210,12 +210,19 @@ assert_contains "entry reads from the default vault path" 'secret_ref: "op://age
 assert_contains "entry is a 1Password source"             "type: 1password" "$entry"
 assert_contains "entry is bound to github.com"            '- host: "github.com"' "$entry"
 assert_contains "entry is bound to api.github.com"        '- host: "api.github.com"' "$entry"
+assert_contains "entry is bound to uploads.github.com (release assets)" \
+  '- host: "uploads.github.com"' "$entry"
+assert_eq "no staged files are left in the proxy" \
+  "" "$(compgen -G "$(fs work /etc/iron-proxy)/*/*.new" || true)"
 assert_contains "rebuilt config includes the entry"       "proxy_value: \"$ph\"" "$built"
 assert_contains "rebuilt config keeps the base settings"  'tunnel_listen: "0.0.0.0:8888"' "$built"
 
 assert_not_contains "real token removed from ~/.zshenv"   "$REAL_TOKEN" "$zshenv"
 assert_contains "~/.zshenv exports the placeholder"       "export GH_TOKEN=$ph" "$zshenv"
 assert_contains "~/.zshenv routes HTTPS through the proxy" "export HTTPS_PROXY=http://10.99.0.7:8888" "$zshenv"
+# The proxy would swap the placeholder on plain HTTP too, in the clear.
+assert_eq "~/.zshenv does not route plain HTTP through the proxy" \
+  "" "$(grep -iE '^export http_proxy=' <<<"$zshenv" || true)"
 assert_contains "~/.zshenv keeps unrelated settings (before)" "export EDITOR=nvim" "$zshenv"
 assert_contains "~/.zshenv keeps unrelated settings (after)"  "export FOO=bar" "$zshenv"
 assert_contains "tailnet names bypass the proxy"          ".ts.net" "$(grep '^export NO_PROXY=' <<<"$zshenv" || true)"
@@ -467,6 +474,78 @@ assert_eq "rm with the proxy gone: placeholder is removed" "" "$(cfg proj enviro
 assert_not_contains "rm with the proxy gone: proxy settings are removed" \
   "HTTPS_PROXY" "$(cat "$(fs proj "$ZSHENV")")"
 
+# The proxy cannot revoke (broken, disk error): rm must not claim it did.
+fresh_state
+make_proxy work
+make_agent proj
+printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
+ph="$(cfg proj environment.GH_TOKEN)"
+out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild drop' incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm, proxy cannot revoke: fails" "1" "$rc"
+assert_contains     "rm, proxy cannot revoke: says the container is still attached" "still attached" "$out"
+assert_not_contains "rm, proxy cannot revoke: does not report a detach" "Detached" "$out"
+assert_eq "rm, proxy cannot revoke: tag is kept, so rm can be run again" "work" "$(cfg proj user.incs.proxy)"
+assert_eq "rm, proxy cannot revoke: container side is left as it was" "$ph" "$(cfg proj environment.GH_TOKEN)"
+out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm run again once the proxy works: succeeds" "0" "$rc"
+assert_not_contains "rm run again: placeholder is revoked" "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_eq "rm run again: tag is cleared" "" "$(cfg proj user.incs.proxy)"
+
+# A real deletion failure inside the proxy, not an injected one.
+if [[ "$(id -u)" != "0" ]]; then
+  fresh_state
+  make_proxy work
+  make_agent proj
+  printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
+  ph="$(cfg proj environment.GH_TOKEN)"
+  chmod a-w "$(fs work /etc/iron-proxy/tokens)"
+  out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+  chmod u+w "$(fs work /etc/iron-proxy/tokens)"
+  assert_eq "rm, stored token cannot be deleted: fails" "1" "$rc"
+  assert_eq "rm, stored token cannot be deleted: tag is kept" "work" "$(cfg proj user.incs.proxy)"
+  assert_contains "rm, stored token cannot be deleted: old mapping is not silently republished as detached" \
+    "still attached" "$out"
+  out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+  assert_eq "rm run again after the fix: succeeds" "0" "$rc"
+  assert_eq "rm run again after the fix: stored token is gone" \
+    "gone" "$([[ -e "$(fs work /etc/iron-proxy/tokens/proj--github)" ]] && echo present || echo gone)"
+  assert_not_contains "rm run again after the fix: placeholder is revoked" \
+    "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+else
+  echo "  skip  real deletion failure (running as root)"
+fi
+
+# A proxy created before commit/drop existed carries a helper that ignores
+# them: attach would publish nothing and rm would revoke nothing.
+old_helper() {
+  cat <<'OLD'
+#!/bin/sh
+set -eu
+dir="${IRON_PROXY_DIR:-/etc/iron-proxy}"
+tmp="$(mktemp "$dir/proxy.yaml.XXXXXX")"
+cat "$dir/base.yaml" > "$tmp"
+for f in "$dir"/entries/*.yaml; do
+  if [ -f "$f" ]; then cat "$f" >> "$tmp"; fi
+done
+mv "$tmp" "$dir/proxy.yaml"
+systemctl restart iron-proxy
+OLD
+}
+fresh_state
+make_proxy work
+make_agent proj
+old_helper | incus file push - work/usr/local/bin/iron-rebuild
+out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+ph="$(cfg proj environment.GH_TOKEN)"
+assert_eq "older proxy: add succeeds" "0" "$rc"
+assert_contains "older proxy: add really publishes the entry" \
+  "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+old_helper | incus file push - work/usr/local/bin/iron-rebuild
+out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "older proxy: rm succeeds" "0" "$rc"
+assert_not_contains "older proxy: rm really revokes the placeholder" \
+  "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+
 # ===========================================================================
 echo "proxy list"
 # ===========================================================================
@@ -577,6 +656,8 @@ assert_eq "incs -d: the proxy survives" "work" "$(incus list '^work$' --format c
 out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild' incs -d keep 2>&1)" && rc=0 || rc=$?
 assert_eq "incs -d: proxy update failure does not block the delete" "" "$(incus list '^keep$' --format csv --columns n)"
 assert_contains "incs -d: …but is reported" "proxy" "$out"
+assert_contains "incs -d: …with the command that revokes the placeholder" \
+  "iron-rebuild drop keep--github" "$out"
 
 # ===========================================================================
 echo "concurrent changes to one proxy"
@@ -601,6 +682,28 @@ if command -v flock >/dev/null 2>&1; then
 else
   echo "  skip  concurrent rebuilds (flock not installed)"
 fi
+
+# An entry upload that is still in flight, or was cut off, must never be live.
+fresh_state
+make_proxy work
+make_agent proj; make_agent other
+incs proxy add proj work >/dev/null 2>&1
+printf '        - source:\n            type: HALF-WRITTEN' \
+  | incus file push -p - work/etc/iron-proxy/entries/other--github.yaml.new
+incus exec work -- iron-rebuild
+assert_not_contains "a half-uploaded entry is not published by someone else's rebuild" \
+  "HALF-WRITTEN" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+incs proxy add other work >/dev/null 2>&1
+built="$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_contains     "the finished upload is published" "op://agent-tokens/other/credential" "$built"
+assert_not_contains "…and replaces the cut-off one"    "HALF-WRITTEN" "$built"
+
+out="$(incus exec work -- iron-rebuild commit ghost--github ref 2>&1)" && rc=0 || rc=$?
+assert_eq "commit with nothing staged is refused" "1" "$rc"
+out="$(incus exec work -- iron-rebuild drop ../base 2>&1)" && rc=0 || rc=$?
+assert_eq "an entry name with a path in it is refused" "2" "$rc"
+assert_contains "…and the proxy config is untouched" \
+  "tunnel_listen" "$(cat "$(fs work /etc/iron-proxy/base.yaml)")"
 
 # ===========================================================================
 echo "incs without realpath (macOS 12 and earlier)"

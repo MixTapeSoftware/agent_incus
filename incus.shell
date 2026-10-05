@@ -46,20 +46,13 @@ HOST_USER="$(id -un)"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
-# We use --user/--group instead of `su -` so incus manages the PTY
-# end-to-end (no signal-intercepting middleman that kills the session
-# on Ctrl+C).  However, --group only sets the primary GID — supplementary
-# groups (e.g. docker) are not loaded.  To fix this we ask the container
-# to resolve the user's supplementary groups and pass them via --group.
-SUPP_GIDS=$(incus exec "$CONTAINER" -- id -G "$HOST_USER" 2>/dev/null | tr ' ' ',')
-GROUP_FLAGS=()
-if [[ -n "$SUPP_GIDS" ]]; then
-  for gid in ${SUPP_GIDS//,/ }; do
-    GROUP_FLAGS+=(--group "$gid")
-  done
-else
-  GROUP_FLAGS=(--group "$HOST_GID")
-fi
+# `incus exec --group` takes a single GID, so it cannot carry supplementary
+# groups (docker, _sudo). Enter as root and let setpriv set the whole group
+# list before dropping to the user. setpriv execs the shell directly, so incus
+# still manages the PTY end-to-end (no su-style middleman that eats Ctrl+C).
+USER_GIDS=$(incus exec "$CONTAINER" -- id -G "$HOST_USER" 2>/dev/null | tr ' ' ',' || true)
+USER_GIDS="${USER_GIDS:-$HOST_GID}"
+PRIMARY_GID="${USER_GIDS%%,*}"   # id -G lists the primary group first
 
 if [[ "$WITH_SUDO" == "1" ]]; then
   SUDO_GID=$(incus exec "$CONTAINER" -- getent group _sudo 2>/dev/null | cut -d: -f3 || true)
@@ -67,21 +60,21 @@ if [[ "$WITH_SUDO" == "1" ]]; then
     echo "Error: _sudo group not found in container (was it built with a recent incus.init?)" >&2
     exit 1
   fi
-  GROUP_FLAGS+=(--group "$SUDO_GID")
+  USER_GIDS+=",$SUDO_GID"
 fi
+
+RUN_AS=(setpriv --reuid="$HOST_UID" --regid="$PRIMARY_GID" --groups="$USER_GIDS" --inh-caps=-all --)
 
 if [[ ${#CMD_ARGS[@]} -gt 0 ]]; then
   exec incus exec "$CONTAINER" \
-    --user "$HOST_UID" "${GROUP_FLAGS[@]}" \
     --cwd /workspace \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
-    -- zsh -lic "${CMD_ARGS[*]}"
+    -- "${RUN_AS[@]}" zsh -lic "${CMD_ARGS[*]}"
 else
   exec incus exec "$CONTAINER" \
-    --user "$HOST_UID" "${GROUP_FLAGS[@]}" \
     --cwd /workspace \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
-    -- zsh -li
+    -- "${RUN_AS[@]}" zsh -li
 fi

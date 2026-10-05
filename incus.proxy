@@ -78,21 +78,63 @@ transforms:
 EOF
 }
 
-# Rebuilds proxy.yaml from base.yaml plus every entry, then restarts the
-# service. Written to a temp file first so a failure never leaves a truncated
-# config behind.
+# The one place that changes entries/ and tokens/ inside a proxy, and rebuilds
+# proxy.yaml from base.yaml plus every entry. All of it runs under one lock,
+# so a rebuild never reads a file that another attach is still writing.
+# proxy.yaml is written to a temp file first, so a failure never leaves a
+# truncated config behind.
 proxy_rebuild_script() {
   cat <<'EOF'
 #!/bin/sh
 # Managed by incs.
+#   iron-rebuild                         rebuild proxy.yaml, restart the proxy
+#   iron-rebuild commit <name> token|ref publish the staged entries/<name>.yaml.new
+#                                        (with tokens/<name>.new for "token") first
+#   iron-rebuild drop <name>...          remove those entries and tokens first
 set -eu
 dir="${IRON_PROXY_DIR:-/etc/iron-proxy}"
-# Attaches and detaches can run at once. Take a lock so a slower rebuild never
-# publishes a config that is missing an entry a newer one just added.
+usage() { echo "usage: iron-rebuild [commit <name> token|ref | drop <name>...]" >&2; exit 2; }
+check_name() {
+  case "$1" in
+    ""|.*|*/*) echo "iron-rebuild: bad entry name: $1" >&2; exit 2 ;;
+  esac
+}
 if command -v flock >/dev/null 2>&1; then
   exec 9>"$dir/.rebuild.lock"
   flock 9
 fi
+case "${1:-}" in
+  "") ;;
+  commit)
+    [ $# -eq 3 ] || usage
+    name="$2"
+    check_name "$name"
+    [ -f "$dir/entries/$name.yaml.new" ] || { echo "iron-rebuild: no staged entry for $name" >&2; exit 1; }
+    case "$3" in
+      token)
+        [ -f "$dir/tokens/$name.new" ] || { echo "iron-rebuild: no staged token for $name" >&2; exit 1; }
+        mv -f "$dir/tokens/$name.new" "$dir/tokens/$name"
+        ;;
+      ref)
+        # The entry reads a vault now, so a stored copy must not stay behind.
+        rm -f "$dir/tokens/$name" "$dir/tokens/$name.new"
+        ;;
+      *) usage ;;
+    esac
+    mv -f "$dir/entries/$name.yaml.new" "$dir/entries/$name.yaml"
+    ;;
+  drop)
+    shift
+    [ $# -ge 1 ] || usage
+    for name in "$@"; do
+      check_name "$name"
+      # rm -f accepts a file that is already gone and fails on anything else.
+      rm -f "$dir/entries/$name.yaml" "$dir/entries/$name.yaml.new" \
+            "$dir/tokens/$name" "$dir/tokens/$name.new"
+    done
+    ;;
+  *) usage ;;
+esac
 tmp="$(mktemp "$dir/proxy.yaml.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
 cat "$dir/base.yaml" > "$tmp"
@@ -208,6 +250,18 @@ proxy_push() {
   incus file push -q -p --uid 0 --gid 0 --mode "$mode" - "$name$path"
 }
 
+# A proxy made by an older incs carries an older iron-rebuild, which would
+# ignore commit/drop and silently change nothing. Replace it only when it
+# differs, so a rebuild that is running is not overwritten mid-read.
+proxy_sync_rebuild_script() {
+  local proxy="$1" want
+  want="$(proxy_rebuild_script)"
+  if [[ "$(incus file pull -q "$proxy/usr/local/bin/iron-rebuild" - 2>/dev/null)" == "$want" ]]; then
+    return 0
+  fi
+  printf '%s\n' "$want" | proxy_push "$proxy" /usr/local/bin/iron-rebuild 0755
+}
+
 # ---------------------------------------------------------------------------
 # incs proxy new <name> [--vault NAME]
 # ---------------------------------------------------------------------------
@@ -307,6 +361,10 @@ PROXY_CA_BUNDLE="/etc/ssl/certs/ca-certificates.crt"
 # apps and MagicDNS peers are never intercepted.
 PROXY_NO_PROXY="localhost,127.0.0.1,::1,.ts.net,.incus"
 
+# Hosts the real GitHub token may be sent to. uploads.github.com takes release
+# assets (gh release upload).
+PROXY_GITHUB_HOSTS="github.com api.github.com uploads.github.com"
+
 # A placeholder shaped like a classic GitHub token, so tools that validate the
 # format accept it. It is random: knowing it is what grants use of the real one.
 proxy_gen_placeholder() {
@@ -340,14 +398,15 @@ proxy_render_entry() {
 }
 
 # What the container user's shell needs, as NAME=value lines.
+# HTTP_PROXY is deliberately not set: the proxy swaps the placeholder on plain
+# HTTP too, so routing http:// requests through it could put the real token on
+# the wire unencrypted. Sent direct, such a request carries only the placeholder.
 proxy_env_pairs() {
   local placeholder="$1" url="$2"
   cat <<EOF
 GH_TOKEN=$placeholder
 HTTPS_PROXY=$url
-HTTP_PROXY=$url
 https_proxy=$url
-http_proxy=$url
 NO_PROXY=$PROXY_NO_PROXY
 no_proxy=$PROXY_NO_PROXY
 NODE_EXTRA_CA_CERTS=$PROXY_CA_BUNDLE
@@ -506,17 +565,18 @@ proxy_attach() {
   incus config set "$container" user.incs.proxy="$proxy"
 
   log "Registering $container with proxy '$proxy'..."
+  proxy_sync_rebuild_script "$proxy"
+  # Staged under names the rebuild ignores (*.new), then published by
+  # iron-rebuild under its lock. An interrupted upload is never live.
+  local entry="$container--$service" kind="ref"
   if [[ -n "$token" ]]; then
-    printf '%s' "$token" | proxy_push "$proxy" "$source" 0600
+    kind="token"
+    printf '%s' "$token" | proxy_push "$proxy" "$PROXY_DIR/tokens/$entry.new" 0600
   fi
-  proxy_render_entry "$placeholder" "$source" github.com api.github.com \
-    | proxy_push "$proxy" "$PROXY_DIR/entries/$container--$service.yaml" 0600
-  incus exec "$proxy" -- iron-rebuild </dev/null
-  # Moving from a stored token to a vault reference: the config no longer uses
-  # the stored copy, so it must not stay behind.
-  if [[ -z "$token" ]]; then
-    incus file delete -q "$proxy$PROXY_DIR/tokens/$container--$service" >/dev/null 2>&1 || true
-  fi
+  # shellcheck disable=SC2086  # PROXY_GITHUB_HOSTS is a word list
+  proxy_render_entry "$placeholder" "$source" $PROXY_GITHUB_HOSTS \
+    | proxy_push "$proxy" "$PROXY_DIR/entries/$entry.yaml.new" 0600
+  incus exec "$proxy" -- iron-rebuild commit "$entry" "$kind" </dev/null
 
   log "Trusting the proxy's certificate authority in $container..."
   incus file pull -q "$proxy$PROXY_DIR/ca.crt" - \
@@ -581,15 +641,21 @@ proxy_cmd_add() {
 # (<container>--<service>) leaves room for more.
 PROXY_SERVICES="github"
 
+# Entry names (<container>--<service>) a container can have in a proxy.
+proxy_entry_names() {
+  local container="$1" service
+  for service in $PROXY_SERVICES; do echo "$container--$service"; done
+}
+
 # Stop honoring a container's placeholders and drop any token stored for it.
+# Fails unless the entries and tokens are confirmed gone and the proxy has
+# reloaded: a caller must not report a detach that did not happen.
 proxy_detach_proxy_side() {
-  local container="$1" proxy="$2" service
+  local container="$1" proxy="$2"
   proxy_ensure_running "$proxy"
-  for service in $PROXY_SERVICES; do
-    incus file delete -q "$proxy$PROXY_DIR/entries/$container--$service.yaml" >/dev/null 2>&1 || true
-    incus file delete -q "$proxy$PROXY_DIR/tokens/$container--$service" >/dev/null 2>&1 || true
-  done
-  incus exec "$proxy" -- iron-rebuild </dev/null
+  proxy_sync_rebuild_script "$proxy"
+  # shellcheck disable=SC2046  # one argument per entry name
+  incus exec "$proxy" -- iron-rebuild drop $(proxy_entry_names "$container") </dev/null
 }
 
 # Remove everything an attach wrote into the container.
@@ -626,7 +692,14 @@ proxy_cmd_rm() {
   [[ -z "$proxy" ]] && error "$container is not attached to a proxy"
 
   if proxy_instance_exists "$proxy"; then
-    proxy_detach_proxy_side "$container" "$proxy"
+    # The attachment tag is cleared last, by the container side, so a failure
+    # here leaves the container attached and this command can be run again.
+    proxy_try proxy_detach_proxy_side "$container" "$proxy"
+    if [[ $PROXY_TRY_RC -ne 0 ]]; then
+      error "Could not remove $container's credential from proxy '$proxy'.
+       $container is still attached and its placeholder may still work.
+       Fix the proxy, then run again: incs proxy rm $container"
+    fi
   else
     warn "Proxy '$proxy' no longer exists — cleaning up $container only"
   fi
@@ -710,7 +783,8 @@ proxy_after_delete() {
   if [[ $PROXY_TRY_RC -eq 0 ]]; then
     log "Removed $container from proxy '$proxy'"
   else
-    warn "Could not update proxy '$proxy' — its entry for $container may remain"
+    warn "Could not update proxy '$proxy' — the placeholder $container held may still work.
+    Revoke it: incus exec $proxy -- iron-rebuild drop $(proxy_entry_names "$container" | tr '\n' ' ')"
   fi
 }
 

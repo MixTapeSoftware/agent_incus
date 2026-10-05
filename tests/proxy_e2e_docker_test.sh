@@ -115,13 +115,21 @@ cp /etc/iron-proxy/ca.crt /usr/local/share/ca-certificates/incs-proxy.crt
 update-ca-certificates >/dev/null
 python3 /work/echo_server.py &
 
-# What `incs proxy add --token` writes, for two containers.
-printf '%s' "$REAL_A" > /etc/iron-proxy/tokens/a--github
-printf '%s' "$REAL_B" > /etc/iron-proxy/tokens/b--github
-chmod 600 /etc/iron-proxy/tokens/*
-install -m 0600 /work/a--github.yaml /etc/iron-proxy/entries/a--github.yaml
-install -m 0600 /work/b--github.yaml /etc/iron-proxy/entries/b--github.yaml
+# What `incs proxy add --token` does, for two containers: stage, then commit.
+for c in a b; do
+  eval "real=\$REAL_$(echo $c | tr a-z A-Z)"
+  printf '%s' "$real" > /etc/iron-proxy/tokens/$c--github.new
+  chmod 600 /etc/iron-proxy/tokens/$c--github.new
+  install -m 0600 /work/$c--github.yaml /etc/iron-proxy/entries/$c--github.yaml.new
+  iron-rebuild commit $c--github token
+done
+result "staged_files_left=$(ls /etc/iron-proxy/entries /etc/iron-proxy/tokens | grep -c '\.new$' || true)"
+
+# Another container's entry upload is cut off partway. A rebuild that runs
+# meanwhile must not publish it: the real binary refuses such a config.
+printf '        - source:\n            type: fi' > /etc/iron-proxy/entries/c--github.yaml.new
 iron-rebuild
+result "half_written_entry_published=$(grep -c 'type: fi$' /etc/iron-proxy/proxy.yaml || true)"
 
 start_proxy() {
   # Loopback is denied as an upstream by default; this test's upstream is local.
@@ -149,8 +157,8 @@ result "intercepted_by=$(curl -sv --max-time 20 -x http://127.0.0.1:8888 https:/
   | grep -i 'issuer:' | grep -o 'incs proxy CA' | head -1)"
 
 # What `incs proxy rm a` does on the proxy side.
-rm -f /etc/iron-proxy/entries/a--github.yaml /etc/iron-proxy/tokens/a--github
-iron-rebuild
+iron-rebuild drop a--github
+result "after_rm_a_files=$(ls /etc/iron-proxy/entries /etc/iron-proxy/tokens | grep -c '^a--github' || true)"
 kill $PROXY_PID; wait $PROXY_PID 2>/dev/null || true
 start_proxy
 result "after_rm_a=$(via_proxy -H "Authorization: Bearer $PH_A")"
@@ -170,6 +178,8 @@ assert_eq "stored tokens directory is private"                     "700" "$(r to
 assert_eq "built config is private"                                "600" "$(r config_mode)"
 assert_eq "a proxy with no entries builds a config with no swaps"  "0"   "$(r empty_config_is_base_only)"
 assert_eq "provisioning again keeps the same certificate authority" "yes" "$(r reprovision_keeps_ca)"
+assert_eq "commit leaves no staged files behind"                    "0"   "$(r staged_files_left)"
+assert_eq "a half-written entry is not published by a rebuild"      "0"   "$(r half_written_entry_published)"
 assert_eq "iron-proxy starts on the config incs generates"         "yes" "$(r proxy_accepts_generated_config)"
 assert_eq "container a's placeholder becomes a's token"   "AUTH=Bearer $REAL_A" "$(r bearer_a)"
 assert_eq "container b's placeholder becomes b's token"   "AUTH=Bearer $REAL_B" "$(r bearer_b)"
@@ -177,6 +187,7 @@ assert_eq "git-style basic auth is swapped"               "x-access-token:$REAL_
 assert_eq "gh's 'token' auth scheme is swapped"           "AUTH=token $REAL_A" "$(r gh_token_scheme_a)"
 assert_eq "an unknown placeholder is passed through as is" "AUTH=Bearer $PH_UNKNOWN" "$(r unknown_placeholder)"
 assert_eq "HTTPS is intercepted by this proxy's authority" "incs proxy CA" "$(r intercepted_by)"
+assert_eq "detaching a removes its entry and stored token" "0" "$(r after_rm_a_files)"
 assert_eq "after detaching a, its placeholder stops working" "AUTH=Bearer $PH_A" "$(r after_rm_a)"
 assert_eq "after detaching a, b is unaffected"            "AUTH=Bearer $REAL_B" "$(r after_rm_b_still_works)"
 
