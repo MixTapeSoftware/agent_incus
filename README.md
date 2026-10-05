@@ -439,6 +439,28 @@ incs proxy add my-project work --env STRIPE_KEY        --host api.stripe.com --s
 | `--ref op://vault/item/field` | Read the key from somewhere other than the default reference |
 | `--token` | Paste the key instead; it is stored in the proxy, not 1Password |
 
+**Or list them in a file.** Write down what a container needs and apply it in one command:
+
+```yaml
+# services.yaml
+github:
+openai:
+  env: OPENAI_API_KEY
+  host: api.openai.com
+anthropic:
+  env: ANTHROPIC_API_KEY
+  hosts: [api.anthropic.com, console.anthropic.com]
+  prefix: sk-ant-
+  ref: "op://Shared/Anthropic key/credential"
+```
+
+```bash
+incs proxy apply my-project work services.yaml
+incs proxy apply my-project work services.yaml --prune   # also detach what the file no longer lists
+```
+
+Each service takes the same settings as the flags: `env`, `host` (or `hosts`), `prefix` and `ref`. Leave `ref` out to use the default reference. `github:` needs no settings. Running it again changes only the services you edited; the rest keep their placeholders, so shells that are already open keep working. The file holds no secrets, so it can live in the project's repository. A key stored with `--token` cannot be listed in a file.
+
 Or attach GitHub at creation. This replaces `--gh-token`:
 
 ```bash

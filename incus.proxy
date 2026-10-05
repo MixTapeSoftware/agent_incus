@@ -594,6 +594,35 @@ proxy_entry_names() {
   return 0
 }
 
+# Where a service's key is read from when no reference is given. One
+# 1Password item per container: GitHub in its "credential" field, every other
+# key in a field named after its environment variable.
+proxy_default_ref() {
+  local proxy="$1" container="$2" service="$3" env="$4" vault field
+  field="$env"
+  if [[ "$service" == "github" ]]; then field="credential"; fi
+  vault="$(incus config get "$proxy" user.incs.proxy-vault 2>/dev/null)"
+  echo "op://${vault:-$PROXY_DEFAULT_VAULT}/$container/$field"
+}
+
+# A 1Password reference is written into a double-quoted YAML string, where a
+# quote or control character would make the whole proxy config unparseable.
+proxy_check_ref() {
+  local ref="$1"
+  [[ "$ref" == op://* ]] || error "Reference must start with op:// (got: $ref)"
+  case "$ref" in
+    *\"*|*\\*) error "Reference must not contain quotes or backslashes" ;;
+  esac
+  if [[ "$(printf '%s' "$ref" | LC_ALL=C tr -d '\000-\037\177')" != "$ref" ]]; then
+    error "Reference must not contain control characters"
+  fi
+}
+
+# proxy_spec <env> <prefix> <source> <hosts>
+# What a service was attached with, on one line. `incs proxy apply` compares
+# it with what a file asks for, so unchanged services are left alone.
+proxy_spec() { echo "$1|$2|$3|$4"; }
+
 # ---------------------------------------------------------------------------
 # proxy_attach <container> <proxy> <source-or-empty> <token-or-empty>
 #              [<service> <env> <prefix> <host>...]
@@ -651,27 +680,14 @@ proxy_attach() {
        Store the key in the proxy instead: add --token"
   fi
 
-  local entry="$container--$service"
+  local entry="$container--$service" spec_source
   if [[ -n "$token" ]]; then
     source="$PROXY_DIR/tokens/$entry"
-  elif [[ -z "$source" ]]; then
-    # One 1Password item per container: GitHub in its "credential" field,
-    # every other key in a field named after its environment variable.
-    local vault field="$env"
-    [[ "$service" == "github" ]] && field="credential"
-    vault="$(incus config get "$proxy" user.incs.proxy-vault 2>/dev/null)"
-    source="op://${vault:-$PROXY_DEFAULT_VAULT}/$container/$field"
-  fi
-  if [[ -z "$token" ]]; then
-    [[ "$source" == op://* ]] || error "Reference must start with op:// (got: $source)"
-  fi
-  # The source is written into a double-quoted YAML string, where a control
-  # character would make the whole proxy config unparseable.
-  case "$source" in
-    *\"*|*\\*) error "Reference must not contain quotes or backslashes" ;;
-  esac
-  if [[ "$(printf '%s' "$source" | LC_ALL=C tr -d '\000-\037\177')" != "$source" ]]; then
-    error "Reference must not contain control characters"
+    spec_source="stored"
+  else
+    [[ -n "$source" ]] || source="$(proxy_default_ref "$proxy" "$container" "$service" "$env")"
+    proxy_check_ref "$source"
+    spec_source="$source"
   fi
 
   local ip
@@ -694,12 +710,18 @@ proxy_attach() {
   fi
 
   # Tag first: if a later step fails, `incs proxy rm` can still undo the rest.
-  local kept=""
+  # A service that is being re-attached keeps its place in the list.
+  local list="" listed=0
   for pair in $services; do
-    [[ "${pair%%=*}" == "$service" ]] || kept+="$pair "
+    if [[ "${pair%%=*}" == "$service" ]]; then
+      pair="$service=$env"
+      listed=1
+    fi
+    list+="${list:+ }$pair"
   done
+  if [[ "$listed" == "0" ]]; then list+="${list:+ }$service=$env"; fi
   incus config set "$container" user.incs.proxy="$proxy"
-  incus config set "$container" user.incs.proxy-services="$kept$service=$env"
+  incus config set "$container" user.incs.proxy-services="$list"
 
   log "Registering $service for $container with proxy '$proxy'..."
   proxy_sync_rebuild_script "$proxy"
@@ -743,6 +765,10 @@ proxy_attach() {
       warn "Could not configure the git credential helper (is gh installed?)"
     proxy_warn_stored_credentials "$container" "$user"
   fi
+
+  # Recorded last: only an attach that finished counts as up to date.
+  incus config set "$container" \
+    "user.incs.proxy-spec.$service=$(proxy_spec "$env" "$prefix" "$spec_source" "$hosts")"
 
   log "$container: \$$env now holds a placeholder that proxy '$proxy' swaps for the real key"
 }
@@ -819,11 +845,12 @@ proxy_detach_proxy_side() {
 proxy_detach_container_side() {
   local container="$1" only="${2:-}"
   local user="${HOST_USER:-$(id -un)}"
-  local services pair kept="" envs=""
+  local services pair kept="" envs="" gone=""
   services="$(proxy_services "$container")"
   for pair in $services; do
     if [[ -z "$only" || "${pair%%=*}" == "$only" ]]; then
       envs+="${envs:+|}${pair#*=}"
+      gone+=" ${pair%%=*}"
     else
       kept+="${kept:+ }$pair"
     fi
@@ -831,9 +858,12 @@ proxy_detach_container_side() {
   [[ -z "$kept" ]] && only=""
 
   proxy_ensure_running "$container"
-  local env
+  local env name
   for env in ${envs//|/ }; do
     incus config unset "$container" "environment.$env" >/dev/null 2>&1 || true
+  done
+  for name in $gone; do
+    incus config unset "$container" "user.incs.proxy-spec.$name" >/dev/null 2>&1 || true
   done
 
   if [[ -n "$only" ]]; then
@@ -857,23 +887,10 @@ proxy_attached_containers() {
   incus list "user.incs.proxy=$1" --format csv --columns n 2>/dev/null
 }
 
-# ---------------------------------------------------------------------------
-# incs proxy rm <container> [--service NAME]
-# ---------------------------------------------------------------------------
-proxy_cmd_rm() {
-  local container="" service=""
-  while [[ $# -gt 0 ]]; do
-    case "$1" in
-      --service) [[ $# -lt 2 ]] && error "$1 requires an argument"; service="$2"; shift 2 ;;
-      -*)        error "Unknown option: $1" ;;
-      *)         [[ -n "$container" ]] && error "Usage: incs proxy rm <container> [--service NAME]"
-                 container="$1"; shift ;;
-    esac
-  done
-  [[ -z "$container" ]] && error "Usage: incs proxy rm <container> [--service NAME]"
-  proxy_instance_exists "$container" || error "Container not found: $container"
-
-  local proxy names
+# proxy_detach <container> [<service>]
+# Detach one service or everything: the proxy first, then the container.
+proxy_detach() {
+  local container="$1" service="${2:-}" proxy names
   proxy="$(proxy_attached_to "$container")"
   [[ -z "$proxy" ]] && error "$container is not attached to a proxy"
   names="$(proxy_entry_names "$container" "$service")"
@@ -899,6 +916,240 @@ proxy_cmd_rm() {
     log "Detached $container from proxy '$proxy'"
     echo "  No proxied credential is configured in $container now."
   fi
+}
+
+# ---------------------------------------------------------------------------
+# incs proxy rm <container> [--service NAME]
+# ---------------------------------------------------------------------------
+proxy_cmd_rm() {
+  local container="" service=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --service) [[ $# -lt 2 ]] && error "$1 requires an argument"; service="$2"; shift 2 ;;
+      -*)        error "Unknown option: $1" ;;
+      *)         [[ -n "$container" ]] && error "Usage: incs proxy rm <container> [--service NAME]"
+                 container="$1"; shift ;;
+    esac
+  done
+  [[ -z "$container" ]] && error "Usage: incs proxy rm <container> [--service NAME]"
+  proxy_instance_exists "$container" || error "Container not found: $container"
+  proxy_detach "$container" "$service"
+}
+
+# ---------------------------------------------------------------------------
+# incs proxy apply <container> <proxy> <file> [--prune]
+#
+# The file lists the services a container should have, in a small subset of
+# YAML:
+#
+#   github:
+#   openai:
+#     env: OPENAI_API_KEY
+#     host: api.openai.com
+#   anthropic:
+#     env: ANTHROPIC_API_KEY
+#     hosts: [api.anthropic.com, console.anthropic.com]
+#     prefix: sk-ant-
+#     ref: "op://Shared/Anthropic key/credential"
+#
+# It is read here, not by a YAML tool, so incs needs nothing installed.
+# Anything outside that subset is an error, never silently skipped.
+# ---------------------------------------------------------------------------
+PROXY_M_NAMES=() PROXY_M_ENV=() PROXY_M_PREFIX=() PROXY_M_REF=() PROXY_M_HOSTS=()
+PROXY_M_VALUE=""
+
+# proxy_manifest_scalar <text after the colon>
+# Leaves the value in PROXY_M_VALUE: quotes removed, or else a trailing
+# comment. Fails on an unbalanced quote or text after a closing one.
+proxy_manifest_scalar() {
+  local v="$1" rest q
+  v="${v#"${v%%[![:space:]]*}"}"
+  case "$v" in
+    \"*|\'*)
+      q="${v:0:1}"
+      v="${v:1}"
+      [[ "$v" == *"$q"* ]] || return 1
+      rest="${v#*"$q"}"
+      v="${v%%"$q"*}"
+      rest="${rest#"${rest%%[![:space:]]*}"}"
+      [[ -z "$rest" || "$rest" == \#* ]] || return 1
+      ;;
+    \#*) v="" ;;
+    *)
+      v="${v%%[[:space:]]#*}"
+      v="${v%"${v##*[![:space:]]}"}"
+      ;;
+  esac
+  PROXY_M_VALUE="$v"
+}
+
+# proxy_manifest_parse <file>: fill the PROXY_M_* arrays, one index per service.
+proxy_manifest_parse() {
+  local file="$1" line key raw n=0 cur=-1 in_hosts=0 i
+  local toks=()
+  # In variables: bash 3.2 mis-parses some regex literals written in place.
+  local re_blank='^[[:space:]]*(#.*)?$'
+  local re_top='^([^:[:space:]]+):(.*)$'
+  local re_item='^[[:space:]]+-[[:space:]]+(.*)$'
+  local re_setting='^[[:space:]]+([A-Za-z_]+):(.*)$'
+  local re_name='^[a-z0-9][a-z0-9-]*$'
+  PROXY_M_NAMES=() PROXY_M_ENV=() PROXY_M_PREFIX=() PROXY_M_REF=() PROXY_M_HOSTS=()
+  [[ -f "$file" && -r "$file" ]] || error "Cannot read $file"
+
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    n=$((n + 1))
+    line="${line%$'\r'}"
+    [[ "$line" =~ $re_blank ]] && continue
+
+    if [[ "$line" != [[:space:]]* ]]; then
+      in_hosts=0
+      [[ "$line" =~ $re_top ]] || error "$file:$n: expected '<service>:'"
+      key="${BASH_REMATCH[1]}"
+      raw="${BASH_REMATCH[2]}"
+      proxy_manifest_scalar "$raw" || error "$file:$n: unbalanced quote"
+      case "$PROXY_M_VALUE" in
+        ""|"{}"|"~"|null) ;;
+        *) error "$file:$n: a service's settings go on the lines below its name" ;;
+      esac
+      [[ "$key" =~ $re_name ]] || \
+        error "$file:$n: invalid service name '$key': lowercase letters, digits and hyphens only"
+      for i in ${PROXY_M_NAMES[@]+"${PROXY_M_NAMES[@]}"}; do
+        [[ "$i" == "$key" ]] && error "$file:$n: service '$key' is listed twice"
+      done
+      cur=${#PROXY_M_NAMES[@]}
+      PROXY_M_NAMES[cur]="$key"
+      PROXY_M_ENV[cur]="" PROXY_M_PREFIX[cur]="" PROXY_M_REF[cur]="" PROXY_M_HOSTS[cur]=""
+      continue
+    fi
+
+    [[ $cur -ge 0 ]] || error "$file:$n: a setting before any service name"
+    if [[ "$line" =~ $re_item ]]; then
+      [[ $in_hosts -eq 1 ]] || error "$file:$n: a list is only allowed under hosts:"
+      proxy_manifest_scalar "${BASH_REMATCH[1]}" || error "$file:$n: unbalanced quote"
+      [[ -n "$PROXY_M_VALUE" && ! "$PROXY_M_VALUE" =~ [[:space:]] ]] || error "$file:$n: one host per list item"
+      PROXY_M_HOSTS[cur]+="${PROXY_M_HOSTS[cur]:+ }$PROXY_M_VALUE"
+      continue
+    fi
+    [[ "$line" =~ $re_setting ]] || error "$file:$n: expected '<setting>: <value>'"
+    key="${BASH_REMATCH[1]}"
+    raw="${BASH_REMATCH[2]}"
+    proxy_manifest_scalar "$raw" || error "$file:$n: unbalanced quote"
+    in_hosts=0
+    case "$key" in
+      env)    PROXY_M_ENV[cur]="$PROXY_M_VALUE" ;;
+      prefix) PROXY_M_PREFIX[cur]="$PROXY_M_VALUE" ;;
+      ref)    PROXY_M_REF[cur]="$PROXY_M_VALUE" ;;
+      host|hosts)
+        if [[ -z "$PROXY_M_VALUE" ]]; then
+          in_hosts=1
+        else
+          # One host, or an inline list: [a, b]. read -a splits without globbing.
+          raw="${PROXY_M_VALUE#[}"
+          raw="${raw%]}"
+          raw="${raw//,/ }"
+          raw="${raw//\"/}"
+          raw="${raw//\'/}"
+          read -r -a toks <<< "$raw"
+          PROXY_M_HOSTS[cur]+="${PROXY_M_HOSTS[cur]:+ }${toks[*]-}"
+        fi
+        ;;
+      *) error "$file:$n: unknown setting '$key' (use env, host, prefix or ref)" ;;
+    esac
+  done < "$file"
+  [[ ${#PROXY_M_NAMES[@]} -gt 0 ]] || error "$file lists no services"
+}
+
+# Refuse the whole file before anything is attached: a mistake in the third
+# service must not leave the first two half-applied.
+proxy_manifest_check() {
+  local file="$1" i j name env other
+  local hosts=()
+  for ((i = 0; i < ${#PROXY_M_NAMES[@]}; i++)); do
+    name="${PROXY_M_NAMES[i]}"
+    if [[ "$name" == "github" ]]; then
+      [[ -z "${PROXY_M_ENV[i]}${PROXY_M_HOSTS[i]}${PROXY_M_PREFIX[i]}" ]] || \
+        error "$file: github is built in: only ref can be set for it"
+      PROXY_M_ENV[i]="$PROXY_GITHUB_ENV"
+      PROXY_M_HOSTS[i]="$PROXY_GITHUB_HOSTS"
+    else
+      [[ -n "${PROXY_M_ENV[i]}" ]]   || error "$file: service '$name' needs env:"
+      [[ -n "${PROXY_M_HOSTS[i]}" ]] || error "$file: service '$name' needs host:"
+      read -r -a hosts <<< "${PROXY_M_HOSTS[i]}"
+      proxy_try proxy_check_service "$name" "${PROXY_M_ENV[i]}" "${PROXY_M_PREFIX[i]}" "${hosts[@]}"
+      [[ $PROXY_TRY_RC -eq 0 ]] || error "…in service '$name' ($file)"
+    fi
+    if [[ -n "${PROXY_M_REF[i]}" ]]; then
+      proxy_try proxy_check_ref "${PROXY_M_REF[i]}"
+      [[ $PROXY_TRY_RC -eq 0 ]] || error "…in service '$name' ($file)"
+    fi
+    env="${PROXY_M_ENV[i]}"
+    for ((j = 0; j < i; j++)); do
+      other="${PROXY_M_NAMES[j]}"
+      [[ "${PROXY_M_ENV[j]}" == "$env" ]] && error "$file: '$other' and '$name' both use $env"
+    done
+  done
+  return 0
+}
+
+proxy_cmd_apply() {
+  local container="" proxy="" file="" prune=0
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --prune) prune=1; shift ;;
+      -*)      error "Unknown option: $1" ;;
+      *)
+        if   [[ -z "$container" ]]; then container="$1"
+        elif [[ -z "$proxy" ]];     then proxy="$1"
+        elif [[ -z "$file" ]];      then file="$1"
+        else error "Unexpected argument: $1"; fi
+        shift ;;
+    esac
+  done
+  [[ -z "$container" || -z "$proxy" || -z "$file" ]] && \
+    error "Usage: incs proxy apply <container> <proxy> <file> [--prune]"
+
+  proxy_manifest_parse "$file"
+  proxy_manifest_check "$file"
+  proxy_instance_exists "$container" || error "Container not found: $container"
+  proxy_instance_exists "$proxy"     || error "Proxy not found: $proxy"
+  proxy_is_proxy "$proxy"            || error "'$proxy' is not a proxy (create one: incs proxy new <name>)"
+
+  local attached
+  attached="$(proxy_attached_to "$container")"
+  if [[ -n "$attached" && "$attached" != "$proxy" ]]; then
+    error "$container is attached to '$attached'. Detach first: incs proxy rm $container"
+  fi
+
+  local i name env prefix ref source have pair found
+  local hosts=()
+  for ((i = 0; i < ${#PROXY_M_NAMES[@]}; i++)); do
+    name="${PROXY_M_NAMES[i]}" env="${PROXY_M_ENV[i]}" prefix="${PROXY_M_PREFIX[i]}" ref="${PROXY_M_REF[i]}"
+    read -r -a hosts <<< "${PROXY_M_HOSTS[i]}"
+    source="${ref:-$(proxy_default_ref "$proxy" "$container" "$name" "$env")}"
+    have=""
+    if [[ -n "$attached" ]]; then
+      have="$(incus config get "$container" "user.incs.proxy-spec.$name" 2>/dev/null)"
+    fi
+    if [[ -n "$have" && "$have" == "$(proxy_spec "$env" "$prefix" "$source" "${hosts[*]}")" ]]; then
+      log "$name: unchanged"
+      continue
+    fi
+    if [[ "$name" == "github" ]]; then
+      proxy_attach "$container" "$proxy" "$ref" ""
+    else
+      proxy_attach "$container" "$proxy" "$ref" "" "$name" "$env" "$prefix" "${hosts[@]}"
+    fi
+    attached="$proxy"
+  done
+
+  [[ "$prune" == "1" ]] || return 0
+  for pair in $(proxy_services "$container"); do
+    found=0
+    for name in "${PROXY_M_NAMES[@]}"; do
+      if [[ "$name" == "${pair%%=*}" ]]; then found=1; fi
+    done
+    if [[ "$found" == "0" ]]; then proxy_detach "$container" "${pair%%=*}"; fi
+  done
 }
 
 # ---------------------------------------------------------------------------
@@ -1014,6 +1265,10 @@ Commands:
                                      (GitHub: .../credential)
       [--token]                      Prompt for the key and store it in the
                                      proxy instead of 1Password
+  apply <container> <proxy> <file> [--prune]
+                                   Attach every service listed in a file.
+                                   Unchanged ones are left alone. --prune
+                                   also detaches services not in the file.
   rm <container> [--service NAME]  Detach everything, or one service
   list                             Show proxies and what is attached to each
   delete <name> [--force]          Delete a proxy. Refused while containers
@@ -1024,8 +1279,20 @@ Examples:
   incs proxy add my-project work
   incs proxy add my-project work --env OPENAI_API_KEY --host api.openai.com
   incs proxy add my-project work --env ANTHROPIC_API_KEY --host api.anthropic.com --token
+  incs proxy apply my-project work services.yaml
   incs proxy rm my-project --service openai-api-key
   incs -i my-project --proxy       Attach GitHub at creation (asks which proxy)
+
+A services file for `apply`:
+  github:
+  openai:
+    env: OPENAI_API_KEY
+    host: api.openai.com
+  anthropic:
+    env: ANTHROPIC_API_KEY
+    hosts: [api.anthropic.com, console.anthropic.com]
+    prefix: sk-ant-
+    ref: "op://Shared/Anthropic key/credential"
 EOF
 }
 
@@ -1035,6 +1302,7 @@ proxy_main() {
   case "$sub" in
     new)            proxy_cmd_new "$@" ;;
     add)            proxy_cmd_add "$@" ;;
+    apply)          proxy_cmd_apply "$@" ;;
     rm|remove)      proxy_cmd_rm "$@" ;;
     list|ls)        proxy_cmd_list ;;
     delete)         proxy_cmd_delete "$@" ;;

@@ -561,6 +561,138 @@ out="$(incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)
 assert_eq "older attachment: other services can then be added" "0" "$rc"
 
 # ===========================================================================
+echo "proxy apply (services file)"
+# ===========================================================================
+fresh_state
+FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
+make_agent proj
+SVC="$SANDBOX/services.yaml"
+cat > "$SVC" <<'YAML'
+# what proj needs
+github:
+openai:
+  env: OPENAI_API_KEY
+  host: api.openai.com          # one host
+anthropic:
+  env: ANTHROPIC_API_KEY
+  hosts: [api.anthropic.com, "console.anthropic.com"]
+  prefix: sk-ant-
+  ref: "op://Shared/Anthropic key/credential"   # a space needs quotes
+stripe:
+  env: STRIPE_KEY
+  hosts:
+    - api.stripe.com
+    - files.stripe.com
+YAML
+out="$(incs proxy apply proj work "$SVC" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply: succeeds" "0" "$rc"
+assert_eq "apply: attaches every service in the file, in order" \
+  "github=GH_TOKEN openai=OPENAI_API_KEY anthropic=ANTHROPIC_API_KEY stripe=STRIPE_KEY" \
+  "$(cfg proj user.incs.proxy-services)"
+entry_of() { cat "$(fs work "/etc/iron-proxy/entries/proj--$1.yaml")" 2>/dev/null || true; }
+assert_contains "apply: github uses its default reference" \
+  'secret_ref: "op://agent-tokens/proj/credential"' "$(entry_of github)"
+assert_contains "apply: no ref means the field named after the variable" \
+  'secret_ref: "op://agent-tokens/proj/OPENAI_API_KEY"' "$(entry_of openai)"
+assert_contains "apply: a trailing comment is not part of the host" \
+  '- host: "api.openai.com"' "$(entry_of openai)"
+assert_contains "apply: a quoted ref keeps its space" \
+  'secret_ref: "op://Shared/Anthropic key/credential"' "$(entry_of anthropic)"
+assert_contains "apply: an inline list binds its first host"  '- host: "api.anthropic.com"' "$(entry_of anthropic)"
+assert_contains "apply: an inline list binds its second host" '- host: "console.anthropic.com"' "$(entry_of anthropic)"
+assert_eq "apply: prefix shapes the placeholder" \
+  "match" "$([[ "$(cfg proj environment.ANTHROPIC_API_KEY)" =~ ^sk-ant-[0-9a-f]{40}$ ]] && echo match || echo "no match")"
+assert_contains "apply: a block list sends every host to the proxy" \
+  "10.99.0.7 api.stripe.com files.stripe.com # incs-proxy:stripe" "$(hosts_of proj)"
+
+# Running it again changes nothing: shells already open keep working.
+placeholders() { echo "$(cfg proj environment.GH_TOKEN) $(cfg proj environment.OPENAI_API_KEY) $(cfg proj environment.ANTHROPIC_API_KEY) $(cfg proj environment.STRIPE_KEY)"; }
+before="$(placeholders)"
+out="$(incs proxy apply proj work "$SVC" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply again: succeeds" "0" "$rc"
+assert_eq "apply again: no placeholder rotates" "$before" "$(placeholders)"
+assert_eq "apply again: says each service is unchanged" "4" "$(grep -c 'unchanged' <<<"$out")"
+
+# Edit one service: only that one is re-attached.
+gh_before="$(cfg proj environment.GH_TOKEN)"
+openai_before="$(cfg proj environment.OPENAI_API_KEY)"
+sed 's/host: api.openai.com.*/host: eu.api.openai.com/' "$SVC" > "$SVC.tmp" && mv "$SVC.tmp" "$SVC"
+out="$(incs proxy apply proj work "$SVC" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply after an edit: succeeds" "0" "$rc"
+assert_contains "apply after an edit: the edited service points at its new host" \
+  "10.99.0.7 eu.api.openai.com # incs-proxy:openai" "$(hosts_of proj)"
+assert_not_contains "apply after an edit: …and no longer at the old one" " api.openai.com " "$(hosts_of proj)"
+assert_eq "apply after an edit: its placeholder rotates" \
+  "rotated" "$([[ "$(cfg proj environment.OPENAI_API_KEY)" != "$openai_before" ]] && echo rotated || echo same)"
+assert_eq "apply after an edit: the others are untouched" "$gh_before" "$(cfg proj environment.GH_TOKEN)"
+
+# Take a service out of the file.
+stripe_ph="$(cfg proj environment.STRIPE_KEY)"
+awk '/^stripe:/{skip=1; next} /^[^[:space:]#]/{skip=0} !skip' "$SVC" > "$SVC.tmp" && mv "$SVC.tmp" "$SVC"
+incs proxy apply proj work "$SVC" >/dev/null 2>&1
+assert_eq "apply without --prune: a service missing from the file stays attached" \
+  "$stripe_ph" "$(cfg proj environment.STRIPE_KEY)"
+out="$(incs proxy apply proj work "$SVC" --prune 2>&1)" && rc=0 || rc=$?
+assert_eq "apply --prune: succeeds" "0" "$rc"
+assert_eq "apply --prune: detaches what the file no longer lists" \
+  "github=GH_TOKEN openai=OPENAI_API_KEY anthropic=ANTHROPIC_API_KEY" "$(cfg proj user.incs.proxy-services)"
+assert_not_contains "apply --prune: its placeholder is revoked" \
+  "$stripe_ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_not_contains "apply --prune: its /etc/hosts line is removed" "stripe" "$(hosts_of proj)"
+assert_eq "apply --prune: what the file still lists is untouched" "$gh_before" "$(cfg proj environment.GH_TOKEN)"
+
+# A file saved with Windows line endings.
+make_agent crlf
+printf 'github:\r\nopenai:\r\n  env: OPENAI_API_KEY\r\n  host: api.openai.com\r\n' > "$SANDBOX/crlf.yaml"
+out="$(incs proxy apply crlf work "$SANDBOX/crlf.yaml" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply: CRLF line endings are accepted" "0" "$rc"
+assert_contains "apply: …and do not end up in a host name" \
+  "10.99.0.7 api.openai.com # incs-proxy:openai" "$(hosts_of crlf)"
+
+# A file with a mistake is refused whole, before anything is attached.
+make_agent clean
+bad_file() {
+  local label="$1" needle="$2" content="$3"
+  printf '%b' "$content" > "$SANDBOX/bad.yaml"
+  out="$(incs proxy apply clean work "$SANDBOX/bad.yaml" 2>&1)" && rc=0 || rc=$?
+  assert_eq "bad file: $label" "1" "$rc"
+  assert_contains "bad file: $label (says why)" "$needle" "$out"
+}
+bad_file "an unknown setting"        "unknown setting 'hots'"   'openai:\n  env: X_KEY\n  hots: a.example.com\n'
+assert_contains "bad file: …and names the line" "bad.yaml:3:" "$out"
+bad_file "no env"                    "needs env"                'openai:\n  host: a.example.com\n'
+bad_file "no host"                   "needs host"               'openai:\n  env: X_KEY\n'
+bad_file "a wildcard host"           "Wildcard"                 "openai:\n  env: X_KEY\n  host: '*.example.com'\n"
+bad_file "a service listed twice"    "listed twice"             'a:\n  env: A_KEY\n  host: a.example.com\na:\n  env: B_KEY\n  host: b.example.com\n'
+bad_file "one variable used twice"   "both use X_KEY"           'a:\n  env: X_KEY\n  host: a.example.com\nb:\n  env: X_KEY\n  host: b.example.com\n'
+bad_file "github given an env"       "built in"                 'github:\n  env: X_KEY\n'
+bad_file "a ref that is not op://"   "must start with op://"    'github:\n  ref: vault/item/field\n'
+bad_file "a value on the name line"  "lines below its name"     'openai: yes\n'
+bad_file "a list outside hosts"      "only allowed under hosts" 'openai:\n  env: X_KEY\n  - a.example.com\n'
+bad_file "an unbalanced quote"       "unbalanced quote"         'openai:\n  env: "X_KEY\n  host: a.example.com\n'
+bad_file "a setting before any name" "before any service name"  '  env: X_KEY\n'
+bad_file "nothing but comments"      "lists no services"        '# nothing here\n\n'
+bad_file "a good service before a bad one" "needs host"         'github:\nopenai:\n  env: X_KEY\n'
+assert_eq "bad files attach nothing, not even their good services" "" "$(cfg clean user.incs.proxy)"
+out="$(incs proxy apply clean work "$SANDBOX/no-such-file.yaml" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply: a missing file is refused" "1" "$rc"
+out="$(incs proxy apply clean work 2>&1)" && rc=0 || rc=$?
+assert_eq "apply: no file is refused" "1" "$rc"
+
+# A wildcard host must be reported, not expanded against files in the
+# directory incs runs from.
+mkdir -p "$SANDBOX/globdir" && touch "$SANDBOX/globdir/evil.example.com"
+printf 'openai:\n  env: X_KEY\n  host: *.example.com\n' > "$SANDBOX/bad.yaml"
+out="$(cd "$SANDBOX/globdir" && incs proxy apply clean work "$SANDBOX/bad.yaml" 2>&1)" && rc=0 || rc=$?
+assert_contains "apply: a wildcard is refused even where it matches a file name" "Wildcard" "$out"
+assert_eq "apply: …and nothing is attached" "" "$(cfg clean user.incs.proxy)"
+
+# The container belongs to another proxy.
+make_proxy other
+out="$(incs proxy apply proj other "$SVC" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply: a container attached elsewhere is refused" "1" "$rc"
+
+# ===========================================================================
 echo "proxy rm"
 # ===========================================================================
 fresh_state
