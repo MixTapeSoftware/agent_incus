@@ -158,7 +158,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
-| [Credential Proxy](#credential-proxy) | GitHub access through a proxy; the real token never enters the container. Replaces GitHub Auth |
+| [Credential Proxy](#credential-proxy) | GitHub access through a proxy; the real token never enters the container. Replaces GitHub Auth. Other API keys: `incs proxy add` |
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
 | [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
@@ -392,13 +392,15 @@ The app is then at `https://<host>.<tailnet>.ts.net/`. In this setup the dev ser
 
 ### Credential Proxy
 
-A token inside a container can be read by anything running there, including an AI agent that has been talked into looking for it. A credential proxy removes the token from the container. The container holds a random **placeholder**. The proxy, which runs in its own container, swaps the placeholder for the real token on the way to GitHub.
+A key inside a container can be read by anything running there, including an AI agent that has been talked into looking for it. A credential proxy removes the key from the container. The container holds a random **placeholder**. The proxy, which runs in its own container, swaps the placeholder for the real key on the way to the API.
+
+It works for any API key that is sent in a request header to a host you can name. GitHub is built in.
 
 ```mermaid
 graph LR
-    A["Agent container<br/>GH_TOKEN = placeholder"] -->|"HTTPS via proxy"| P["Proxy container<br/>iron-proxy"]
-    P -->|"real token"| G["github.com"]
-    P -.->|"reads token"| O["1Password vault"]
+    A["Agent container<br/>OPENAI_API_KEY = placeholder"] -->|"HTTPS to api.openai.com<br/>(/etc/hosts sends it to the proxy)"| P["Proxy container<br/>iron-proxy"]
+    P -->|"real key, over HTTPS"| G["api.openai.com"]
+    P -.->|"reads key"| O["1Password vault"]
 ```
 
 It is built on [iron-proxy](https://github.com/paradigmxyz/iron-proxy), pinned to a specific release and verified by checksum.
@@ -410,64 +412,84 @@ incs proxy new work                      # default vault: agent-tokens
 incs proxy new acme --vault acme-agents  # a different vault
 ```
 
-You are asked for a 1Password **service account token**. Give that account read-only access to a single vault that holds only these tokens. Leave it blank to skip 1Password and store tokens in the proxy container instead.
+You are asked for a 1Password **service account token**. Give that account read-only access to a single vault that holds only these keys. Leave it blank to skip 1Password and store keys in the proxy container instead.
 
-**2. Store the container's token in 1Password.** Create a fine-grained GitHub token for the project, and save it as an item named after the container, in a field named `credential`. The default reference is `op://<vault>/<container>/credential`.
+**2. Store the container's keys in 1Password.** Use one item per container, named after the container. The GitHub token goes in a field named `credential`. Every other key goes in a field named after its environment variable. The default references are `op://<vault>/<container>/credential` and, for example, `op://<vault>/<container>/OPENAI_API_KEY`.
 
-**3. Attach the container.**
+**3. Attach the container.** For GitHub, name the container and the proxy:
 
 ```bash
 incs proxy add my-project work
-incs proxy add my-project work --ref "op://Private/GitHub my-project/token"
-incs proxy add my-project work --token   # paste the token; it is stored in the proxy
 ```
 
-Or attach at creation. This replaces `--gh-token`:
+For any other API, also name the variable the container reads the key from and the host the key may be sent to:
+
+```bash
+incs proxy add my-project work --env OPENAI_API_KEY    --host api.openai.com
+incs proxy add my-project work --env ANTHROPIC_API_KEY --host api.anthropic.com --prefix sk-ant-
+incs proxy add my-project work --env STRIPE_KEY        --host api.stripe.com --service stripe
+```
+
+| Option | Meaning |
+|---|---|
+| `--env VAR` | The variable that will hold the placeholder |
+| `--host HOST` | Where the key may be sent. Repeat for several hosts. Exact names only, no wildcards |
+| `--service NAME` | A name for this attachment. Default: the variable, lowercased (`openai-api-key`) |
+| `--prefix STR` | Start the placeholder with `STR`, for tools that check a key's shape |
+| `--ref op://vault/item/field` | Read the key from somewhere other than the default reference |
+| `--token` | Paste the key instead; it is stored in the proxy, not 1Password |
+
+Or attach GitHub at creation. This replaces `--gh-token`:
 
 ```bash
 incs -i my-project --proxy
 ```
 
-`git` and `gh` then work as usual inside the container, with no changes to how you use them.
+`git`, `gh` and API clients then work as usual inside the container, with no changes to how you use them.
 
 **Manage:**
 
 ```bash
-incs proxy list             # proxies, addresses, attached containers
-incs proxy rm my-project    # detach; the placeholder stops working at once
-incs proxy delete work      # refused while containers are attached, unless --force
+incs proxy list                            # proxies, addresses, and what each container has attached
+incs proxy rm my-project --service stripe  # detach one service
+incs proxy rm my-project                   # detach everything; the placeholders stop working at once
+incs proxy delete work                     # refused while containers are attached, unless --force
 ```
 
 Deleting a container with `incs -d` also removes it from its proxy. Proxies are skipped by `incs -ka` and `incs -ua`.
 
 **What attaching does:**
 
-- Registers the placeholder with the proxy, bound to `github.com`, `api.github.com` and `uploads.github.com`. A placeholder sent anywhere else is not swapped.
+- Registers a new placeholder with the proxy, bound to the hosts you named (for GitHub: `github.com`, `api.github.com` and `uploads.github.com`). A placeholder sent anywhere else is not swapped. For GitHub the proxy looks in the `Authorization` header. For other services it looks in whichever request header carries the placeholder, so `Authorization` and `x-api-key` both work.
+- Adds a line to the container's `/etc/hosts` that sends those hosts, and only those, to the proxy. Everything else connects directly, as before.
 - Installs the proxy's certificate authority in the container, since the proxy has to read HTTPS requests to rewrite them. Each proxy has its own authority.
-- Sets `GH_TOKEN` to the placeholder, replacing any real token already there, and points `HTTPS_PROXY` at the proxy in `~/.zshenv`. Only your shell sessions use the proxy. Package updates and system services connect directly.
+- Sets the variable to the placeholder, in the Incus environment and in `~/.zshenv`, replacing any real key already there.
+
+The proxy accepts connections from containers on one port, and that port speaks only TLS. A request has to arrive encrypted to be swapped, and it is forwarded encrypted. There is no way to make the proxy send a real key over plain HTTP.
 
 **What it does not do:**
 
-- **It does not restrict where the container can connect.** The proxy settings are ordinary environment variables, and a process can ignore them. That is safe for credentials: a request that skips the proxy carries only the placeholder, and GitHub rejects it. It is not an egress firewall.
-- **It does not stop the agent from using the credential.** The agent cannot read the token, but it can do whatever the token permits. Keep tokens narrowly scoped.
-- **It does not insist on HTTPS.** The proxy also swaps the placeholder in a plain `http://` request to a bound host, and the real token then crosses the network unencrypted. Attach does not set `HTTP_PROXY`, so tools do not do this by accident, but a process that sends such a request through the proxy on purpose can.
-- **It does not scrub responses.** An endpoint that echoes request headers back would reveal the real token. GitHub does not do this. Be careful before binding a token to other hosts.
+- **It does not restrict where the container can connect.** A process can ignore `/etc/hosts` and reach the API directly. That is safe for credentials: such a request carries only the placeholder, and the API rejects it. It is not an egress firewall.
+- **It does not stop the agent from using the credential.** The agent cannot read the key, but it can do whatever the key permits. Keep keys narrowly scoped.
+- **It covers only keys sent in a request header to hosts you can name.** Wildcard hosts (`*.example.com`), keys passed in the URL, and APIs that sign each request instead of sending a key (AWS) are not supported.
+- **It is not per user.** `/etc/hosts` applies to the whole container, so root and system services also reach those hosts through the proxy. While the proxy is stopped, those hosts are unreachable from the container.
+- **It does not scrub responses.** An endpoint that echoes request headers back would reveal the real key. GitHub does not do this. Be careful which hosts you bind a key to.
 - **It does not cover Claude's own login or the 1Password CLI plugin.** Those still place real credentials in the container.
 
 **Troubleshooting:**
 
-- **A tool fails with a certificate error.** It is probably using its own trust store. Add its host to `NO_PROXY` in `~/.zshenv` so it connects directly.
-- **GitHub returns 401.** The proxy could not read the token. Check the reference and the service account's access, then look at the proxy's log, which records each swap and each unavailable secret:
+- **A tool fails with a certificate error on a proxied host.** It is using its own trust store. Attach points Node, Python `requests` and OpenSSL-based tools at the system bundle through `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` in `~/.zshenv`. A tool that ignores those needs its own setting pointed at `/etc/ssl/certs/ca-certificates.crt`.
+- **The API returns 401.** The proxy could not read the key. Check the reference and the service account's access, then look at the proxy's log, which records each swap and each unavailable secret:
 
   ```bash
   incus exec work -- journalctl -u iron-proxy -n 50
   ```
 
-- **Tailscale is unaffected.** Its daemon runs as a system service and does not read the shell's proxy settings, and `.ts.net` names bypass the proxy.
+- **Tailscale is unaffected.** Only the hosts you attached are sent to the proxy.
 
-**Templates.** Saving a template strips the placeholder and proxy settings from the image. Launch with `--proxy` to attach the new container with a placeholder of its own. The proxy's certificate authority does remain trusted in the image.
+**Templates.** Saving a template strips the placeholders and the `/etc/hosts` lines from the image. Launch with `--proxy` to attach the new container with a placeholder of its own. The proxy's certificate authority does remain trusted in the image.
 
-**Existing containers.** A token that has already lived in a container should be treated as exposed. After attaching, create a new token, store it in 1Password, and revoke the old one.
+**Existing containers.** A key that has already lived in a container should be treated as exposed. After attaching, create a new key, store it in 1Password, and revoke the old one.
 
 ### Expose Container Ports
 

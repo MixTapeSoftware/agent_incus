@@ -50,7 +50,7 @@ Commands:
 
 Credential proxy (real tokens stay out of containers; see: incs proxy help):
   proxy new <name>               Create a proxy
-  proxy add <container> <proxy>  Attach a container to a proxy
+  proxy add <container> <proxy>  Attach a container (GitHub, or any API with --env/--host)
   proxy rm <container>           Detach a container
   proxy list                     Show proxies and attached containers
   proxy delete <name>            Delete a proxy
@@ -335,10 +335,12 @@ case "$1" in
     # shellcheck source=incus.proxy
     source "$SCRIPT_DIR/incus.proxy"
     proxy_refuse_delete_of_proxy "$1"
+    # Read before the delete: both live in the container's config.
     attached_proxy="$(proxy_attached_to "$1" || true)"
+    attached_entries="$(proxy_entry_names "$1" || true)"
     incus delete --force "$1"
     log "Deleted $1"
-    proxy_after_delete "$1" "$attached_proxy"
+    proxy_after_delete "$1" "$attached_proxy" "$attached_entries"
     ;;
   -k|kill)
     shift

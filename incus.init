@@ -512,11 +512,21 @@ save_template() {
   # container launched from the template must not inherit them.
   local saved_tokens
   saved_tokens=$(incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=|# incs-proxy\$' ~/.zshenv 2>/dev/null || true")
+    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=|# incs-proxy(:[a-z0-9-]+)?\$' ~/.zshenv 2>/dev/null || true")
 
   log "Scrubbing secrets from image..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "sed -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d; /# incs-proxy\$/d' ~/.zshenv 2>/dev/null || true"
+    "sed -E -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d; /# incs-proxy(:[a-z0-9-]+)?\$/d' ~/.zshenv 2>/dev/null || true"
+
+  # The same goes for the /etc/hosts lines an attach adds: they send API hosts
+  # to one proxy's address.
+  local hosts_file saved_hosts
+  hosts_file="$(incus file pull -q "$CONTAINER_NAME/etc/hosts" - 2>/dev/null || true)"
+  saved_hosts="$(grep -E ' # incs-proxy:[a-z0-9-]+$' <<< "$hosts_file" || true)"
+  if [[ -n "$saved_hosts" ]]; then
+    { grep -vE ' # incs-proxy:[a-z0-9-]+$' <<< "$hosts_file" || true; } \
+      | incus file push -q --uid 0 --gid 0 --mode 0644 - "$CONTAINER_NAME/etc/hosts"
+  fi
 
   # Empty the workspace before publishing. A template is a reusable *provisioned
   # base* (packages, mise, shell, tools) — not a frozen copy of one repo. Baking
@@ -541,6 +551,10 @@ save_template() {
     incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cat >> ~/.zshenv <<'TOKENS'
 $saved_tokens
 TOKENS"
+  fi
+  if [[ -n "$saved_hosts" ]]; then
+    { incus file pull -q "$CONTAINER_NAME/etc/hosts" -; printf '%s\n' "$saved_hosts"; } \
+      | incus file push -q --uid 0 --gid 0 --mode 0644 - "$CONTAINER_NAME/etc/hosts"
   fi
 
   wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"

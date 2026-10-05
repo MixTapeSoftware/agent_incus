@@ -72,7 +72,9 @@ make_agent() {
   local name="$1"
   incus launch images:ubuntu/24.04 "$name"
   incus config set "$name" user.managed-by=agent-incus
+  printf '127.0.0.1 localhost\n' | incus file push -p - "$name/etc/hosts"
 }
+hosts_of() { cat "$(fs "$1" /etc/hosts)" 2>/dev/null || true; }
 
 # A proxy as `incs proxy new` leaves it, including what provisioning creates
 # inside the container (the fake cannot run apt/openssl).
@@ -107,9 +109,15 @@ assert_not_contains "service token never appears in argv" \
   "ops_SECRET_service_token" "$(cat "$FAKE_INCUS_STATE/calls.log")"
 assert_not_contains "service token is not echoed to the terminal" \
   "ops_SECRET_service_token" "$(cat "$SANDBOX/out")"
-assert_eq "base config listens for containers on the tunnel port" \
-  '  tunnel_listen: "0.0.0.0:8888"' \
-  "$(grep 'tunnel_listen' "$(fs work /etc/iron-proxy/base.yaml)" 2>/dev/null || true)"
+assert_eq "base config exposes the TLS listener to containers" \
+  '  https_listen: "0.0.0.0:443"' \
+  "$(grep 'https_listen' "$(fs work /etc/iron-proxy/base.yaml)" 2>/dev/null || true)"
+# The tunnel port accepts plain HTTP and would swap placeholders on it.
+assert_eq "base config has no tunnel listener" \
+  "" "$(grep '^ *tunnel_listen' "$(fs work /etc/iron-proxy/base.yaml)" 2>/dev/null || true)"
+assert_eq "base config keeps the plain-HTTP listener on loopback" \
+  '  http_listen: "127.0.0.1:18080"' \
+  "$(grep 'http_listen' "$(fs work /etc/iron-proxy/base.yaml)" 2>/dev/null || true)"
 assert_eq "launches with the hardened agent-incus profile" \
   "default agent-incus" "$(paste -sd' ' "$FAKE_INCUS_STATE/instances/work/profiles")"
 assert_eq "profile isolates the idmap" \
@@ -215,17 +223,23 @@ assert_contains "entry is bound to uploads.github.com (release assets)" \
 assert_eq "no staged files are left in the proxy" \
   "" "$(compgen -G "$(fs work /etc/iron-proxy)/*/*.new" || true)"
 assert_contains "rebuilt config includes the entry"       "proxy_value: \"$ph\"" "$built"
-assert_contains "rebuilt config keeps the base settings"  'tunnel_listen: "0.0.0.0:8888"' "$built"
+assert_contains "rebuilt config keeps the base settings"  'https_listen: "0.0.0.0:443"' "$built"
 
 assert_not_contains "real token removed from ~/.zshenv"   "$REAL_TOKEN" "$zshenv"
 assert_contains "~/.zshenv exports the placeholder"       "export GH_TOKEN=$ph" "$zshenv"
-assert_contains "~/.zshenv routes HTTPS through the proxy" "export HTTPS_PROXY=http://10.99.0.7:8888" "$zshenv"
-# The proxy would swap the placeholder on plain HTTP too, in the clear.
-assert_eq "~/.zshenv does not route plain HTTP through the proxy" \
-  "" "$(grep -iE '^export http_proxy=' <<<"$zshenv" || true)"
+hosts="$(hosts_of proj)"
+assert_contains "/etc/hosts sends the GitHub hosts to the proxy" \
+  "10.99.0.7 github.com api.github.com uploads.github.com # incs-proxy:github" "$hosts"
+assert_contains "/etc/hosts keeps its own lines" "127.0.0.1 localhost" "$hosts"
+assert_eq "/etc/hosts gains exactly one line" "2" "$(grep -c . <<<"$hosts")"
+# Nothing else is routed to the proxy: no proxy variables at all.
+assert_eq "~/.zshenv sets no proxy variables" \
+  "" "$(grep -iE '^export (https?_proxy|no_proxy)=' <<<"$zshenv" || true)"
+assert_contains "~/.zshenv points tools with their own trust store at the system bundle" \
+  "export NODE_EXTRA_CA_CERTS=/etc/ssl/certs/ca-certificates.crt # incs-proxy" "$zshenv"
+assert_eq "container records what is attached" "github=GH_TOKEN" "$(cfg proj user.incs.proxy-services)"
 assert_contains "~/.zshenv keeps unrelated settings (before)" "export EDITOR=nvim" "$zshenv"
 assert_contains "~/.zshenv keeps unrelated settings (after)"  "export FOO=bar" "$zshenv"
-assert_contains "tailnet names bypass the proxy"          ".ts.net" "$(grep '^export NO_PROXY=' <<<"$zshenv" || true)"
 assert_eq "real token is replaced in the incus environment too" \
   "placeholder" "$([[ "$ph" != "$REAL_TOKEN" && -n "$ph" ]] && echo placeholder || echo "real or empty")"
 # Root sessions (nightly apt updates) and daemons must keep connecting directly.
@@ -265,7 +279,8 @@ ph2="$(cfg proj environment.GH_TOKEN)"
 zshenv="$(cat "$(fs proj "$ZSHENV")")"
 assert_eq "re-add: placeholder rotates" "rotated" "$([[ -n "$ph2" && "$ph2" != "$ph" ]] && echo rotated || echo same)"
 assert_eq "re-add: one GH_TOKEN line"   "1" "$(grep -c '^export GH_TOKEN=' <<<"$zshenv")"
-assert_eq "re-add: one HTTPS_PROXY line" "1" "$(grep -c '^export HTTPS_PROXY=' <<<"$zshenv")"
+assert_eq "re-add: one line per trust-store variable" "1" "$(grep -c '^export SSL_CERT_FILE=' <<<"$zshenv")"
+assert_eq "re-add: one /etc/hosts line" "1" "$(grep -c 'incs-proxy:github' <<<"$(hosts_of proj)")"
 assert_eq "re-add: one entry in the rebuilt config" \
   "1" "$(grep -c 'proxy_value:' "$(fs work /etc/iron-proxy/proxy.yaml)")"
 assert_not_contains "re-add: old placeholder no longer honored" \
@@ -426,6 +441,126 @@ assert_eq "stopped container and proxy: attach still succeeds" "0" "$rc"
 assert_eq "stopped proxy is started" "RUNNING" "$(incus list '^work$' --format csv --columns s)"
 
 # ===========================================================================
+echo "proxy add (any API)"
+# ===========================================================================
+fresh_state
+FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
+make_agent proj
+printf 'export OPENAI_API_KEY=sk-REAL-key-from-before\nexport EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
+incs proxy add proj work >/dev/null 2>&1
+gh_ph="$(cfg proj environment.GH_TOKEN)"
+out="$(incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
+assert_eq "add --env/--host: succeeds" "0" "$rc"
+
+ph="$(cfg proj environment.OPENAI_API_KEY)"
+entry="$(cat "$(fs work /etc/iron-proxy/entries/proj--openai-api-key.yaml)" 2>/dev/null || true)"
+zshenv="$(cat "$(fs proj "$ZSHENV")")"
+hosts="$(hosts_of proj)"
+built="$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_eq "generic placeholder is random and recognisable" \
+  "match" "$([[ "$ph" =~ ^incs_[0-9a-f]{40}$ ]] && echo match || echo "no match: $ph")"
+assert_contains "service is named after the variable"       "proxy_value: \"$ph\"" "$entry"
+assert_contains "key is read from a field named after the variable" \
+  'secret_ref: "op://agent-tokens/proj/OPENAI_API_KEY"' "$entry"
+assert_contains "entry is bound to the given host"          '- host: "api.openai.com"' "$entry"
+assert_not_contains "entry is not bound to GitHub"          'github.com' "$entry"
+# No header named: the proxy swaps it in whichever header carries it.
+assert_not_contains "entry does not restrict which header"  'match_headers' "$entry"
+assert_contains "rebuilt config holds the new placeholder"  "$ph" "$built"
+assert_contains "rebuilt config still holds GitHub's"       "$gh_ph" "$built"
+
+assert_contains "~/.zshenv exports the placeholder under the given name" \
+  "export OPENAI_API_KEY=$ph # incs-proxy:openai-api-key" "$zshenv"
+assert_not_contains "a real key already in ~/.zshenv is replaced" "sk-REAL-key-from-before" "$zshenv"
+assert_eq "…leaving one line for the variable" "1" "$(grep -c '^export OPENAI_API_KEY=' <<<"$zshenv")"
+assert_contains "GitHub's line is left alone"               "export GH_TOKEN=$gh_ph" "$zshenv"
+assert_contains "the user's own lines are left alone"       "export EDITOR=nvim" "$zshenv"
+assert_eq "trust-store variables are not duplicated" "1" "$(grep -c '^export SSL_CERT_FILE=' <<<"$zshenv")"
+assert_contains "/etc/hosts sends the host to the proxy" \
+  "10.99.0.7 api.openai.com # incs-proxy:openai-api-key" "$hosts"
+assert_contains "/etc/hosts keeps GitHub's line"            "# incs-proxy:github" "$hosts"
+assert_eq "container records both services" \
+  "github=GH_TOKEN openai-api-key=OPENAI_API_KEY" "$(cfg proj user.incs.proxy-services)"
+assert_eq "git credential setup runs for GitHub only" \
+  "1" "$(grep -c 'auth setup-git' "$FAKE_INCUS_STATE/gh.log")"
+assert_not_contains "placeholder is not printed" "$ph" "$out"
+assert_contains "list shows every service" "proj(github,openai-api-key)" "$(incs proxy list 2>&1)"
+
+# Re-adding one service rotates only that service.
+incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
+ph2="$(cfg proj environment.OPENAI_API_KEY)"
+assert_eq "re-add: that placeholder rotates" "rotated" "$([[ -n "$ph2" && "$ph2" != "$ph" ]] && echo rotated || echo same)"
+assert_eq "re-add: GitHub's placeholder does not" "$gh_ph" "$(cfg proj environment.GH_TOKEN)"
+assert_eq "re-add: one /etc/hosts line for it" "1" "$(grep -c 'incs-proxy:openai-api-key' <<<"$(hosts_of proj)")"
+assert_eq "re-add: the list is unchanged" \
+  "github=GH_TOKEN openai-api-key=OPENAI_API_KEY" "$(cfg proj user.incs.proxy-services)"
+
+# Name, prefix, several hosts, key stored in the proxy.
+out="$(printf 'sk-ant-REAL-key\n' | incs proxy add proj work --service anthropic --env ANTHROPIC_API_KEY \
+  --host api.anthropic.com --host console.anthropic.com --prefix sk-ant- --token 2>&1)" && rc=0 || rc=$?
+assert_eq "add --service/--prefix/--token: succeeds" "0" "$rc"
+ph="$(cfg proj environment.ANTHROPIC_API_KEY)"
+entry="$(cat "$(fs work /etc/iron-proxy/entries/proj--anthropic.yaml)" 2>/dev/null || true)"
+assert_eq "--prefix shapes the placeholder" \
+  "match" "$([[ "$ph" =~ ^sk-ant-[0-9a-f]{40}$ ]] && echo match || echo "no match: $ph")"
+assert_eq "--token stores the key in the proxy, under the service's name" \
+  "sk-ant-REAL-key" "$(cat "$(fs work /etc/iron-proxy/tokens/proj--anthropic)" 2>/dev/null; echo)"
+assert_contains "--token: entry reads the stored key" 'path: "/etc/iron-proxy/tokens/proj--anthropic"' "$entry"
+assert_contains "every --host is bound (first)"  '- host: "api.anthropic.com"' "$entry"
+assert_contains "every --host is bound (second)" '- host: "console.anthropic.com"' "$entry"
+assert_contains "every --host goes to the proxy" \
+  "10.99.0.7 api.anthropic.com console.anthropic.com # incs-proxy:anthropic" "$(hosts_of proj)"
+assert_not_contains "the key never appears in argv" "sk-ant-REAL-key" "$(cat "$FAKE_INCUS_STATE/calls.log")"
+
+incs proxy add proj work --service stripe --env STRIPE_KEY --host api.stripe.com --ref "op://Shared/Stripe test/key" >/dev/null 2>&1
+assert_contains "--ref overrides the default reference" \
+  'secret_ref: "op://Shared/Stripe test/key"' "$(cat "$(fs work /etc/iron-proxy/entries/proj--stripe.yaml)")"
+
+# Anything that cannot be attached safely is refused before any change.
+before="$(cfg proj user.incs.proxy-services)"
+refused() {
+  local label="$1" needle="$2"; shift 2
+  out="$(incs proxy add proj work "$@" 2>&1 </dev/null)" && rc=0 || rc=$?
+  assert_eq "refused: $label" "1" "$rc"
+  [[ -z "$needle" ]] || assert_contains "refused: $label (says why)" "$needle" "$out"
+}
+refused "--env without --host"               "--host is required"  --env SOME_KEY
+refused "--host without --env"               "--env is required"   --host api.example.com
+refused "a wildcard host"                    "Wildcard"            --env SOME_KEY --host '*.example.com'
+refused "a host with a path"                 "Invalid host"        --env SOME_KEY --host 'api.example.com/v1'
+refused "a host with a space"                "Invalid host"        --env SOME_KEY --host 'api example.com'
+refused "a variable name with a hyphen"      "Invalid environment" --env SOME-KEY --host api.example.com
+refused "a prefix with a space"              "Invalid placeholder" --env SOME_KEY --host api.example.com --prefix 'sk ant'
+refused "a service name with a slash"        "Invalid service"     --service 'a/b' --env SOME_KEY --host api.example.com
+refused "github with --env"                  "built in"            --service github --env SOME_KEY --host api.example.com
+refused "a new service name with nothing else" "needs --env"       --service mystery
+refused "a variable another service already uses" "already belongs" --service other --env OPENAI_API_KEY --host api.example.com
+refused "a variable incs itself sets"         "set by incs itself"  --env SSL_CERT_FILE --host api.example.com
+assert_eq "refused attaches change nothing" "$before" "$(cfg proj user.incs.proxy-services)"
+assert_not_contains "refused attaches add no /etc/hosts line" "example.com" "$(hosts_of proj)"
+
+# A container attached before services existed: tagged, no list, proxy
+# variables in ~/.zshenv.
+fresh_state
+FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
+make_agent proj
+incus config set proj user.incs.proxy=work
+incus config set proj environment.GH_TOKEN=ghp_old
+printf 'export EDITOR=nvim\nexport GH_TOKEN=ghp_old # incs-proxy\nexport HTTPS_PROXY=http://10.99.0.7:8888 # incs-proxy\n' \
+  | incus file push -p - "proj$ZSHENV"
+out="$(incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
+assert_eq "older attachment: another service is refused until GitHub is re-attached" "1" "$rc"
+assert_contains "older attachment: …with the command to run" "incs proxy add proj work" "$out"
+out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+zshenv="$(cat "$(fs proj "$ZSHENV")")"
+assert_eq "older attachment: re-attaching GitHub succeeds" "0" "$rc"
+assert_not_contains "older attachment: the proxy variables are removed" "HTTPS_PROXY" "$zshenv"
+assert_eq "older attachment: one GH_TOKEN line remains" "1" "$(grep -c '^export GH_TOKEN=' <<<"$zshenv")"
+assert_contains "older attachment: the user's lines are kept" "export EDITOR=nvim" "$zshenv"
+out="$(incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
+assert_eq "older attachment: other services can then be added" "0" "$rc"
+
+# ===========================================================================
 echo "proxy rm"
 # ===========================================================================
 fresh_state
@@ -532,16 +667,111 @@ fresh_state
 make_proxy work
 make_agent proj
 old_helper | incus file push - work/usr/local/bin/iron-rebuild
+# ...and a base config that still opens the tunnel port.
+printf 'proxy:\n  tunnel_listen: "0.0.0.0:8888"\ntransforms:\n  - name: secrets\n    config:\n      secrets:\n' \
+  | incus file push - work/etc/iron-proxy/base.yaml
+# Two more containers on it: one attached the old way, one not attached.
+make_agent oldway; make_agent bystander
+incus config set oldway user.incs.proxy=work
 out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
 ph="$(cfg proj environment.GH_TOKEN)"
 assert_eq "older proxy: add succeeds" "0" "$rc"
+assert_contains "older proxy: says which containers must be re-attached" "re-attached: oldway" "$out"
+assert_not_contains "older proxy: …and not the one being attached" "re-attached: proj" "$out"
+assert_not_contains "older proxy: …nor unattached containers" "bystander" "$out"
+out2="$(incs proxy add proj work 2>&1)"
+assert_not_contains "older proxy: the notice is given once" "re-attached" "$out2"
+ph="$(cfg proj environment.GH_TOKEN)"   # the second add rotated it
+assert_not_contains "older proxy: add closes the tunnel port" \
+  "tunnel_listen" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_contains "older proxy: add opens the TLS listener" \
+  'https_listen: "0.0.0.0:443"' "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
 assert_contains "older proxy: add really publishes the entry" \
   "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
 old_helper | incus file push - work/usr/local/bin/iron-rebuild
+printf 'proxy:\n  tunnel_listen: "0.0.0.0:8888"\ntransforms:\n  - name: secrets\n    config:\n      secrets:\n' \
+  | incus file push - work/etc/iron-proxy/base.yaml
 out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "older proxy: rm succeeds" "0" "$rc"
+# Only an attach migrates the proxy; a detach must not cut off the others.
+assert_contains "older proxy: rm leaves the proxy's listeners alone" \
+  "tunnel_listen" "$(cat "$(fs work /etc/iron-proxy/base.yaml)")"
 assert_not_contains "older proxy: rm really revokes the placeholder" \
   "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+
+# One service out of several.
+fresh_state
+FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
+make_agent proj
+printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
+incs proxy add proj work >/dev/null 2>&1
+printf 'sk-REAL\n' | incs proxy add proj work --service openai --env OPENAI_API_KEY --host api.openai.com --token >/dev/null 2>&1
+gh_ph="$(cfg proj environment.GH_TOKEN)"
+ph="$(cfg proj environment.OPENAI_API_KEY)"
+out="$(incs proxy rm proj --service nope 2>&1)" && rc=0 || rc=$?
+assert_eq "rm --service: an unknown service is refused" "1" "$rc"
+out="$(incs proxy rm proj --service openai 2>&1)" && rc=0 || rc=$?
+built="$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+zshenv="$(cat "$(fs proj "$ZSHENV")")"
+assert_eq "rm --service: succeeds" "0" "$rc"
+assert_not_contains "rm --service: that placeholder is revoked"   "$ph" "$built"
+assert_contains     "rm --service: the others still work"         "$gh_ph" "$built"
+assert_eq "rm --service: its stored key is deleted" \
+  "gone" "$([[ -e "$(fs work /etc/iron-proxy/tokens/proj--openai)" ]] && echo present || echo gone)"
+assert_not_contains "rm --service: its variable leaves ~/.zshenv" "OPENAI_API_KEY" "$zshenv"
+assert_contains     "rm --service: the others stay in ~/.zshenv"  "export GH_TOKEN=$gh_ph" "$zshenv"
+assert_contains     "rm --service: trust-store variables stay"    "export SSL_CERT_FILE=" "$zshenv"
+assert_eq "rm --service: its variable leaves the incus environment" "" "$(cfg proj environment.OPENAI_API_KEY)"
+assert_not_contains "rm --service: its /etc/hosts line is removed" "api.openai.com" "$(hosts_of proj)"
+assert_contains     "rm --service: the others keep their /etc/hosts line" "# incs-proxy:github" "$(hosts_of proj)"
+assert_eq "rm --service: the list is updated" "github=GH_TOKEN" "$(cfg proj user.incs.proxy-services)"
+assert_eq "rm --service: the container stays attached" "work" "$(cfg proj user.incs.proxy)"
+assert_eq "rm --service: the proxy's authority stays trusted" \
+  "present" "$([[ -e "$(fs proj /usr/local/share/ca-certificates/incs-proxy.crt)" ]] && echo present || echo gone)"
+
+out="$(incs proxy rm proj --service github 2>&1)" && rc=0 || rc=$?
+assert_eq "rm --service on the last one: succeeds" "0" "$rc"
+assert_eq "rm --service on the last one: detaches the container" "" "$(cfg proj user.incs.proxy)"
+assert_eq "rm --service on the last one: ~/.zshenv is the user's own again" \
+  "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
+assert_eq "rm --service on the last one: /etc/hosts is its own again" \
+  "127.0.0.1 localhost" "$(hosts_of proj)"
+assert_eq "rm --service on the last one: authority is no longer trusted" \
+  "gone" "$([[ -e "$(fs proj /usr/local/share/ca-certificates/incs-proxy.crt)" ]] && echo present || echo gone)"
+
+# Everything at once.
+fresh_state
+make_proxy work
+make_agent proj
+printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
+incs proxy add proj work >/dev/null 2>&1
+incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
+out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm with several services: succeeds" "0" "$rc"
+assert_eq "rm with several services: the proxy honors none of them" \
+  "0" "$(grep -c 'proxy_value:' "$(fs work /etc/iron-proxy/proxy.yaml)" || true)"
+assert_eq "rm with several services: ~/.zshenv is the user's own again" \
+  "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
+assert_eq "rm with several services: /etc/hosts is its own again" "127.0.0.1 localhost" "$(hosts_of proj)"
+assert_eq "rm with several services: no variable is left in the incus environment" \
+  "" "$(cfg proj environment.GH_TOKEN)$(cfg proj environment.OPENAI_API_KEY)"
+assert_eq "rm with several services: the list is cleared" "" "$(cfg proj user.incs.proxy-services)"
+assert_eq "rm with several services: tag is cleared" "" "$(cfg proj user.incs.proxy)"
+
+# An attachment from before services existed can still be removed.
+fresh_state
+make_proxy work
+make_agent proj
+incs proxy add proj work >/dev/null 2>&1
+ph="$(cfg proj environment.GH_TOKEN)"
+incus config unset proj user.incs.proxy-services
+printf 'export EDITOR=nvim\nexport GH_TOKEN=%s # incs-proxy\nexport HTTPS_PROXY=http://10.99.0.7:8888 # incs-proxy\n' "$ph" \
+  | incus file push -p - "proj$ZSHENV"
+out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm of an older attachment: succeeds" "0" "$rc"
+assert_not_contains "rm of an older attachment: placeholder is revoked" "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_eq "rm of an older attachment: ~/.zshenv is the user's own again" \
+  "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
 
 # ===========================================================================
 echo "proxy list"
@@ -558,7 +788,8 @@ incs proxy add other work >/dev/null 2>&1
 out="$(incs proxy list 2>&1)"
 work_line="$(grep -E '^work\b' <<<"$out" || true)"
 idle_line="$(grep -E '^idle\b' <<<"$out" || true)"
-assert_contains "list: shows the proxy's address"        "10.99.0.7:8888" "$work_line"
+assert_contains "list: shows the proxy's address"        "10.99.0.7:443" "$work_line"
+assert_contains "list: shows what each container has attached" "proj(github)" "$work_line"
 assert_contains "list: shows its status"                 "RUNNING" "$work_line"
 assert_contains "list: shows the first attached container"  "proj" "$work_line"
 assert_contains "list: shows the second attached container" "other" "$work_line"
@@ -700,7 +931,7 @@ assert_eq "commit with nothing staged is refused" "1" "$rc"
 out="$(incus exec work -- iron-rebuild drop ../base 2>&1)" && rc=0 || rc=$?
 assert_eq "an entry name with a path in it is refused" "2" "$rc"
 assert_contains "…and the proxy config is untouched" \
-  "tunnel_listen" "$(cat "$(fs work /etc/iron-proxy/base.yaml)")"
+  "https_listen" "$(cat "$(fs work /etc/iron-proxy/base.yaml)")"
 
 # ===========================================================================
 echo "incs without realpath (macOS 12 and earlier)"
@@ -924,18 +1155,28 @@ make_proxy work
 make_agent base
 printf 'export EDITOR=nvim\n' | incus file push -p - "base$ZSHENV"
 incs proxy add base work >/dev/null 2>&1
+incs proxy add base work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
 ph="$(cfg base environment.GH_TOKEN)"
+ph_openai="$(cfg base environment.OPENAI_API_KEY)"
 run_save_template base >/dev/null 2>&1 && rc=0 || rc=$?
 assert_eq "template: save succeeds" "0" "$rc"
 
 image_zshenv="$(cat "$FAKE_INCUS_STATE/images/incus-init/base/root$ZSHENV" 2>/dev/null || echo MISSING)"
 live_zshenv="$(cat "$(fs base "$ZSHENV")")"
 assert_not_contains "template: image holds no placeholder"      "$ph" "$image_zshenv"
-assert_not_contains "template: image does not route through a proxy" "HTTPS_PROXY" "$image_zshenv"
+assert_not_contains "template: image holds no other service's placeholder" "$ph_openai" "$image_zshenv"
 assert_not_contains "template: image has none of our lines"     "# incs-proxy" "$image_zshenv"
 assert_contains "template: image keeps the user's own settings"  "export EDITOR=nvim" "$image_zshenv"
 assert_contains "template: the running container keeps its placeholder" "export GH_TOKEN=$ph" "$live_zshenv"
-assert_contains "template: the running container keeps its proxy"  "export HTTPS_PROXY=" "$live_zshenv"
+image_hosts="$(cat "$FAKE_INCUS_STATE/images/incus-init/base/root/etc/hosts" 2>/dev/null || echo MISSING)"
+assert_not_contains "template: image does not send any host to a proxy" "incs-proxy" "$image_hosts"
+assert_contains "template: image keeps the rest of /etc/hosts" "127.0.0.1 localhost" "$image_hosts"
+assert_contains "template: the running container keeps its /etc/hosts lines" \
+  "github.com api.github.com uploads.github.com # incs-proxy:github" "$(hosts_of base)"
+assert_contains "template: the running container keeps its other services" \
+  "export OPENAI_API_KEY=$ph_openai" "$live_zshenv"
+assert_contains "template: …and their /etc/hosts lines" \
+  "api.openai.com # incs-proxy:openai-api-key" "$(hosts_of base)"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"

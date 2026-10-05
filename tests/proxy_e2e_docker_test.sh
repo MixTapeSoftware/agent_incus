@@ -40,39 +40,56 @@ trap 'rm -rf "$WORK"' EXIT
 
 PH_A="ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
 PH_B="ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+PH_K="incs_kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk"
 PH_UNKNOWN="ghp_cccccccccccccccccccccccccccccccccccc"
 REAL_A="github_pat_REAL_for_container_a"
 REAL_B="github_pat_REAL_for_container_b"
+REAL_K="sk-REAL-api-key-for-container-a"
 
 # Everything below is produced by the code under test.
 proxy_base_config      > "$WORK/base.yaml"
 proxy_rebuild_script   > "$WORK/iron-rebuild"
 proxy_provision_script > "$WORK/provision.sh"
-proxy_render_entry "$PH_A" "$PROXY_DIR/tokens/a--github" upstream.test > "$WORK/a--github.yaml"
-proxy_render_entry "$PH_B" "$PROXY_DIR/tokens/b--github" upstream.test > "$WORK/b--github.yaml"
+# a and b as GitHub attaches them (Authorization only); a--api as any other
+# API is attached (whichever header carries the placeholder).
+proxy_render_entry "$PH_A" "$PROXY_DIR/tokens/a--github" Authorization upstream.test > "$WORK/a--github.yaml"
+proxy_render_entry "$PH_B" "$PROXY_DIR/tokens/b--github" Authorization upstream.test > "$WORK/b--github.yaml"
+proxy_render_entry "$PH_K" "$PROXY_DIR/tokens/a--api"    ""            upstream.test > "$WORK/a--api.yaml"
 
 cat > "$WORK/echo_server.py" <<'PY'
-# HTTPS server that reports the Authorization header it received.
-import http.server, ssl
-class H(http.server.BaseHTTPRequestHandler):
+# Two upstreams standing in for an API host. The HTTPS one reports the
+# credentials it received. The plain-HTTP one records them: a real key must
+# never arrive there.
+import http.server, ssl, threading
+class Tls(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
-        body = ("AUTH=" + self.headers.get("Authorization", "")).encode()
+        body = ("AUTH=" + self.headers.get("Authorization", "")
+                + "|KEY=" + self.headers.get("x-api-key", "")).encode()
         self.send_response(200)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
     def log_message(self, *a): pass
+class Plain(http.server.BaseHTTPRequestHandler):
+    def do_GET(self):
+        with open("/tmp/plain_upstream.log", "a") as f:
+            f.write(self.headers.get("Authorization", "") + "\n")
+        self.send_response(200)
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+    def log_message(self, *a): pass
 ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
 ctx.load_cert_chain("/tmp/up/server.crt", "/tmp/up/server.key")
-srv = http.server.HTTPServer(("127.0.0.1", 443), H)
-srv.socket = ctx.wrap_socket(srv.socket, server_side=True)
-srv.serve_forever()
+tls = http.server.HTTPServer(("127.0.0.1", 443), Tls)
+tls.socket = ctx.wrap_socket(tls.socket, server_side=True)
+threading.Thread(target=tls.serve_forever, daemon=True).start()
+http.server.HTTPServer(("127.0.0.1", 80), Plain).serve_forever()
 PY
 
 cat > "$WORK/run.sh" <<EOF
 set -eu
-PH_A="$PH_A" PH_B="$PH_B" PH_UNKNOWN="$PH_UNKNOWN"
-REAL_A="$REAL_A" REAL_B="$REAL_B"
+PH_A="$PH_A" PH_B="$PH_B" PH_K="$PH_K" PH_UNKNOWN="$PH_UNKNOWN"
+REAL_A="$REAL_A" REAL_B="$REAL_B" REAL_K="$REAL_K"
 EOF
 cat >> "$WORK/run.sh" <<'EOF'
 exec 3>&1 1>/tmp/run.log 2>&1
@@ -115,14 +132,17 @@ cp /etc/iron-proxy/ca.crt /usr/local/share/ca-certificates/incs-proxy.crt
 update-ca-certificates >/dev/null
 python3 /work/echo_server.py &
 
-# What `incs proxy add --token` does, for two containers: stage, then commit.
-for c in a b; do
-  eval "real=\$REAL_$(echo $c | tr a-z A-Z)"
-  printf '%s' "$real" > /etc/iron-proxy/tokens/$c--github.new
-  chmod 600 /etc/iron-proxy/tokens/$c--github.new
-  install -m 0600 /work/$c--github.yaml /etc/iron-proxy/entries/$c--github.yaml.new
-  iron-rebuild commit $c--github token
-done
+# What `incs proxy add --token` does: stage, then commit. Two containers with
+# GitHub, and a second, generic service for container a.
+stage() {
+  printf '%s' "$2" > /etc/iron-proxy/tokens/$1.new
+  chmod 600 /etc/iron-proxy/tokens/$1.new
+  install -m 0600 /work/$1.yaml /etc/iron-proxy/entries/$1.yaml.new
+  iron-rebuild commit $1 token
+}
+stage a--github "$REAL_A"
+stage b--github "$REAL_B"
+stage a--api    "$REAL_K"
 result "staged_files_left=$(ls /etc/iron-proxy/entries /etc/iron-proxy/tokens | grep -c '\.new$' || true)"
 
 # Another container's entry upload is cut off partway. A rebuild that runs
@@ -131,13 +151,18 @@ printf '        - source:\n            type: fi' > /etc/iron-proxy/entries/c--gi
 iron-rebuild
 result "half_written_entry_published=$(grep -c 'type: fi$' /etc/iron-proxy/proxy.yaml || true)"
 
+# In a real proxy container the TLS listener is 0.0.0.0:443. Here the stand-in
+# upstream already holds 127.0.0.1:443, so the proxy takes 127.0.0.2:443 and
+# clients are pointed there, the way /etc/hosts points an agent container.
+PROXY_ADDR=127.0.0.2
 start_proxy() {
   # Loopback is denied as an upstream by default; this test's upstream is local.
   IRON_METRICS_LISTEN=127.0.0.1:9090 IRON_PROXY_UPSTREAM_DENY_CIDRS=169.254.169.254/32 \
+  IRON_PROXY_HTTPS_LISTEN=$PROXY_ADDR:443 \
     /usr/local/bin/iron-proxy -config /etc/iron-proxy/proxy.yaml >/tmp/proxy.log 2>&1 &
   PROXY_PID=$!
   for i in $(seq 1 50); do
-    if curl -s -o /dev/null -x http://127.0.0.1:8888 http://127.0.0.1:1/ 2>/dev/null; then break; fi
+    if curl -sk -o /dev/null --max-time 2 --resolve upstream.test:443:$PROXY_ADDR https://upstream.test/ 2>/dev/null; then break; fi
     if ! kill -0 $PROXY_PID 2>/dev/null; then cat /tmp/proxy.log; exit 1; fi
     sleep 0.2
   done
@@ -145,23 +170,47 @@ start_proxy() {
 start_proxy
 result "proxy_accepts_generated_config=$(kill -0 $PROXY_PID 2>/dev/null && echo yes || echo no)"
 
-via_proxy() { curl -s --max-time 20 -x http://127.0.0.1:8888 "$@" https://upstream.test/; }
-basic() { via_proxy -u "x-access-token:$1" | sed 's/^AUTH=Basic //' | base64 -d; }
+via_proxy() { curl -s --max-time 20 --resolve upstream.test:443:$PROXY_ADDR "$@" https://upstream.test/; }
+basic() { via_proxy -u "x-access-token:$1" | sed -e 's/^AUTH=Basic //' -e 's/|KEY=.*//' | base64 -d; }
 
 result "bearer_a=$(via_proxy -H "Authorization: Bearer $PH_A")"
 result "bearer_b=$(via_proxy -H "Authorization: Bearer $PH_B")"
 result "git_basic_a=$(basic "$PH_A")"
 result "gh_token_scheme_a=$(via_proxy -H "Authorization: token $PH_A")"
 result "unknown_placeholder=$(via_proxy -H "Authorization: Bearer $PH_UNKNOWN")"
-result "intercepted_by=$(curl -sv --max-time 20 -x http://127.0.0.1:8888 https://upstream.test/ 2>&1 \
+result "api_key_header=$(via_proxy -H "x-api-key: $PH_K")"
+result "github_placeholder_in_other_header=$(via_proxy -H "x-api-key: $PH_A")"
+result "intercepted_by=$(curl -sv --max-time 20 --resolve upstream.test:443:$PROXY_ADDR https://upstream.test/ 2>&1 \
   | grep -i 'issuer:' | grep -o 'incs proxy CA' | head -1)"
 
+# Plain HTTP must have no way to the swap. curl exit 7 = nothing listening.
+H="Authorization: Bearer $PH_A"
+rc=0; curl -s -o /dev/null --max-time 5 -x http://$PROXY_ADDR:8888 -H "$H" http://upstream.test/ || rc=$?
+result "old_tunnel_port=$rc"
+rc=0; curl -s -o /dev/null --max-time 5 -p -x http://$PROXY_ADDR:8888 -H "$H" http://upstream.test/ || rc=$?
+result "old_tunnel_port_connect=$rc"
+rc=0; curl -s -o /dev/null --max-time 5 --connect-to upstream.test:80:$PROXY_ADDR:80 -H "$H" http://upstream.test/ || rc=$?
+result "plain_port_80=$rc"
+# Plain HTTP spoken to the TLS port itself.
+curl -s -o /dev/null --max-time 5 --connect-to upstream.test:80:$PROXY_ADDR:443 -H "$H" http://upstream.test/ || true
+# A request that arrives over TLS but names an http:// target, or port 80.
+via_proxy --request-target 'http://upstream.test/' -H "$H" >/dev/null || true
+curl -s -o /dev/null --max-time 5 --resolve upstream.test:443:$PROXY_ADDR -H "$H" -H "Host: upstream.test:80" https://upstream.test/ || true
+# The plain-HTTP listener exists, but only on loopback inside the proxy.
+rc=0; curl -s -o /dev/null --max-time 5 http://$PROXY_ADDR:18080/ || rc=$?
+result "plain_listener_off_loopback=$rc"
+# Control: the plain upstream does record what reaches it.
+curl -s -o /dev/null --max-time 5 -H "Authorization: control-probe" http://127.0.0.1:80/ || true
+result "plain_upstream_records=$(grep -c control-probe /tmp/plain_upstream.log 2>/dev/null || true)"
+result "plain_upstream_saw_a_real_key=$(grep -c REAL /tmp/plain_upstream.log 2>/dev/null || true)"
+
 # What `incs proxy rm a` does on the proxy side.
-iron-rebuild drop a--github
-result "after_rm_a_files=$(ls /etc/iron-proxy/entries /etc/iron-proxy/tokens | grep -c '^a--github' || true)"
+iron-rebuild drop a--github a--api
+result "after_rm_a_files=$(ls /etc/iron-proxy/entries /etc/iron-proxy/tokens | grep -c '^a--' || true)"
 kill $PROXY_PID; wait $PROXY_PID 2>/dev/null || true
 start_proxy
 result "after_rm_a=$(via_proxy -H "Authorization: Bearer $PH_A")"
+result "after_rm_a_api=$(via_proxy -H "x-api-key: $PH_K")"
 result "after_rm_b_still_works=$(via_proxy -H "Authorization: Bearer $PH_B")"
 EOF
 
@@ -181,15 +230,24 @@ assert_eq "provisioning again keeps the same certificate authority" "yes" "$(r r
 assert_eq "commit leaves no staged files behind"                    "0"   "$(r staged_files_left)"
 assert_eq "a half-written entry is not published by a rebuild"      "0"   "$(r half_written_entry_published)"
 assert_eq "iron-proxy starts on the config incs generates"         "yes" "$(r proxy_accepts_generated_config)"
-assert_eq "container a's placeholder becomes a's token"   "AUTH=Bearer $REAL_A" "$(r bearer_a)"
-assert_eq "container b's placeholder becomes b's token"   "AUTH=Bearer $REAL_B" "$(r bearer_b)"
+assert_eq "container a's placeholder becomes a's token"   "AUTH=Bearer $REAL_A|KEY=" "$(r bearer_a)"
+assert_eq "container b's placeholder becomes b's token"   "AUTH=Bearer $REAL_B|KEY=" "$(r bearer_b)"
 assert_eq "git-style basic auth is swapped"               "x-access-token:$REAL_A" "$(r git_basic_a)"
-assert_eq "gh's 'token' auth scheme is swapped"           "AUTH=token $REAL_A" "$(r gh_token_scheme_a)"
-assert_eq "an unknown placeholder is passed through as is" "AUTH=Bearer $PH_UNKNOWN" "$(r unknown_placeholder)"
+assert_eq "gh's 'token' auth scheme is swapped"           "AUTH=token $REAL_A|KEY=" "$(r gh_token_scheme_a)"
+assert_eq "an unknown placeholder is passed through as is" "AUTH=Bearer $PH_UNKNOWN|KEY=" "$(r unknown_placeholder)"
+assert_eq "a generic service's placeholder is swapped in x-api-key" "AUTH=|KEY=$REAL_K" "$(r api_key_header)"
+assert_eq "GitHub's placeholder is swapped in Authorization only" "AUTH=|KEY=$PH_A" "$(r github_placeholder_in_other_header)"
 assert_eq "HTTPS is intercepted by this proxy's authority" "incs proxy CA" "$(r intercepted_by)"
-assert_eq "detaching a removes its entry and stored token" "0" "$(r after_rm_a_files)"
-assert_eq "after detaching a, its placeholder stops working" "AUTH=Bearer $PH_A" "$(r after_rm_a)"
-assert_eq "after detaching a, b is unaffected"            "AUTH=Bearer $REAL_B" "$(r after_rm_b_still_works)"
+assert_eq "nothing listens on the old tunnel port"          "7" "$(r old_tunnel_port)"
+assert_eq "…for CONNECT either"                             "7" "$(r old_tunnel_port_connect)"
+assert_eq "nothing listens for plain HTTP on the proxy's address" "7" "$(r plain_port_80)"
+assert_eq "the plain-HTTP listener is not reachable off loopback" "7" "$(r plain_listener_off_loopback)"
+assert_eq "the plain-HTTP upstream records what reaches it (control)" "1" "$(r plain_upstream_records)"
+assert_eq "no real key ever reached a plain-HTTP upstream"  "0" "$(r plain_upstream_saw_a_real_key)"
+assert_eq "detaching a removes its entries and stored keys" "0" "$(r after_rm_a_files)"
+assert_eq "after detaching a, its other placeholder stops working too" "AUTH=|KEY=$PH_K" "$(r after_rm_a_api)"
+assert_eq "after detaching a, its placeholder stops working" "AUTH=Bearer $PH_A|KEY=" "$(r after_rm_a)"
+assert_eq "after detaching a, b is unaffected"            "AUTH=Bearer $REAL_B|KEY=" "$(r after_rm_b_still_works)"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"
