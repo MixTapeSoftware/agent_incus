@@ -459,7 +459,7 @@ incs proxy apply my-project work services.yaml
 incs proxy apply my-project work services.yaml --prune   # also detach what the file no longer lists
 ```
 
-Each service takes the same settings as the flags: `env`, `host` (or `hosts`), `prefix` and `ref`. Leave `ref` out to use the default reference. `github:` needs no settings. Running it again changes only the services you edited; the rest keep their placeholders, so shells that are already open keep working. The file holds no secrets, so it can live in the project's repository. A key stored with `--token` cannot be listed in a file.
+Each service takes the same settings as the flags: `env`, `host` for one host or `hosts` for a list, `prefix` and `ref`. Leave `ref` out to use the default reference. `github:` needs no settings. Running it again changes only the services you edited; the rest keep their placeholders, so shells that are already open keep working. The file holds no secrets, so it can live in the project's repository. A key stored with `--token` cannot be listed in a file.
 
 Or attach GitHub at creation. This replaces `--gh-token`:
 

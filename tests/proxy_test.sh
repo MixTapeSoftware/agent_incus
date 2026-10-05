@@ -613,6 +613,13 @@ assert_eq "apply again: succeeds" "0" "$rc"
 assert_eq "apply again: no placeholder rotates" "$before" "$(placeholders)"
 assert_eq "apply again: says each service is unchanged" "4" "$(grep -c 'unchanged' <<<"$out")"
 
+# The same hosts in another order are not a change.
+sed 's/hosts: \[api.anthropic.com, "console.anthropic.com"\]/hosts: [console.anthropic.com, api.anthropic.com]/' "$SVC" > "$SVC.tmp" && mv "$SVC.tmp" "$SVC"
+assert_contains "(the file now lists the hosts in the other order)" "[console.anthropic.com, api.anthropic.com]" "$(cat "$SVC")"
+out="$(incs proxy apply proj work "$SVC" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply with hosts reordered: succeeds" "0" "$rc"
+assert_eq "apply with hosts reordered: no placeholder rotates" "$before" "$(placeholders)"
+
 # Edit one service: only that one is re-attached.
 gh_before="$(cfg proj environment.GH_TOKEN)"
 openai_before="$(cfg proj environment.OPENAI_API_KEY)"
@@ -629,7 +636,8 @@ assert_eq "apply after an edit: the others are untouched" "$gh_before" "$(cfg pr
 # Take a service out of the file.
 stripe_ph="$(cfg proj environment.STRIPE_KEY)"
 awk '/^stripe:/{skip=1; next} /^[^[:space:]#]/{skip=0} !skip' "$SVC" > "$SVC.tmp" && mv "$SVC.tmp" "$SVC"
-incs proxy apply proj work "$SVC" >/dev/null 2>&1
+out="$(incs proxy apply proj work "$SVC" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply without --prune: succeeds" "0" "$rc"
 assert_eq "apply without --prune: a service missing from the file stays attached" \
   "$stripe_ph" "$(cfg proj environment.STRIPE_KEY)"
 out="$(incs proxy apply proj work "$SVC" --prune 2>&1)" && rc=0 || rc=$?
@@ -640,6 +648,13 @@ assert_not_contains "apply --prune: its placeholder is revoked" \
   "$stripe_ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
 assert_not_contains "apply --prune: its /etc/hosts line is removed" "stripe" "$(hosts_of proj)"
 assert_eq "apply --prune: what the file still lists is untouched" "$gh_before" "$(cfg proj environment.GH_TOKEN)"
+
+# hosts: with a single name is accepted.
+make_agent single
+printf 'openai:\n  env: OPENAI_API_KEY\n  hosts: api.openai.com\n' > "$SANDBOX/single.yaml"
+out="$(incs proxy apply single work "$SANDBOX/single.yaml" 2>&1)" && rc=0 || rc=$?
+assert_eq "apply: hosts: with one name is accepted" "0" "$rc"
+assert_contains "apply: …as that one host" "10.99.0.7 api.openai.com # incs-proxy:openai" "$(hosts_of single)"
 
 # A file saved with Windows line endings.
 make_agent crlf
@@ -663,6 +678,12 @@ assert_contains "bad file: …and names the line" "bad.yaml:3:" "$out"
 bad_file "no env"                    "needs env"                'openai:\n  host: a.example.com\n'
 bad_file "no host"                   "needs host"               'openai:\n  env: X_KEY\n'
 bad_file "a wildcard host"           "Wildcard"                 "openai:\n  env: X_KEY\n  host: '*.example.com'\n"
+# A second word must never become a second host the key is bound to.
+bad_file "two hosts on a host: line" "host: takes one host"     'openai:\n  env: X_KEY\n  host: api.example.com other.example.com\n'
+bad_file "a list on a host: line"    "host: takes one host"     'openai:\n  env: X_KEY\n  host: [api.example.com, other.example.com]\n'
+bad_file "hosts without brackets"    "hosts: [a, b]"            'openai:\n  env: X_KEY\n  hosts: api.example.com, other.example.com\n'
+bad_file "hosts missing a comma"     "one host between commas"  'openai:\n  env: X_KEY\n  hosts: [api.example.com other.example.com]\n'
+bad_file "an empty item in hosts"    "one host between commas"  'openai:\n  env: X_KEY\n  hosts: [api.example.com, ]\n'
 bad_file "a service listed twice"    "listed twice"             'a:\n  env: A_KEY\n  host: a.example.com\na:\n  env: B_KEY\n  host: b.example.com\n'
 bad_file "one variable used twice"   "both use X_KEY"           'a:\n  env: X_KEY\n  host: a.example.com\nb:\n  env: X_KEY\n  host: b.example.com\n'
 bad_file "github given an env"       "built in"                 'github:\n  env: X_KEY\n'

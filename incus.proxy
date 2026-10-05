@@ -620,8 +620,13 @@ proxy_check_ref() {
 
 # proxy_spec <env> <prefix> <source> <hosts>
 # What a service was attached with, on one line. `incs proxy apply` compares
-# it with what a file asks for, so unchanged services are left alone.
-proxy_spec() { echo "$1|$2|$3|$4"; }
+# it with what a file asks for, so unchanged services are left alone. Hosts
+# are sorted: listing the same hosts in another order is not a change.
+proxy_spec() {
+  local hosts=()
+  read -r -a hosts <<< "$4"
+  echo "$1|$2|$3|$(printf '%s\n' ${hosts[@]+"${hosts[@]}"} | LC_ALL=C sort -u | tr '\n' ' ')"
+}
 
 # ---------------------------------------------------------------------------
 # proxy_attach <container> <proxy> <source-or-empty> <token-or-empty>
@@ -993,6 +998,7 @@ proxy_manifest_parse() {
   local re_item='^[[:space:]]+-[[:space:]]+(.*)$'
   local re_setting='^[[:space:]]+([A-Za-z_]+):(.*)$'
   local re_name='^[a-z0-9][a-z0-9-]*$'
+  local re_listy='[][,[:space:]]'   # a bracket, a comma or whitespace
   PROXY_M_NAMES=() PROXY_M_ENV=() PROXY_M_PREFIX=() PROXY_M_REF=() PROXY_M_HOSTS=()
   [[ -f "$file" && -r "$file" ]] || error "Cannot read $file"
 
@@ -1039,21 +1045,35 @@ proxy_manifest_parse() {
       env)    PROXY_M_ENV[cur]="$PROXY_M_VALUE" ;;
       prefix) PROXY_M_PREFIX[cur]="$PROXY_M_VALUE" ;;
       ref)    PROXY_M_REF[cur]="$PROXY_M_VALUE" ;;
-      host|hosts)
+      host)
+        # Exactly one host. A second word here would quietly bind the key to
+        # a second host, so it is refused, not split.
+        [[ -n "$PROXY_M_VALUE" && ! "$PROXY_M_VALUE" =~ $re_listy ]] || \
+          error "$file:$n: host: takes one host (for several, use hosts: [a, b])"
+        PROXY_M_HOSTS[cur]+="${PROXY_M_HOSTS[cur]:+ }$PROXY_M_VALUE"
+        ;;
+      hosts)
         if [[ -z "$PROXY_M_VALUE" ]]; then
           in_hosts=1
-        else
-          # One host, or an inline list: [a, b]. read -a splits without globbing.
+        elif [[ "$PROXY_M_VALUE" == \[*\] ]]; then
+          # An inline list. Split on commas only (read -a does not glob), so
+          # two words without a comma between them stay one, invalid, item.
           raw="${PROXY_M_VALUE#[}"
           raw="${raw%]}"
-          raw="${raw//,/ }"
-          raw="${raw//\"/}"
-          raw="${raw//\'/}"
-          read -r -a toks <<< "$raw"
-          PROXY_M_HOSTS[cur]+="${PROXY_M_HOSTS[cur]:+ }${toks[*]-}"
+          IFS=, read -r -a toks <<< "$raw"
+          for i in ${toks[@]+"${toks[@]}"}; do
+            proxy_manifest_scalar "$i" || error "$file:$n: unbalanced quote"
+            [[ -n "$PROXY_M_VALUE" && ! "$PROXY_M_VALUE" =~ [[:space:]] ]] || \
+              error "$file:$n: hosts: expects [a, b] with one host between commas"
+            PROXY_M_HOSTS[cur]+="${PROXY_M_HOSTS[cur]:+ }$PROXY_M_VALUE"
+          done
+        else
+          [[ ! "$PROXY_M_VALUE" =~ $re_listy ]] || \
+            error "$file:$n: write several hosts as hosts: [a, b]"
+          PROXY_M_HOSTS[cur]+="${PROXY_M_HOSTS[cur]:+ }$PROXY_M_VALUE"
         fi
         ;;
-      *) error "$file:$n: unknown setting '$key' (use env, host, prefix or ref)" ;;
+      *) error "$file:$n: unknown setting '$key' (use env, host, hosts, prefix or ref)" ;;
     esac
   done < "$file"
   [[ ${#PROXY_M_NAMES[@]} -gt 0 ]] || error "$file lists no services"
