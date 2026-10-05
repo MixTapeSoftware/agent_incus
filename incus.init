@@ -21,21 +21,6 @@ log()  { echo -e "${GREEN}[+]${NC} $1"; }
 warn() { echo -e "${YELLOW}[!]${NC} $1"; }
 error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 
-ensure_profile() {
-  local profile="agent-incus"
-  if incus profile show "$profile" &>/dev/null; then
-    return 0
-  fi
-  log "Creating Incus profile: $profile"
-  incus profile create "$profile"
-  incus profile set "$profile" user.managed-by=agent-incus
-  incus profile set "$profile" security.nesting=false
-  incus profile set "$profile" security.privileged=false
-  incus profile set "$profile" security.idmap.isolated=true
-  incus profile set "$profile" limits.memory=4GB
-  incus profile set "$profile" limits.cpu=4
-}
-
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
@@ -585,6 +570,8 @@ source "$SCRIPT_DIR/incus.macos.setup"
 source "$SCRIPT_DIR/incus.envscan"
 # read_secret / read_value, for plugin prompts that take pasted values.
 source "$SCRIPT_DIR/incus.prompt"
+# shellcheck source=incus.profile
+source "$SCRIPT_DIR/incus.profile"
 
 # ---------------------------------------------------------------------------
 # Validate
@@ -809,11 +796,9 @@ if [[ "$IS_VM" == "1" ]]; then
     -c limits.cpu="$VM_CPUS" \
     -d root,size="$VM_DISK"
 else
-  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p agent-incus
+  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE"
 fi
-if [[ "$IS_VM" == "1" ]]; then
-  incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
-fi
+incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
 
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"

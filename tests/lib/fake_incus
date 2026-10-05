@@ -12,7 +12,9 @@
 #   instances/<name>/ipv4          leased address
 #   instances/<name>/config/<key>  one file per config key
 #   instances/<name>/root/...      the instance filesystem
+#   instances/<name>/profiles      profiles passed with -p at init/launch, one per line
 #   images/<alias>/root/...        filesystem captured by `publish`
+#   profiles/<name>/<key>          one file per profile config key
 #   gh.log                         arguments of each `gh` run inside an instance
 #
 # Knobs (env):
@@ -72,6 +74,36 @@ case "$cmd" in
     [[ -n "$name" ]] || die "name required"
     if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
     else create_instance "$name" STOPPED; fi
+    : > "$(inst_dir "$name")/profiles"
+    shift 2
+    while [[ $# -gt 0 ]]; do
+      if [[ "$1" == "-p" || "$1" == "--profile" ]]; then
+        [[ "$2" == "default" || -d "$S/profiles/$2" ]] || die "Profile not found: $2"
+        echo "$2" >> "$(inst_dir "$name")/profiles"
+        shift 2
+      else
+        shift
+      fi
+    done
+    ;;
+
+  profile)
+    sub="${1:-}"; name="${2:-}"; shift 2 || true
+    p="$S/profiles/$name"
+    case "$sub" in
+      show)   [[ -d "$p" ]] || die "Profile not found: $name" ;;
+      create) [[ -d "$p" ]] && die "Profile already exists: $name"; mkdir -p "$p" ;;
+      set)
+        [[ -d "$p" ]] || die "Profile not found: $name"
+        for kv in "$@"; do printf '%s' "${kv#*=}" > "$p/${kv%%=*}"; done
+        ;;
+      unset)
+        [[ -d "$p" ]] || die "Profile not found: $name"
+        [[ -f "$p/$1" ]] || die "Key not set: $1"
+        rm -f "$p/$1"
+        ;;
+      *) die "unsupported profile subcommand: $sub" ;;
+    esac
     ;;
 
   start)   need_inst "$1"; echo RUNNING > "$(inst_dir "$1")/status" ;;

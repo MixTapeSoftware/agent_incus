@@ -41,6 +41,11 @@ if ! declare -F read_secret >/dev/null; then
   source "$(cd "$(dirname "$(_proxy_resolve "${BASH_SOURCE[0]}")")" && pwd)/incus.prompt"
 fi
 
+if ! declare -F ensure_profile >/dev/null; then
+  # shellcheck source=incus.profile
+  source "$(cd "$(dirname "$(_proxy_resolve "${BASH_SOURCE[0]}")")" && pwd)/incus.profile"
+fi
+
 # Logging helpers — reuse the caller's when sourced from incs / incus.init.
 declare -F log   >/dev/null || log()   { echo -e "\033[0;32m[+]\033[0m $1"; }
 declare -F warn  >/dev/null || warn()  { echo -e "\033[1;33m[!]\033[0m $1"; }
@@ -228,11 +233,14 @@ proxy_cmd_new() {
   read_secret token "1Password service account token (input hidden): "
   [[ "$token" =~ [[:space:]] ]] && error "Token must not contain whitespace"
 
+  ensure_profile
   log "Creating proxy container: $name"
-  incus init "$PROXY_IMAGE" "$name" >/dev/null
+  incus init "$PROXY_IMAGE" "$name" -p default -p "$AGENT_PROFILE" >/dev/null
   # From here on a failure would leave a broken container holding a secret.
   _PROXY_NEW_CLEANUP="$name"
   trap '_proxy_new_cleanup' EXIT
+  incus config set "$name" limits.memory=512MB
+  incus config set "$name" limits.cpu=1
   incus config set "$name" user.incs.role=proxy
   incus config set "$name" user.incs.proxy-vault="$vault"
   if [[ -n "$token" ]]; then

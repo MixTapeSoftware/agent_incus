@@ -110,6 +110,25 @@ assert_not_contains "service token is not echoed to the terminal" \
 assert_eq "base config listens for containers on the tunnel port" \
   '  tunnel_listen: "0.0.0.0:8888"' \
   "$(grep 'tunnel_listen' "$(fs work /etc/iron-proxy/base.yaml)" 2>/dev/null || true)"
+assert_eq "launches with the hardened agent-incus profile" \
+  "default agent-incus" "$(paste -sd' ' "$FAKE_INCUS_STATE/instances/work/profiles")"
+assert_eq "profile isolates the idmap" \
+  "true" "$(cat "$FAKE_INCUS_STATE/profiles/agent-incus/security.idmap.isolated")"
+assert_eq "profile does not tag instances as agent containers" \
+  "no" "$([[ -e "$FAKE_INCUS_STATE/profiles/agent-incus/user.managed-by" ]] && echo yes || echo no)"
+assert_eq "proxy gets a small memory limit" "512MB" "$(cfg work limits.memory)"
+assert_eq "proxy gets a small CPU limit"    "1"     "$(cfg work limits.cpu)"
+
+# A host whose profile predates this change still carries the managed-by tag.
+fresh_state
+incus profile create agent-incus
+incus profile set agent-incus user.managed-by=agent-incus security.nesting=true
+printf 'tok\n' | incs proxy new legacy >/dev/null 2>&1 || true
+assert_eq "existing profile: stale managed-by tag is removed" \
+  "no" "$([[ -e "$FAKE_INCUS_STATE/profiles/agent-incus/user.managed-by" ]] && echo yes || echo no)"
+assert_eq "existing profile: drifted keys are reset" \
+  "false" "$(cat "$FAKE_INCUS_STATE/profiles/agent-incus/security.nesting")"
+assert_eq "existing profile: proxy is still created" "proxy" "$(cfg legacy user.incs.role)"
 
 fresh_state
 incus launch images:ubuntu/24.04 taken
