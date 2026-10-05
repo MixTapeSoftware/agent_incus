@@ -160,6 +160,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
+| [Matt Pocock Skills](https://github.com/mattpocock/skills) | Engineering and productivity skills for Claude Code and Codex (enabled by default) |
 | [mermaid-ascii](https://github.com/AlexanderGrooff/mermaid-ascii) | Render mermaid diagrams as ASCII art |
 | [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
@@ -167,6 +168,8 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | Tailscale + Supabase serve | Preset `tailscale serve` map for app + Supabase ports (443→3000, 4410→3010, 4431→3001, 5432→54321, 5433→54323, 5434→54324, 8443→8000); auto-selects Tailscale |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`).
+
+Matt Pocock Skills installs the full collection globally for the container user, so it is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
 
 ### Adding Custom Plugins
 
