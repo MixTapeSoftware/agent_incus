@@ -491,29 +491,26 @@ assert_eq "rm run again once the proxy works: succeeds" "0" "$rc"
 assert_not_contains "rm run again: placeholder is revoked" "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
 assert_eq "rm run again: tag is cleared" "" "$(cfg proj user.incs.proxy)"
 
-# A real deletion failure inside the proxy, not an injected one.
-if [[ "$(id -u)" != "0" ]]; then
-  fresh_state
-  make_proxy work
-  make_agent proj
-  printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
-  ph="$(cfg proj environment.GH_TOKEN)"
-  chmod a-w "$(fs work /etc/iron-proxy/tokens)"
-  out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
-  chmod u+w "$(fs work /etc/iron-proxy/tokens)"
-  assert_eq "rm, stored token cannot be deleted: fails" "1" "$rc"
-  assert_eq "rm, stored token cannot be deleted: tag is kept" "work" "$(cfg proj user.incs.proxy)"
-  assert_contains "rm, stored token cannot be deleted: old mapping is not silently republished as detached" \
-    "still attached" "$out"
-  out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
-  assert_eq "rm run again after the fix: succeeds" "0" "$rc"
-  assert_eq "rm run again after the fix: stored token is gone" \
-    "gone" "$([[ -e "$(fs work /etc/iron-proxy/tokens/proj--github)" ]] && echo present || echo gone)"
-  assert_not_contains "rm run again after the fix: placeholder is revoked" \
-    "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
-else
-  echo "  skip  real deletion failure (running as root)"
-fi
+# A real deletion failure inside the proxy, not an injected one. A directory
+# where the token file should be makes `rm -f` fail for any user, root included.
+fresh_state
+make_proxy work
+make_agent proj
+printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
+ph="$(cfg proj environment.GH_TOKEN)"
+token_path="$(fs work /etc/iron-proxy/tokens/proj--github)"
+rm -f "$token_path" && mkdir "$token_path"
+out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm, stored token cannot be deleted: fails" "1" "$rc"
+assert_eq "rm, stored token cannot be deleted: tag is kept" "work" "$(cfg proj user.incs.proxy)"
+assert_contains "rm, stored token cannot be deleted: says the container is still attached" \
+  "still attached" "$out"
+rmdir "$token_path"
+out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm run again after the fix: succeeds" "0" "$rc"
+assert_eq "rm run again after the fix: tag is cleared" "" "$(cfg proj user.incs.proxy)"
+assert_not_contains "rm run again after the fix: placeholder is revoked" \
+  "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
 
 # A proxy created before commit/drop existed carries a helper that ignores
 # them: attach would publish nothing and rm would revoke nothing.

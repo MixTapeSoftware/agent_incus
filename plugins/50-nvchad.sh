@@ -66,8 +66,8 @@ EOF
     trap 'rm -f "$script"' EXIT
     cat > "$script" <<'LUA'
 -- install() is async; wait() blocks until every parser is built.
-require('lazy').load({ plugins = { 'nvim-treesitter' } })
 local ok, built = pcall(function()
+  require('lazy').load({ plugins = { 'nvim-treesitter' } })
   return require('nvim-treesitter')
     .install({ 'lua', 'go', 'python', 'typescript', 'bash', 'elixir' })
     :wait(300000)
