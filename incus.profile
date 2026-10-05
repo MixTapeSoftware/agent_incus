@@ -21,7 +21,7 @@ ensure_profile() {
     security.nesting=false \
     security.privileged=false \
     security.idmap.isolated=true \
-    limits.memory=4GB \
+    limits.memory=6GB \
     limits.cpu=4
   # Tagging is per-instance: proxies use this profile but must not be
   # managed-by=agent-incus, or kill-all/update-all would sweep them up.

@@ -120,7 +120,7 @@ Options:
 
 ### What incus.init does
 
-1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 4GB / 4 CPU limits (credential proxies get the same profile with 512MB / 1 CPU)
+1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits (credential proxies get the same profile with 512MB / 1 CPU)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
 5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+)
