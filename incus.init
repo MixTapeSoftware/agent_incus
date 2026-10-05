@@ -125,16 +125,17 @@ wait_for_network() {
 # Mount workspace with user mapping (requires kernel 5.12+ idmapped mounts)
 # ---------------------------------------------------------------------------
 mount_workspace() {
-  local container="$1" source="$2" target="$3"
+  local container="$1" source="$2" target="$3" err
 
-  if incus config device add "$container" workspace disk \
-      source="$source" path="$target" shift=true raw.mount.options=nosuid 2>/dev/null; then
+  if err="$(incus config device add "$container" workspace disk \
+      source="$source" path="$target" shift=true raw.mount.options=nosuid 2>&1)"; then
     log "Mounted with shift=true"
     return 0
   fi
 
   incus config device remove "$container" workspace 2>/dev/null || true
-  error "shift=true mount failed. Requires Linux 5.12+ with idmapped mount support."
+  error "Workspace mount failed: $err
+  (shift=true needs Linux 5.12+ with idmapped mount support)"
 }
 
 # ---------------------------------------------------------------------------
@@ -149,6 +150,8 @@ cleanup_on_failure() {
       incus delete --force "$CONTAINER_NAME" 2>/dev/null || true
       log "Deleted $CONTAINER_NAME"
     else
+      # A kept container must not retain the build-time sudo grant.
+      incus exec "$CONTAINER_NAME" -- rm -f "/etc/sudoers.d/${HOST_USER:-}" 2>/dev/null || true
       warn "Container left in place. Clean up manually with: incus delete --force $CONTAINER_NAME"
     fi
   fi

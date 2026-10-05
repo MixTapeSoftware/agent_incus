@@ -5,15 +5,17 @@ WITH_SUDO=0
 CONTAINER=""
 CMD_ARGS=()
 
+# Flags are only recognized before the container name; everything after it
+# belongs to the command.
 while [[ $# -gt 0 ]]; do
-  case "$1" in --with-sudo) WITH_SUDO=1; shift ;; *)
-      if [[ -z "$CONTAINER" ]]; then
-        CONTAINER="$1"; shift
-      else
-        CMD_ARGS+=("$1"); shift
-      fi
-      ;;
-  esac
+  if [[ -n "$CONTAINER" ]]; then
+    CMD_ARGS+=("$1")
+  elif [[ "$1" == "--with-sudo" ]]; then
+    WITH_SUDO=1
+  else
+    CONTAINER="$1"
+  fi
+  shift
 done
 
 CONTAINER="${CONTAINER:-${CLAUDE_CONTAINER:-}}"
@@ -60,7 +62,7 @@ else
 fi
 
 if [[ "$WITH_SUDO" == "1" ]]; then
-  SUDO_GID=$(incus exec "$CONTAINER" -- getent group _sudo 2>/dev/null | cut -d: -f3)
+  SUDO_GID=$(incus exec "$CONTAINER" -- getent group _sudo 2>/dev/null | cut -d: -f3 || true)
   if [[ -z "$SUDO_GID" ]]; then
     echo "Error: _sudo group not found in container (was it built with a recent incus.init?)" >&2
     exit 1

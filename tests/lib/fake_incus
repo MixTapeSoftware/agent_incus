@@ -72,19 +72,20 @@ case "$cmd" in
     # incus init <image> <name> [flags]
     name="${2:-}"
     [[ -n "$name" ]] || die "name required"
-    if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
-    else create_instance "$name" STOPPED; fi
-    : > "$(inst_dir "$name")/profiles"
+    profiles=()
     shift 2
     while [[ $# -gt 0 ]]; do
       if [[ "$1" == "-p" || "$1" == "--profile" ]]; then
         [[ "$2" == "default" || -d "$S/profiles/$2" ]] || die "Profile not found: $2"
-        echo "$2" >> "$(inst_dir "$name")/profiles"
+        profiles+=("$2")
         shift 2
       else
         shift
       fi
     done
+    if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
+    else create_instance "$name" STOPPED; fi
+    printf '%s\n' ${profiles[@]+"${profiles[@]}"} > "$(inst_dir "$name")/profiles"
     ;;
 
   profile)
@@ -286,6 +287,9 @@ case "$cmd" in
       "getent passwd "*)
         user="${command_line#getent passwd }"
         echo "$user:x:1000:1000::/home/$user:/usr/bin/zsh"
+        ;;
+      "getent group "*)
+        grep "^${command_line#getent group }:" "$root/etc/group" 2>/dev/null || exit 2
         ;;
       "iron-rebuild")
         # Run the real rebuild script the code under test installed, against
