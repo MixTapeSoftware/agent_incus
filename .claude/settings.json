@@ -15,7 +15,8 @@
       "NotebookEdit",
       "SlashCommand(*)",
       "Skill(*)",
-      "WebFetch(*)"
+      "WebFetch(*)",
+      "Monitor"
     ],
     "defaultMode": "acceptEdits"
   }
