@@ -506,6 +506,12 @@ save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
 
+  # Read /etc/hosts before changing anything: its proxy lines must not reach
+  # the image, so a template is not saved if they cannot be found.
+  local hosts_file saved_hosts
+  hosts_file="$(incus file pull -q "$CONTAINER_NAME/etc/hosts" - 2>/dev/null)" || \
+    error "Could not read /etc/hosts in $CONTAINER_NAME. No template saved: it might send hosts to a credential proxy."
+
   # Save token lines from .zshenv, then strip them so they don't leak into the
   # image. Lines written by a credential proxy attach (marked "# incs-proxy")
   # go too: a placeholder and proxy address belong to one container, and a
@@ -520,8 +526,6 @@ save_template() {
 
   # The same goes for the /etc/hosts lines an attach adds: they send API hosts
   # to one proxy's address.
-  local hosts_file saved_hosts
-  hosts_file="$(incus file pull -q "$CONTAINER_NAME/etc/hosts" - 2>/dev/null || true)"
   saved_hosts="$(grep -E ' # incs-proxy:[a-z0-9-]+$' <<< "$hosts_file" || true)"
   if [[ -n "$saved_hosts" ]]; then
     { grep -vE ' # incs-proxy:[a-z0-9-]+$' <<< "$hosts_file" || true; } \

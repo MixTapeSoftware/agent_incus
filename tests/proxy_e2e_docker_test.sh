@@ -73,7 +73,8 @@ class Tls(http.server.BaseHTTPRequestHandler):
 class Plain(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         with open("/tmp/plain_upstream.log", "a") as f:
-            f.write(self.headers.get("Authorization", "") + "\n")
+            f.write(self.headers.get("Authorization", "") + " "
+                    + self.headers.get("x-api-key", "") + "\n")
         self.send_response(200)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -184,24 +185,26 @@ result "intercepted_by=$(curl -sv --max-time 20 --resolve upstream.test:443:$PRO
   | grep -i 'issuer:' | grep -o 'incs proxy CA' | head -1)"
 
 # Plain HTTP must have no way to the swap. curl exit 7 = nothing listening.
-H="Authorization: Bearer $PH_A"
-rc=0; curl -s -o /dev/null --max-time 5 -x http://$PROXY_ADDR:8888 -H "$H" http://upstream.test/ || rc=$?
+# Each probe carries both placeholders: GitHub's in Authorization and the
+# generic service's in x-api-key.
+both() { curl -s -o /dev/null --max-time 5 -H "Authorization: Bearer $PH_A" -H "x-api-key: $PH_K" "$@"; }
+rc=0; both -x http://$PROXY_ADDR:8888 http://upstream.test/ || rc=$?
 result "old_tunnel_port=$rc"
-rc=0; curl -s -o /dev/null --max-time 5 -p -x http://$PROXY_ADDR:8888 -H "$H" http://upstream.test/ || rc=$?
+rc=0; both -p -x http://$PROXY_ADDR:8888 http://upstream.test/ || rc=$?
 result "old_tunnel_port_connect=$rc"
-rc=0; curl -s -o /dev/null --max-time 5 --connect-to upstream.test:80:$PROXY_ADDR:80 -H "$H" http://upstream.test/ || rc=$?
+rc=0; both --connect-to upstream.test:80:$PROXY_ADDR:80 http://upstream.test/ || rc=$?
 result "plain_port_80=$rc"
 # Plain HTTP spoken to the TLS port itself.
-curl -s -o /dev/null --max-time 5 --connect-to upstream.test:80:$PROXY_ADDR:443 -H "$H" http://upstream.test/ || true
+both --connect-to upstream.test:80:$PROXY_ADDR:443 http://upstream.test/ || true
 # A request that arrives over TLS but names an http:// target, or port 80.
-via_proxy --request-target 'http://upstream.test/' -H "$H" >/dev/null || true
-curl -s -o /dev/null --max-time 5 --resolve upstream.test:443:$PROXY_ADDR -H "$H" -H "Host: upstream.test:80" https://upstream.test/ || true
+both --resolve upstream.test:443:$PROXY_ADDR --request-target 'http://upstream.test/' https://upstream.test/ || true
+both --resolve upstream.test:443:$PROXY_ADDR -H "Host: upstream.test:80" https://upstream.test/ || true
 # The plain-HTTP listener exists, but only on loopback inside the proxy.
 rc=0; curl -s -o /dev/null --max-time 5 http://$PROXY_ADDR:18080/ || rc=$?
 result "plain_listener_off_loopback=$rc"
 # Control: the plain upstream does record what reaches it.
-curl -s -o /dev/null --max-time 5 -H "Authorization: control-probe" http://127.0.0.1:80/ || true
-result "plain_upstream_records=$(grep -c control-probe /tmp/plain_upstream.log 2>/dev/null || true)"
+curl -s -o /dev/null --max-time 5 -H "Authorization: control-auth" -H "x-api-key: control-key" http://127.0.0.1:80/ || true
+result "plain_upstream_records=$(grep -c 'control-auth control-key' /tmp/plain_upstream.log 2>/dev/null || true)"
 result "plain_upstream_saw_a_real_key=$(grep -c REAL /tmp/plain_upstream.log 2>/dev/null || true)"
 
 # What `incs proxy rm a` does on the proxy side.
@@ -242,7 +245,7 @@ assert_eq "nothing listens on the old tunnel port"          "7" "$(r old_tunnel_
 assert_eq "…for CONNECT either"                             "7" "$(r old_tunnel_port_connect)"
 assert_eq "nothing listens for plain HTTP on the proxy's address" "7" "$(r plain_port_80)"
 assert_eq "the plain-HTTP listener is not reachable off loopback" "7" "$(r plain_listener_off_loopback)"
-assert_eq "the plain-HTTP upstream records what reaches it (control)" "1" "$(r plain_upstream_records)"
+assert_eq "the plain-HTTP upstream records both headers that reach it (control)" "1" "$(r plain_upstream_records)"
 assert_eq "no real key ever reached a plain-HTTP upstream"  "0" "$(r plain_upstream_saw_a_real_key)"
 assert_eq "detaching a removes its entries and stored keys" "0" "$(r after_rm_a_files)"
 assert_eq "after detaching a, its other placeholder stops working too" "AUTH=|KEY=$PH_K" "$(r after_rm_a_api)"

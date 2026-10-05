@@ -688,9 +688,40 @@ assert_contains "older proxy: add opens the TLS listener" \
   'https_listen: "0.0.0.0:443"' "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
 assert_contains "older proxy: add really publishes the entry" \
   "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+# The attach fails after the proxy is brought up to date: the old port must
+# already be closed in the config the proxy runs, not just in base.yaml.
+fresh_state
+make_proxy work
+make_agent proj
+old_tunnel_base() {
+  printf 'proxy:\n  tunnel_listen: "0.0.0.0:8888"\ntransforms:\n  - name: secrets\n    config:\n      secrets:\n'
+}
+old_tunnel_base | incus file push - work/etc/iron-proxy/base.yaml
+old_tunnel_base | incus file push - work/etc/iron-proxy/proxy.yaml
+out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild commit' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+assert_eq "older proxy, attach fails partway: exits non-zero" "1" "$rc"
+assert_not_contains "older proxy, attach fails partway: the running config has no tunnel port" \
+  "tunnel_listen" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild$' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+assert_eq "older proxy already migrated: no extra restart is needed" "0" "$rc"
+
+# The proxy cannot be restarted on its new config: say the port may be open.
+fresh_state
+make_proxy work
+make_agent proj
+old_tunnel_base | incus file push - work/etc/iron-proxy/base.yaml
+out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild$' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+assert_eq "older proxy that cannot restart: attach fails" "1" "$rc"
+assert_contains "older proxy that cannot restart: says the old port may still be open" \
+  "old port may still be open" "$out"
+
+fresh_state
+make_proxy work
+make_agent proj
+incs proxy add proj work >/dev/null 2>&1
+ph="$(cfg proj environment.GH_TOKEN)"
 old_helper | incus file push - work/usr/local/bin/iron-rebuild
-printf 'proxy:\n  tunnel_listen: "0.0.0.0:8888"\ntransforms:\n  - name: secrets\n    config:\n      secrets:\n' \
-  | incus file push - work/etc/iron-proxy/base.yaml
+old_tunnel_base | incus file push - work/etc/iron-proxy/base.yaml
 out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "older proxy: rm succeeds" "0" "$rc"
 # Only an attach migrates the proxy; a detach must not cut off the others.
@@ -1177,6 +1208,28 @@ assert_contains "template: the running container keeps its other services" \
   "export OPENAI_API_KEY=$ph_openai" "$live_zshenv"
 assert_contains "template: …and their /etc/hosts lines" \
   "api.openai.com # incs-proxy:openai-api-key" "$(hosts_of base)"
+
+# /etc/hosts cannot be read: its proxy lines might end up in the image.
+fresh_state
+make_proxy work
+make_agent base
+incs proxy add base work >/dev/null 2>&1
+ph="$(cfg base environment.GH_TOKEN)"
+rm -f "$(fs base /etc/hosts)"
+out="$( (
+  error() { echo "[ERROR] $1" >&2; exit 1; }
+  log()  { :; }; warn() { :; }; wait_for_container() { :; }; wait_for_network() { :; }
+  set -euo pipefail
+  CONTAINER_NAME=base HOST_USER="$USER_NAME" MOUNT_PATH="/workspace" READY_TIMEOUT=1
+  eval "$save_template_src"
+  save_template
+) 2>&1)" && rc=0 || rc=$?
+assert_eq "template, /etc/hosts unreadable: save fails" "1" "$rc"
+assert_contains "template, /etc/hosts unreadable: says why" "No template saved" "$out"
+assert_eq "template, /etc/hosts unreadable: no image is published" \
+  "none" "$([[ -d "$FAKE_INCUS_STATE/images/incus-init/base" ]] && echo published || echo none)"
+assert_contains "template, /etc/hosts unreadable: the container keeps its placeholder" \
+  "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"

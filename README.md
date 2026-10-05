@@ -479,7 +479,7 @@ The proxy accepts connections from containers on one port, and that port speaks 
 **Troubleshooting:**
 
 - **A tool fails with a certificate error on a proxied host.** It is using its own trust store. Attach points Node, Python `requests` and OpenSSL-based tools at the system bundle through `NODE_EXTRA_CA_CERTS`, `REQUESTS_CA_BUNDLE` and `SSL_CERT_FILE` in `~/.zshenv`. A tool that ignores those needs its own setting pointed at `/etc/ssl/certs/ca-certificates.crt`.
-- **The API returns 401.** The proxy could not read the key. Check the reference and the service account's access, then look at the proxy's log, which records each swap and each unavailable secret:
+- **The API returns 401.** Either the proxy could not read the key, or it swapped in a key the API does not accept. The proxy's log records each swap and each unavailable secret. If it shows the secret was unavailable, check the reference and the service account's access. If it shows a swap, check that the stored key is valid and has the access you need:
 
   ```bash
   incus exec work -- journalctl -u iron-proxy -n 50

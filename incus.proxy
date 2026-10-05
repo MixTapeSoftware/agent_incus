@@ -266,7 +266,8 @@ proxy_sync_rebuild_script() {
 
 # proxy_sync_base_config <proxy> <container-being-attached>
 # An older proxy's base config still opens the tunnel port, which accepts
-# plain HTTP. Attaching replaces it; the next rebuild closes that port.
+# plain HTTP. Attaching replaces it and rebuilds at once, so the port is
+# closed before any later step that could fail. Needs the current iron-rebuild.
 # Containers attached the old way reach the proxy only through that port, so
 # say which ones now need re-attaching.
 proxy_sync_base_config() {
@@ -274,6 +275,9 @@ proxy_sync_base_config() {
   want="$(proxy_base_config)"
   [[ "$(incus file pull -q "$proxy$PROXY_DIR/base.yaml" - 2>/dev/null)" == "$want" ]] && return 0
   printf '%s\n' "$want" | proxy_push "$proxy" "$PROXY_DIR/base.yaml" 0644
+  incus exec "$proxy" -- iron-rebuild </dev/null || \
+    error "Could not restart proxy '$proxy' on its new config. Its old port may still be open.
+       Fix the proxy, then run: incus exec $proxy -- iron-rebuild"
   for c in $(proxy_attached_containers "$proxy"); do
     [[ "$c" == "$current" ]] && continue
     if [[ -z "$(incus config get "$c" user.incs.proxy-services 2>/dev/null)" ]]; then
