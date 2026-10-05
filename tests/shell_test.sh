@@ -33,6 +33,10 @@ chmod +x "$SANDBOX/bin/incus"
 export PATH="$SANDBOX/bin:$PATH"
 unset CLAUDE_CONTAINER
 
+# Must differ from the host GID, which incus.shell always passes.
+SUDO_GID=4242
+[[ "$(id -g)" == "$SUDO_GID" ]] && SUDO_GID=4243
+
 fresh_box() {
   export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
   mkdir -p "$FAKE_INCUS_STATE"
@@ -40,7 +44,7 @@ fresh_box() {
 }
 with_sudo_group() {
   mkdir -p "$FAKE_INCUS_STATE/instances/box/root/etc"
-  echo "_sudo:x:999:" > "$FAKE_INCUS_STATE/instances/box/root/etc/group"
+  echo "_sudo:x:$SUDO_GID:" > "$FAKE_INCUS_STATE/instances/box/root/etc/group"
 }
 shell() { bash "$REPO_ROOT/incus.shell" "$@"; }
 last_call() { tail -1 "$FAKE_INCUS_STATE/calls.log"; }
@@ -49,16 +53,16 @@ echo "incus.shell"
 
 fresh_box
 shell box >/dev/null 2>&1
-assert_not_contains "plain shell: no _sudo group" "--group 999" "$(last_call)"
+assert_not_contains "plain shell: no _sudo group" "--group $SUDO_GID " "$(last_call)"
 assert_contains     "plain shell: interactive login shell" "-- zsh -li" "$(last_call)"
 
 fresh_box; with_sudo_group
 shell --with-sudo box >/dev/null 2>&1
-assert_contains "--with-sudo before the name adds the _sudo group" "--group 999" "$(last_call)"
+assert_contains "--with-sudo before the name adds the _sudo group" "--group $SUDO_GID " "$(last_call)"
 
 fresh_box; with_sudo_group
 shell box echo --with-sudo >/dev/null 2>&1
-assert_not_contains "--with-sudo after the name is not a flag" "--group 999" "$(last_call)"
+assert_not_contains "--with-sudo after the name is not a flag" "--group $SUDO_GID " "$(last_call)"
 assert_contains     "…it is passed to the command instead" "zsh -lic echo --with-sudo" "$(last_call)"
 
 fresh_box
