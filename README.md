@@ -4,7 +4,7 @@ A set of shell scripts that automate the creation of [Incus](https://linuxcontai
 
 Why shell scripts? They introduce no dependencies, are ergonomic enough for simple systems administration tasks, and transparently convey their purpose.
 
-In order to head off a variety of attack vectors nothing is mounted to the host. All work happens inside the container via provided tools such as nvim and GitHub integration. See [No Host Mounts](#no-host-mounts).
+In order to head off a variety of attack vectors, nothing on the host is mounted into the container. All work happens inside the container via provided tools such as nvim and GitHub integration. See [No Host Mounts](#no-host-mounts).
 
 ## Contents
 
