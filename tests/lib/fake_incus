@@ -14,6 +14,7 @@
 #   instances/<name>/root/...      the instance filesystem
 #   instances/<name>/root/etc/group   answers `getent group <name>`
 #   instances/<name>/root/etc/id-G    answers `id -G <user>` (absent: exit 1)
+#   instances/<name>/root/usr/bin/<tool>  answers `sh -c 'command -v <tool>'`
 #   instances/<name>/profiles      profiles passed with -p at init/launch, one per line
 #   images/<alias>/root/...        filesystem captured by `publish`
 #   profiles/<name>/<key>          one file per profile config key
@@ -329,6 +330,18 @@ case "$cmd" in
         ;;
       "systemctl is-active"*) echo active ;;
       # File checks and archive moves, against the fake filesystem.
+      "sh -c test -"[df]" "*" && echo yes || echo no")
+        set -- ${command_line#sh -c test }
+        if [[ ( "$1" == -d && -d "$root$2" ) || ( "$1" == -f && -f "$root$2" ) ]]; then echo yes; else echo no; fi
+        ;;
+      # A tool is installed when the fixture put it on a bin path.
+      "sh -c command -v "*)
+        tool="${command_line#sh -c command -v }"
+        for d in /usr/local/bin /usr/bin /bin; do
+          [[ -f "$root$d/$tool" ]] && { echo "$d/$tool"; exit 0; }
+        done
+        exit 1
+        ;;
       "test -d "*) [[ -d "$root${command_line#test -d }" ]] ;;
       "test -f "*) [[ -f "$root${command_line#test -f }" ]] ;;
       "rm -rf /"*) rm -rf "$root${command_line#rm -rf }" ;;

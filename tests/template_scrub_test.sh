@@ -40,6 +40,8 @@ extract_fn() {
 }
 log()  { echo "[+] $1"; }
 warn() { echo "[!] $1"; }
+error() { echo "[ERROR] $1" >&2; exit 1; }
+READY_TIMEOUT=2
 eval "$(extract_fn stash_tailscale_state)"
 eval "$(extract_fn restore_tailscale_state)"
 declare -F stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in incus.init"; exit 1; }
@@ -54,6 +56,10 @@ backups() { ls "$XDG_RUNTIME_DIR" | grep -c '^incs-tailscale\.' || true; }
 # The functions set TS_STATE_BACKUP, so they run in this shell, not in $(...).
 stash()   { stash_tailscale_state   > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?; OUT="$(cat "$SANDBOX/out")"; }
 restore() { restore_tailscale_state > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?; OUT="$(cat "$SANDBOX/out")"; }
+# For runs that end in error(), which exits.
+stash_sub() { ( stash_tailscale_state ) > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?; OUT="$(cat "$SANDBOX/out")"; }
+# GNU stat on Linux, BSD stat on macOS.
+mode() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 
 fresh_box() {
   export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
@@ -79,7 +85,7 @@ assert_eq "stash: the state directory is gone from the container" "gone" "$(pres
 assert_eq "stash: the rest of the filesystem is untouched" "present" "$(present "$(root)/etc/hostname")"
 assert_contains "stash: tailscaled was stopped first" "box :: systemctl stop tailscaled" "$(execs)"
 assert_eq "stash: one backup file" "1" "$(backups)"
-assert_eq "stash: the backup is private" "600" "$(stat -c %a "$TS_STATE_BACKUP")"
+assert_eq "stash: the backup is private" "600" "$(mode "$TS_STATE_BACKUP")"
 assert_contains "stash: the backup holds the node key" "tailscale/tailscaled.state" "$(tar -tf "$TS_STATE_BACKUP")"
 assert_contains "stash: …and the serve certificates" "tailscale/certs/box.ts.net.key" "$(tar -tf "$TS_STATE_BACKUP")"
 assert_contains "stash: says why" "node identity" "$OUT"
@@ -125,6 +131,49 @@ assert_eq "restore cannot extract: the backup is kept" "present" "$(present "$ba
 assert_eq "restore cannot extract: …and still remembered" "$backup" "$TS_STATE_BACKUP"
 assert_not_contains "restore cannot extract: tailscaled is not started on an empty state" \
   "systemctl start tailscaled" "$(execs)"
+
+# ===========================================================================
+echo "the check for Tailscale state fails"
+# ===========================================================================
+fresh_box
+FAKE_INCUS_FAIL_EXEC='test -d /var/lib/tailscale' stash_sub
+assert_eq "check fails: stops the build" "1" "$RC"
+assert_contains "check fails: says why" "No template saved" "$OUT"
+assert_eq "check fails: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "check fails: no backup" "0" "$(backups)"
+
+# ===========================================================================
+echo "publish failed with the container stopped"
+# ===========================================================================
+fresh_box
+stash
+incus stop box
+restore
+assert_eq "stopped: restore succeeds" "0" "$RC"
+assert_contains "stopped: the container is started first" "start box" "$(cat "$FAKE_INCUS_STATE/calls.log")"
+assert_eq "stopped: the node key is back" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "stopped: the backup file is deleted" "0" "$(backups)"
+
+fresh_box
+stash
+backup="$TS_STATE_BACKUP"
+incus stop box
+FAKE_INCUS_FAIL_CALL='^start box' restore
+assert_eq "cannot start: restore fails" "1" "$RC"
+assert_eq "cannot start: the backup is kept" "present" "$(present "$backup")"
+assert_eq "cannot start: …and still remembered" "$backup" "$TS_STATE_BACKUP"
+
+# ===========================================================================
+echo "tailscaled does not start after the restore"
+# ===========================================================================
+fresh_box
+stash
+FAKE_INCUS_FAIL_EXEC='^systemctl start tailscaled' restore
+assert_eq "no tailscaled: the restore itself succeeds" "0" "$RC"
+assert_eq "no tailscaled: the node key is back" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "no tailscaled: the host copy of the key is gone" "0" "$(backups)"
+assert_contains "no tailscaled: says how to start it" "systemctl start tailscaled" "$OUT"
+assert_not_contains "no tailscaled: does not point at a deleted backup" "incs-tailscale." "$OUT"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

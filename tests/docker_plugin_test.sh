@@ -67,7 +67,7 @@ MASK_UNIT=/etc/systemd/system/mask-apparmor.service
 echo "a fresh container"
 # ===========================================================================
 fresh_box
-FAKE_INCUS_FAIL_EXEC='command -v docker' install   # docker is not there yet
+install   # no docker binary in the fixture
 assert_eq "install: succeeds" "0" "$RC"
 assert_eq "install: nesting on"            "true" "$(cfg security.nesting)"
 assert_eq "install: mknod intercept on"    "true" "$(cfg security.syscalls.intercept.mknod)"
@@ -84,11 +84,13 @@ assert_not_contains "install: no warning on a current Incus" "[!]" "$OUT"
 
 # Docker already present (a template launch): same config, no package install.
 fresh_box
+mkdir -p "$(root)/usr/bin"; touch "$(root)/usr/bin/docker"
 install
 assert_eq "relaunch: succeeds" "0" "$RC"
 assert_eq "relaunch: nesting on" "true" "$(cfg security.nesting)"
 assert_eq "relaunch: not unconfined" "" "$(cfg raw.lxc)"
 assert_contains "relaunch: skips the package install" "already installed" "$OUT"
+assert_eq "relaunch: no packages are installed" "" "$(cat "$FAKE_INCUS_STATE"/exec-stdin/* 2>/dev/null)"
 assert_contains "relaunch: the user still joins the docker group" "usermod -aG docker dev" "$(execs)"
 
 # ===========================================================================
@@ -123,6 +125,14 @@ assert_contains "old mask: says what it did" "AppArmor mask" "$OUT"
 removed_at="$(calls | grep -n "^file delete box$MASK_UNIT" | cut -d: -f1 | head -n 1)"
 restart_at="$(calls | grep -n "^restart box" | cut -d: -f1 | head -n 1)"
 assert_eq "old mask: removed before the restart" "yes" "$([[ -n "$removed_at" && -n "$restart_at" && "$removed_at" -lt "$restart_at" ]] && echo yes || echo no)"
+
+# The check itself fails: do not restart with a mask that may be there.
+fresh_box
+FAKE_INCUS_FAIL_EXEC='mask-apparmor' install
+assert_eq "mask check fails: the plugin fails" "1" "$RC"
+assert_contains "mask check fails: says why" "AppArmor mask" "$OUT"
+assert_not_contains "mask check fails: no restart" "restart box" "$(calls)"
+assert_not_contains "mask check fails: no package install" "apt-get" "$(cat "$FAKE_INCUS_STATE"/exec-stdin/* 2>/dev/null)"
 
 # ===========================================================================
 echo "a VM"

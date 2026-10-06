@@ -1102,6 +1102,10 @@ assert_eq "incs -d, Incus cannot check the proxy: container is still deleted" ""
 assert_contains "incs -d, Incus cannot check the proxy: warns the placeholder may still work" "may still work" "$out"
 assert_contains "incs -d, Incus cannot check the proxy: names the revoke command" "iron-rebuild drop flaky--github" "$out"
 assert_not_contains "incs -d, Incus cannot check the proxy: does not claim removal" "Removed flaky from proxy" "$out"
+assert_eq "incs -d, Incus cannot check the proxy: the entry is kept for the manual revoke" \
+  "present" "$([[ -f "$(fs work /etc/iron-proxy/entries/flaky--github.yaml)" ]] && echo present || echo gone)"
+assert_eq "incs -d, Incus cannot check the proxy: …and its token" \
+  "github_pat_FLAKY" "$(cat "$(fs work /etc/iron-proxy/tokens/flaky--github)" 2>/dev/null; echo)"
 
 # ===========================================================================
 echo "concurrent changes to one proxy"

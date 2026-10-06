@@ -165,8 +165,11 @@ guard_git_dir() {
       < <(find "$git/modules" -type f -name config | sort)
   fi
   for gitdir in "${gitdirs[@]}"; do
-    # Create it first, or the container could.
+    # Create them first, or the container could. config.worktree is read
+    # only when extensions.worktreeConfig is on, but that can be switched on
+    # from the host at any time.
     mkdir -p "$gitdir/hooks"
+    [[ -e "$gitdir/config.worktree" ]] || : > "$gitdir/config.worktree"
     for rel in config hooks config.worktree; do
       [[ -e "$gitdir/$rel" ]] || continue
       n=$((n + 1))
@@ -183,7 +186,7 @@ guard_git_dir() {
       fi
     done
   done
-  log "Guarded .git: config and hooks are read-only in the container ($n mounts; --git-rw to allow writes)"
+  log "Guarded .git: config, config.worktree and hooks are read-only in the container ($n mounts; --git-rw to allow writes)"
   if [[ "$unshifted" == "1" ]]; then
     warn "The read-only .git mounts could not be UID-shifted; they appear owned by nobody in the container"
   fi
@@ -213,7 +216,8 @@ cleanup_on_exit() {
     # A template build that failed after moving the Tailscale state out.
     restore_tailscale_state || \
       warn "Tailscale state for '$CONTAINER_NAME' is in ${TS_STATE_BACKUP:-} (it holds the node key: keep it private).
-  Restore it: incus exec $CONTAINER_NAME -- tar -C /var/lib -xf - < ${TS_STATE_BACKUP:-}"
+  Restore it (start the container first if it is stopped: incus start $CONTAINER_NAME):
+    incus exec $CONTAINER_NAME -- tar -C /var/lib -xf - < ${TS_STATE_BACKUP:-}"
     if [[ $rc -ne 0 ]]; then
       echo ""
       warn "Script failed. Container '$CONTAINER_NAME' was partially created."
@@ -574,7 +578,14 @@ _run_plugin_installs() {
 # would come up as this machine with its tailnet access. So the directory is
 # moved out to a private file while the image is published, then put back.
 stash_tailscale_state() {
-  incus exec "$CONTAINER_NAME" -- test -d /var/lib/tailscale || return 0
+  # An exec error must not read as "no state": that would publish the key.
+  local state
+  state="$(incus exec "$CONTAINER_NAME" -- sh -c 'test -d /var/lib/tailscale && echo yes || echo no' </dev/null)" || state=""
+  case "$state" in
+    no)  return 0 ;;
+    yes) ;;
+    *)   error "Could not check $CONTAINER_NAME for Tailscale state. No template saved: it might carry the node key." ;;
+  esac
   log "Removing the Tailscale node identity from the image..."
   incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null || true
   TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")"
@@ -585,12 +596,25 @@ stash_tailscale_state() {
 # Idempotent: nothing stashed, or already restored, is a success.
 restore_tailscale_state() {
   [[ -n "${TS_STATE_BACKUP:-}" && -f "$TS_STATE_BACKUP" ]] || return 0
+  # From the exit trap, publish or start may have failed with the container
+  # stopped. Start it and wait, without error(): that would exit the trap.
+  local status elapsed=0
+  status="$(incus list "^${CONTAINER_NAME}$" --format csv --columns s 2>/dev/null)"
+  if [[ "$status" != "RUNNING" ]]; then
+    incus start "$CONTAINER_NAME" >/dev/null 2>&1 || return 1
+  fi
+  until incus exec "$CONTAINER_NAME" -- true </dev/null >/dev/null 2>&1; do
+    (( elapsed++ < ${READY_TIMEOUT:-30} )) || return 1
+    sleep 1
+  done
   # tailscaled came back up at boot with a fresh, logged-out state; replace it.
   incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null || true
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -xf - < "$TS_STATE_BACKUP" || return 1
+  # The state is back in place, so the host copy of the node key can go.
   rm -f "$TS_STATE_BACKUP"
   TS_STATE_BACKUP=""
-  incus exec "$CONTAINER_NAME" -- systemctl start tailscaled
+  incus exec "$CONTAINER_NAME" -- systemctl start tailscaled </dev/null || \
+    warn "Tailscale state is restored in $CONTAINER_NAME, but tailscaled did not start. Start it: incus exec $CONTAINER_NAME -- systemctl start tailscaled"
 }
 
 save_template() {
@@ -887,7 +911,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (shift=true)" || echo "no" )"
     if [[ -d "$WORKSPACE_PATH/.git" ]]; then
-      echo ".git guard:  $( [[ "$GIT_GUARD" == "1" ]] && echo "config and hooks read-only" || echo "off (--git-rw)" )"
+      echo ".git guard:  $( [[ "$GIT_GUARD" == "1" ]] && echo "config, config.worktree and hooks read-only" || echo "off (--git-rw)" )"
     fi
   fi
   echo ""

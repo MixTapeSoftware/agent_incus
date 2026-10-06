@@ -133,7 +133,7 @@ Options:
 2. Creates an empty credential proxy named `<container>-proxy` (skip with `--no-proxy`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
-5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+), with `.git/config` and `.git/hooks` read-only on top (see [Git on a shared workspace](#git-on-a-shared-workspace))
+5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+), with `.git/config`, `.git/config.worktree` and `.git/hooks` read-only on top (see [Git on a shared workspace](#git-on-a-shared-workspace))
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional plugins (see below)
 
@@ -259,7 +259,7 @@ The host, agent, and dev containers all read and write the same `/workspace` dir
 
 The mounted workspace is the one place where the container and the host touch, and git is the tool most likely to carry something across it. Git runs the commands named in `.git/config` (`core.fsmonitor`, `core.hooksPath`, `core.pager`, `diff.external`, …) and the scripts in `.git/hooks` during everyday `git status` and `git commit`, without asking. Both live inside the mounted tree, written as your user, so git's ownership check does not notice who wrote them. An editor with git integration runs `git status` every few seconds.
 
-So `incs -i` mounts `.git/config` and `.git/hooks` read-only on top of the workspace, and the same files for every submodule under `.git/modules`. Inside the container, `git commit`, `branch`, `checkout`, `fetch`, `pull` and `push` work as before. Anything that writes the repository's own config does not: `git remote add`, `git config` without `--global`, `git push -u`, `git lfs install`. Do those from the host. The container's git is set to `push.default=current` and `branch.autoSetupMerge=false`, so pushing and checking out branches never needs to write config; `git pull` wants the remote and branch spelled out (`git pull origin main`).
+So `incs -i` mounts `.git/config`, `.git/config.worktree` and `.git/hooks` read-only on top of the workspace, and the same files for every submodule under `.git/modules`. If `config.worktree` or `hooks` doesn't exist yet, it is created empty on the host first, so the container can't create one. Inside the container, `git commit`, `branch`, `checkout`, `fetch`, `pull` and `push` work as before. Anything that writes the repository's own config does not: `git remote add`, `git config` without `--global`, `git push -u`, `git lfs install`. Do those from the host. The container's git is set to `push.default=current` and `branch.autoSetupMerge=false`, so pushing and checking out branches never needs to write config; `git pull` wants the remote and branch spelled out (`git pull origin main`).
 
 Pass `--git-rw` to turn this off for a container you trust.
 
@@ -270,7 +270,7 @@ What it does not cover:
 
 ### Templates
 
-Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and whichever plugins you picked. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container with no secrets baked in, stored in the local Incus image store.
+Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and whichever plugins you picked. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container, stored in the local Incus image store.
 
 **Build once:**
 
@@ -278,7 +278,13 @@ Provisioning a container from scratch installs packages, build tools, mise, Oh M
 incs -i --template my-base
 ```
 
-This provisions the container (without mounting host files), scrubs tokens, credential-proxy settings and the Tailscale node identity, and saves it locally as `incus-init/my-base`. The original container keeps running with its tokens and tailnet membership intact.
+This provisions the container (without mounting host files) and saves it locally as `incus-init/my-base`. Before publishing it removes:
+
+- `GH_TOKEN` and `OP_SERVICE_ACCOUNT_TOKEN` exports from `~/.zshenv`
+- credential-proxy lines in `~/.zshenv` and `/etc/hosts`
+- the Tailscale node identity and serve certificates (`/var/lib/tailscale`)
+
+Anything else stays in the image, including logins made during the build (for example Claude Code's credentials under `~/.claude`, `gh auth login`, or cloud CLI configs). Log out of those, or remove their files, before saving a template. The original container keeps running with its tokens and tailnet membership intact.
 
 **Reuse instantly:**
 

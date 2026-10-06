@@ -63,7 +63,7 @@ echo "a plain repository"
 fresh_box
 W="$SANDBOX/repo"; new_repo "$W"
 out="$(guard_git_dir box "$W" /workspace 2>&1)"
-assert_eq "config and hooks are mounted, nothing else" "2" "$(mounts)"
+assert_eq "config, hooks and config.worktree are mounted, nothing else" "3" "$(mounts)"
 assert_eq "config: source is the host file"       "$W/.git/config"      "$(dev git-ro-1 source)"
 assert_eq "config: mounted at the container path" "/workspace/.git/config" "$(dev git-ro-1 path)"
 assert_eq "config: read-only"                     "true"                "$(dev git-ro-1 readonly)"
@@ -72,7 +72,11 @@ assert_eq "config: a disk device"                 "disk"                "$(dev g
 assert_eq "hooks: source is the host directory"   "$W/.git/hooks"       "$(dev git-ro-2 source)"
 assert_eq "hooks: mounted at the container path"  "/workspace/.git/hooks" "$(dev git-ro-2 path)"
 assert_eq "hooks: read-only"                      "true"                "$(dev git-ro-2 readonly)"
-assert_contains "says what it did" "read-only in the container (2 mounts" "$out"
+assert_eq "config.worktree: created empty on the host, so the container cannot plant one" \
+  "empty" "$([[ -f "$W/.git/config.worktree" && ! -s "$W/.git/config.worktree" ]] && echo empty || echo no)"
+assert_eq "config.worktree: mounted read-only at the container path" \
+  "/workspace/.git/config.worktree true" "$(dev git-ro-3 path) $(dev git-ro-3 readonly)"
+assert_contains "says what it did" "read-only in the container (3 mounts" "$out"
 assert_contains "names the way out" "--git-rw" "$out"
 
 # A different mount point.
@@ -93,10 +97,11 @@ assert_eq "…and mounted read-only, so the container cannot create it" "/worksp
 echo "a worktree config"
 # ===========================================================================
 fresh_box
-new_repo "$W"; touch "$W/.git/config.worktree"
+new_repo "$W"; echo "[core]" > "$W/.git/config.worktree"
 guard_git_dir box "$W" /workspace >/dev/null
 assert_eq "config.worktree is mounted too" "3" "$(mounts)"
 assert_eq "…at its path" "/workspace/.git/config.worktree" "$(dev git-ro-3 path)"
+assert_eq "…and an existing one is left as it was" "[core]" "$(cat "$W/.git/config.worktree")"
 
 # ===========================================================================
 echo "submodules"
@@ -108,14 +113,17 @@ touch "$W/.git/modules/zeta/config" "$W/.git/modules/lib/alpha/config"
 # A stray file named config somewhere that is not a gitdir must not matter
 # beyond one harmless extra mount; objects never contain one in practice.
 guard_git_dir box "$W" /workspace >/dev/null
-assert_eq "each submodule gets config and hooks" "6" "$(mounts)"
+assert_eq "each submodule gets config, hooks and config.worktree" "9" "$(mounts)"
 assert_eq "paths, in a stable order" \
 "/workspace/.git/config
 /workspace/.git/hooks
+/workspace/.git/config.worktree
 /workspace/.git/modules/lib/alpha/config
 /workspace/.git/modules/lib/alpha/hooks
+/workspace/.git/modules/lib/alpha/config.worktree
 /workspace/.git/modules/zeta/config
-/workspace/.git/modules/zeta/hooks" "$(paths)"
+/workspace/.git/modules/zeta/hooks
+/workspace/.git/modules/zeta/config.worktree" "$(paths)"
 assert_eq "a submodule without a hooks directory gets one" "yes" "$([[ -d "$W/.git/modules/zeta/hooks" ]] && echo yes || echo no)"
 
 # ===========================================================================
@@ -143,7 +151,7 @@ fresh_box
 new_repo "$W"
 out="$(FAKE_INCUS_FAIL_CALL='shift=true$' guard_git_dir box "$W" /workspace 2>&1)" && rc=0 || rc=$?
 assert_eq "falls back: succeeds" "0" "$rc"
-assert_eq "falls back: still mounted" "2" "$(mounts)"
+assert_eq "falls back: still mounted" "3" "$(mounts)"
 assert_eq "falls back: still read-only" "true" "$(dev git-ro-1 readonly)"
 assert_eq "falls back: unshifted" "" "$(dev git-ro-1 shift)"
 assert_contains "falls back: says so" "could not be UID-shifted" "$out"

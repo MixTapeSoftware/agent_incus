@@ -54,7 +54,7 @@ plugin_install() {
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.setxattr=true
   _docker_warn_old_incus
-  _docker_remove_apparmor_mask
+  _docker_remove_apparmor_mask || return 1
   # The syscall interception keys are only read at container start.
   incus restart "$CONTAINER_NAME"
   wait_for_container "$CONTAINER_NAME" "${READY_TIMEOUT:-30}"
@@ -92,7 +92,15 @@ _docker_warn_old_incus() {
 # that era still carry. Take it out before the restart, so dockerd comes up
 # with AppArmor and loads docker-default.
 _docker_remove_apparmor_mask() {
-  incus exec "$CONTAINER_NAME" -- test -f /etc/systemd/system/mask-apparmor.service || return 0
+  # An exec error must not read as "no mask": the restart would keep it.
+  local mask
+  mask="$(incus exec "$CONTAINER_NAME" -- sh -c 'test -f /etc/systemd/system/mask-apparmor.service && echo yes || echo no' </dev/null)" || mask=""
+  case "$mask" in
+    no)  return 0 ;;
+    yes) ;;
+    *)   warn "Could not check $CONTAINER_NAME for the AppArmor mask an older build left; not configuring Docker"
+         return 1 ;;
+  esac
   log "Removing the AppArmor mask an older build left in this image..."
   incus exec "$CONTAINER_NAME" -- systemctl disable mask-apparmor.service >/dev/null 2>&1 || true
   incus exec "$CONTAINER_NAME" -- umount /sys/module/apparmor/parameters/enabled >/dev/null 2>&1 || true
