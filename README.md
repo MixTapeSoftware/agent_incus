@@ -91,6 +91,8 @@ incs cron remove                       # Remove the update cron
 
 The individual scripts and aliases (`inci`, `incn`) still work directly.
 
+`incs status` marks running instances `●`, frozen `◐`, and stopped `○`. CPU is sampled over one second and scaled like `docker stats`: 100% is one full core, so a busy 4-vCPU instance can read 400%. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
+
 ## incus.init Options
 
 ```
