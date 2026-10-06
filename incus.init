@@ -126,20 +126,73 @@ wait_for_network() {
 }
 
 # ---------------------------------------------------------------------------
-# Mount workspace with user mapping (requires kernel 5.12+ idmapped mounts)
+# Workspace ownership — your host UID and GID are mapped to the same IDs
+# inside the container (raw.idmap), so a plain bind mount of the workspace is
+# yours on both sides. Only those two IDs are mapped: root inside the
+# container stays an unprivileged ID on the host, and what it writes into the
+# workspace is owned by that ID, not by host root. A shift=true mount would
+# translate the whole range, root included, and root inside the container
+# could then leave root-owned, setuid files in the checkout.
 # ---------------------------------------------------------------------------
+
+# workspace_idmap <uid> <gid> — the raw.idmap value for this user.
+workspace_idmap() {
+  local uid="$1" gid="$2"
+  if [[ "$uid" == "$gid" ]]; then
+    echo "both $uid $uid"
+  else
+    printf 'uid %s %s\ngid %s %s' "$uid" "$uid" "$gid" "$gid"
+  fi
+}
+
+# subid_allows <file> <id> — whether root's entries in an /etc/subuid-style
+# file cover <id>. Incus may only map host IDs that root has been granted.
+subid_allows() {
+  local file="$1" id="$2" name start count
+  [[ -r "$file" ]] || return 1
+  while IFS=: read -r name start count; do
+    [[ "$name" == "root" || "$name" == "0" ]] || continue
+    [[ "$start" =~ ^[0-9]+$ && "$count" =~ ^[0-9]+$ ]] || continue
+    (( id >= start && id < start + count )) && return 0
+  done < "$file"
+  return 1
+}
+
+# subids_missing <uid> <gid> [<etc-dir>] — names the local subuid/subgid
+# file(s) that do not grant root those IDs. Empty when they do, when the
+# files do not exist (Incus then uses its default range and needs no entry),
+# or when they cannot be checked from here (macOS: they live in the Colima VM,
+# so the launch is the first check).
+subids_missing() {
+  local uid="$1" gid="$2" etc="${3:-/etc}" missing=""
+  [[ "$(uname)" == "Linux" ]] || return 0
+  [[ -e "$etc/subuid" || -e "$etc/subgid" ]] || return 0
+  subid_allows "$etc/subuid" "$uid" || missing="$etc/subuid"
+  subid_allows "$etc/subgid" "$gid" || missing="${missing:+$missing and }$etc/subgid"
+  echo "$missing"
+}
+
+# How to grant root the IDs, for the error that says they are missing.
+subid_grant_hint() {
+  local uid="$1" gid="$2"
+  if [[ "$(uname)" == "Darwin" ]]; then
+    echo "inside the Colima VM (colima ssh): add 'root:$uid:1' to /etc/subuid and 'root:$gid:1' to /etc/subgid, then restart the incus service"
+  else
+    echo "sudo usermod --add-subuids $uid-$uid --add-subgids $gid-$gid root && sudo systemctl restart incus"
+  fi
+}
+
 mount_workspace() {
   local container="$1" source="$2" target="$3" err
 
   if err="$(incus config device add "$container" workspace disk \
-      source="$source" path="$target" shift=true raw.mount.options=nosuid 2>&1)"; then
-    log "Mounted with shift=true"
+      source="$source" path="$target" raw.mount.options=nosuid 2>&1)"; then
+    log "Mounted; your files are yours on both sides, root inside stays unprivileged on the host"
     return 0
   fi
 
   incus config device remove "$container" workspace 2>/dev/null || true
-  error "Workspace mount failed: $err
-  (shift=true needs Linux 5.12+ with idmapped mount support)"
+  error "Workspace mount failed: $err"
 }
 
 # ---------------------------------------------------------------------------
@@ -155,7 +208,7 @@ mount_workspace() {
 # ---------------------------------------------------------------------------
 guard_git_dir() {
   local container="$1" source="$2" target="$3"
-  local git="$source/.git" gitdir rel path n=0 unshifted=0
+  local git="$source/.git" gitdir rel path n=0
   # No repository, or a linked worktree: its .git is a file pointing at a
   # directory outside the mount, which the container cannot reach anyway.
   [[ -d "$git" ]] || return 0
@@ -171,22 +224,13 @@ guard_git_dir() {
       [[ -e "$gitdir/$rel" ]] || continue
       n=$((n + 1))
       path="$target${gitdir#"$source"}/$rel"
-      # Shifted like the workspace, so the files keep your ownership and mode
-      # inside. Unshifted they belong to nobody, and a 0600 config could not
-      # be read there, so that is only a fallback.
-      if ! incus config device add "$container" "git-ro-$n" disk \
-          source="$gitdir/$rel" path="$path" readonly=true shift=true >/dev/null 2>&1; then
-        incus config device remove "$container" "git-ro-$n" >/dev/null 2>&1 || true
-        incus config device add "$container" "git-ro-$n" disk \
-          source="$gitdir/$rel" path="$path" readonly=true >/dev/null
-        unshifted=1
-      fi
+      # Your UID is mapped straight through (raw.idmap), so like the
+      # workspace these need no shifting to keep your ownership and mode.
+      incus config device add "$container" "git-ro-$n" disk \
+        source="$gitdir/$rel" path="$path" readonly=true >/dev/null
     done
   done
   log "Guarded .git: config and hooks are read-only in the container ($n mounts; --git-rw to allow writes)"
-  if [[ "$unshifted" == "1" ]]; then
-    warn "The read-only .git mounts could not be UID-shifted; they appear owned by nobody in the container"
-  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -767,6 +811,21 @@ if [[ "$NO_MOUNT" == "0" && "$IS_VM" == "0" ]]; then
   fi
 fi
 
+# The IDs to map into the container when the workspace is mounted. Checked
+# against this host's subordinate IDs now, before anything is created; a
+# dry run only reports.
+WORKSPACE_IDMAP=""
+SUBIDS_MISSING=""
+if [[ "$MAP_USER" == "1" ]]; then
+  WORKSPACE_IDMAP="$(workspace_idmap "$HOST_UID" "$HOST_GID")"
+  SUBIDS_MISSING="$(subids_missing "$HOST_UID" "$HOST_GID")"
+  if [[ -n "$SUBIDS_MISSING" && "$DRY_RUN" != "1" ]]; then
+    error "Incus is not allowed to map your IDs into containers: root has no entry covering uid $HOST_UID / gid $HOST_GID in $SUBIDS_MISSING.
+  Grant them once, then run this again:
+    $(subid_grant_hint "$HOST_UID" "$HOST_GID")"
+  fi
+fi
+
 # ---------------------------------------------------------------------------
 # Resolve the workspace path and warn about .env files. Host files enter the
 # container either way — a live bind mount (mount mode) or a copy including .git
@@ -885,7 +944,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   elif [[ "$IS_VM" == "1" || "$NO_MOUNT" == "1" ]]; then
     echo "Write access: yes (copied in, owned by you)"
   else
-    echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (shift=true)" || echo "no" )"
+    echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (raw.idmap: ${WORKSPACE_IDMAP//$'\n'/, })" || echo "no" )"
+    if [[ -n "$SUBIDS_MISSING" ]]; then
+      echo "  !! root lacks uid $HOST_UID / gid $HOST_GID in $SUBIDS_MISSING; the launch would fail. Grant them:"
+      echo "     $(subid_grant_hint "$HOST_UID" "$HOST_GID")"
+    fi
     if [[ -d "$WORKSPACE_PATH/.git" ]]; then
       echo ".git guard:  $( [[ "$GIT_GUARD" == "1" ]] && echo "config and hooks read-only" || echo "off (--git-rw)" )"
     fi
@@ -954,7 +1017,21 @@ if [[ "$IS_VM" == "1" ]]; then
     -c limits.cpu="$VM_CPUS" \
     -d root,size="$VM_DISK"
 else
-  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE"
+  # raw.idmap is read at start, so the container is created, mapped, then
+  # started. Incus rejects a mapping root has not been granted; on macOS this
+  # is the first place that can be seen, since the files are in the Colima VM.
+  incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE"
+  if [[ -n "$WORKSPACE_IDMAP" ]]; then
+    incus config set "$CONTAINER_NAME" raw.idmap "$WORKSPACE_IDMAP" || \
+      error "Incus refused to map uid $HOST_UID / gid $HOST_GID into the container.
+  Root needs those IDs in /etc/subuid and /etc/subgid on the Incus host. Grant them once, then run this again:
+    $(subid_grant_hint "$HOST_UID" "$HOST_GID")"
+  fi
+  if ! incus start "$CONTAINER_NAME"; then
+    [[ -n "$WORKSPACE_IDMAP" ]] && \
+      warn "If the error above is about the idmap: $(subid_grant_hint "$HOST_UID" "$HOST_GID")"
+    error "Could not start $CONTAINER_NAME"
+  fi
 fi
 incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
 
@@ -1106,6 +1183,7 @@ else
 
   if [[ "$MAP_USER" == "1" ]]; then
     mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH"
+    IDMAP_METHOD="raw.idmap (uid $HOST_UID, gid $HOST_GID)"
   else
     incus config device add "$CONTAINER_NAME" workspace disk \
       source="$WORKSPACE_PATH" path="$MOUNT_PATH"

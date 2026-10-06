@@ -26,7 +26,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 
 ## Prerequisites
 
-- **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
+- **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`), and root granted your UID and GID as subordinate IDs so Incus may map them into containers (see [Workspace ownership](#workspace-ownership); `incus.init` checks and prints the command)
 - **macOS**: [Homebrew](https://brew.sh/) installed — `incus.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
 - `~/.local/bin` in your `PATH`
 
@@ -133,7 +133,7 @@ Options:
 2. Creates an empty credential proxy named `<container>-proxy` (skip with `--no-proxy`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
-5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+), with `.git/config` and `.git/hooks` read-only on top (see [Git on a shared workspace](#git-on-a-shared-workspace))
+5. Mounts your host directory into the container. Your UID and GID are mapped straight through (`raw.idmap`), so the mount needs no ID shifting and root inside the container stays an unprivileged ID on the host (see [Workspace ownership](#workspace-ownership)). `.git/config` and `.git/hooks` are read-only on top (see [Git on a shared workspace](#git-on-a-shared-workspace))
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional plugins (see below)
 
@@ -227,7 +227,7 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run.
 
-Root inside the container matters more than it looks. The workspace is mounted with `shift=true`, which maps the container's IDs onto the host's for that directory — your user to your user, and root to root. So a file that root inside the container writes into the workspace is owned by root on the host, and it can be made setuid. Don't grant root (Docker, `--with-sudo`) in a container that runs code you don't trust. Treat the container itself as the boundary, and the shared workspace as the one opening in it (see [Git on a shared workspace](#git-on-a-shared-workspace)). Use `incs shell --with-sudo` when you need to install packages interactively:
+Root inside the container is still an unprivileged ID on the host. The workspace is a plain bind mount with only your UID and GID mapped through (`raw.idmap`), so a file that root inside the container writes there shows up owned by the container's base ID — a nuisance you can delete, not a privilege. (Containers created before this used `shift=true`, which mapped root to root; see [Workspace ownership](#workspace-ownership) to migrate them.) Treat the container itself as the boundary, and the shared workspace as the one opening in it (see [Git on a shared workspace](#git-on-a-shared-workspace)). Use `incs shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
 graph TB
@@ -665,6 +665,31 @@ mise use python@3.12 node@20
 Or add a `mise.toml` to your project — `incus.init` runs `mise install` automatically if one exists.
 
 ## Linux Gotchas
+
+### Workspace ownership
+
+Inside an unprivileged container, "uid 1000" is really some high ID on the host (the container's base plus 1000), so a plain bind mount of your repo would show your files as owned by `nobody` and the container's writes would land on the host owned by that high ID. `incus.init` solves this with `raw.idmap`: the container is created with your UID and GID mapped to the same numbers inside, so container-you *is* host-you, and the mount needs no translation. Only those two IDs are mapped. Root inside the container keeps its high ID, so anything it writes into the workspace is owned by that ID on the host: it can't make a file that your host would run as root.
+
+Incus will only map IDs that root has been granted as subordinate IDs. On most hosts that is a one-time step, and `incus.init` stops with the exact command if it's missing:
+
+```bash
+sudo usermod --add-subuids $(id -u)-$(id -u) --add-subgids $(id -g)-$(id -g) root
+sudo systemctl restart incus   # Incus reads /etc/subuid and /etc/subgid at startup
+```
+
+If `/etc/subuid` doesn't exist at all, Incus uses its built-in default range and nothing needs granting. On macOS the files are inside the Colima VM (`colima ssh`); the launch is where a missing grant shows up.
+
+**Containers created before this change** mount the workspace with `shift=true`, which maps the whole ID range, root included: root inside such a container writes root-owned files into your checkout and can make them setuid. To move one over (it keeps its data; the first start remaps the container's filesystem for the new idmap, which takes a moment):
+
+```bash
+incus stop my-project
+incus config set my-project raw.idmap "both $(id -u) $(id -u)"   # uid/gid lines instead if they differ
+incus config device unset my-project workspace shift
+for d in $(incus config device list my-project | grep '^git-ro-'); do incus config device unset my-project "$d" shift; done
+incus start my-project
+```
+
+Then look for files root left behind: `find /path/to/repo -user root` on the host, and `sudo chown` them back to yourself.
 
 ### Firewall (UFW)
 

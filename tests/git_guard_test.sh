@@ -67,7 +67,7 @@ assert_eq "config and hooks are mounted, nothing else" "2" "$(mounts)"
 assert_eq "config: source is the host file"       "$W/.git/config"      "$(dev git-ro-1 source)"
 assert_eq "config: mounted at the container path" "/workspace/.git/config" "$(dev git-ro-1 path)"
 assert_eq "config: read-only"                     "true"                "$(dev git-ro-1 readonly)"
-assert_eq "config: shifted like the workspace"    "true"                "$(dev git-ro-1 shift)"
+assert_eq "config: not shifted, like the workspace" ""                  "$(dev git-ro-1 shift)"
 assert_eq "config: a disk device"                 "disk"                "$(dev git-ro-1 type)"
 assert_eq "hooks: source is the host directory"   "$W/.git/hooks"       "$(dev git-ro-2 source)"
 assert_eq "hooks: mounted at the container path"  "/workspace/.git/hooks" "$(dev git-ro-2 path)"
@@ -135,18 +135,6 @@ echo "gitdir: $W/.git/worktrees/wt" > "$SANDBOX/wt/.git"
 out="$(guard_git_dir box "$SANDBOX/wt" /workspace 2>&1)" && rc=0 || rc=$?
 assert_eq "linked worktree: succeeds" "0" "$rc"
 assert_eq "linked worktree: no mounts" "0" "$(mounts)"
-
-# ===========================================================================
-echo "shift is not available for file mounts"
-# ===========================================================================
-fresh_box
-new_repo "$W"
-out="$(FAKE_INCUS_FAIL_CALL='shift=true$' guard_git_dir box "$W" /workspace 2>&1)" && rc=0 || rc=$?
-assert_eq "falls back: succeeds" "0" "$rc"
-assert_eq "falls back: still mounted" "2" "$(mounts)"
-assert_eq "falls back: still read-only" "true" "$(dev git-ro-1 readonly)"
-assert_eq "falls back: unshifted" "" "$(dev git-ro-1 shift)"
-assert_contains "falls back: says so" "could not be UID-shifted" "$out"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
