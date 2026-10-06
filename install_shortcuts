@@ -131,7 +131,22 @@ case "$CHADMUX_STATE" in
     [[ "$CHADMUX" != "no" ]] && \
       warn "Chadmux needs ${CHADMUX_STATE#missing } on this host; skipping"
     ;;
-  absent|incomplete)
+  incomplete)
+    # Chadmux was chosen before but TPM is missing; finishing touches only ~/.tmux/plugins.
+    if [[ "$CHADMUX" != "no" ]]; then
+      warn "Chadmux config is installed, but TPM is missing"
+      if [[ "$CHADMUX" == "ask" && -t 0 ]]; then
+        read -rp "Finish Chadmux setup by installing TPM? [Y/n] " reply || reply=""
+        [[ ! "$reply" =~ ^[Nn]$ ]] && CHADMUX="yes"
+      fi
+      if [[ "$CHADMUX" == "yes" ]]; then
+        "$SCRIPT_DIR/chadmux.host" install || warn "TPM setup failed; re-run ./install_shortcuts --chadmux to retry"
+      else
+        warn "Re-run ./install_shortcuts --chadmux to finish TPM setup"
+      fi
+    fi
+    ;;
+  absent)
     if [[ "$CHADMUX" == "ask" && -t 0 ]]; then
       echo ""
       echo "Chadmux is Chad's tmux config. It labels each pane with the Incus"
