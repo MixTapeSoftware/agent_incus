@@ -27,6 +27,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 - **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
 - **macOS**: [Homebrew](https://brew.sh/) installed — `incus.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
 - `~/.local/bin` in your `PATH`
+- `jq` — only for `incs status` (preinstalled on macOS 15+; `sudo apt install jq` on Ubuntu)
 
 ## Install
 
@@ -55,7 +56,7 @@ incs my-project claude
 
 | Script | Alias | Purpose |
 |---|---|---|
-| `incs` | — | Unified CLI (shell, init, network, update) |
+| `incs` | — | Unified CLI (shell, init, network, update, status) |
 | `incus.init` | `inci` | Create and provision a container |
 | `incus.shell` | — | Open a login shell (or run a command) in a container |
 | `incus.network` | `incn` | Manage port proxy devices |
@@ -81,6 +82,7 @@ incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
+incs status                            # State, CPU, memory, disk, IPv4 of all instances
 incs cron install                      # Install 7pm daily update cron
 incs cron install 3                    # Install 3am daily update cron
 incs cron status                       # Show current cron schedule
