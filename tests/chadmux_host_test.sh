@@ -203,8 +203,24 @@ if script --version 2>/dev/null | grep -q util-linux; then
   reset_home
   printf 'y\n' | script -qec "$REPO_ROOT/install_shortcuts" /dev/null > "$fixture/shortcuts.log" 2>&1
   assert 'answering y installs Chadmux' test "$(status)" = installed
+
+  rm -rf "$HOME/.tmux/plugins/tpm"
+  printf '\n' | script -qec "$REPO_ROOT/install_shortcuts" /dev/null > "$fixture/shortcuts.log" 2>&1
+  assert 'incomplete install asks to finish TPM setup' grep -q 'Finish Chadmux setup' "$fixture/shortcuts.log"
+  refute 'incomplete install does not ask to install Chadmux' grep -q 'Install Chadmux tmux config' "$fixture/shortcuts.log"
+  assert 'Enter finishes TPM setup' test "$(status)" = installed
 else
   echo '  skip interactive question (needs util-linux script)'
 fi
+
+# A partial install is reported, not passed over, without a terminal.
+reset_home
+assert 'setup for the incomplete case succeeds' install
+rm -rf "$HOME/.tmux/plugins/tpm"
+assert 'install_shortcuts with an incomplete install succeeds' shortcuts < /dev/null
+assert 'no terminal reports the missing TPM' grep -q 'install_shortcuts --chadmux to finish' "$fixture/shortcuts.log"
+assert 'no terminal leaves TPM alone' test "$(status)" = incomplete
+assert 'install_shortcuts --chadmux finishes TPM setup' shortcuts --chadmux < /dev/null
+assert '--chadmux completes an incomplete install' test "$(status)" = installed
 
 echo "Passed: $PASS"
