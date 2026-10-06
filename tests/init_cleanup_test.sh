@@ -35,6 +35,7 @@ extract_fn() {
 }
 {
   echo 'set -euo pipefail'
+  printf 'source %q\n' "$REPO_ROOT/incus.proxy"
   echo 'log()  { echo "[+] $1"; }'
   echo 'warn() { echo "[!] $1"; }'
   echo 'error(){ echo "[ERROR] $1" >&2; exit 1; }'
@@ -50,7 +51,7 @@ assert_eq "harness found the exit trap and three signal traps" \
 fresh_box() {
   export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
   mkdir -p "$FAKE_INCUS_STATE"
-  unset FAKE_INCUS_FAIL_EXEC GRANTED
+  unset FAKE_INCUS_FAIL_EXEC FAKE_INCUS_FAIL_CALL GRANTED
   incus launch images:ubuntu/24.04 box
 }
 # run <body> — stdin is whatever the caller provides.
@@ -109,6 +110,35 @@ fresh_box
 run 'revoke_build_sudo; trap - EXIT INT TERM HUP'
 assert_eq "successful build: exit code"        "0" "$RC"
 assert_eq "successful build: revoked once"     "1" "$(revoked)"
+
+# Failures after the default proxy has been created must keep or delete the
+# pair together, and a failed agent deletion must preserve its proxy.
+make_owned_proxy() {
+  printf '\n' | bash "$REPO_ROOT/incus.proxy" new box-proxy >/dev/null
+  incus config set box-proxy user.incs.proxy-owner=box
+  incus config set box user.incs.owned-proxy=box-proxy
+}
+proxy_exists() { incus info box-proxy >/dev/null 2>&1 && echo yes || echo no; }
+
+fresh_box
+make_owned_proxy
+run 'false' <<< ""
+assert_eq "delete failed build: agent removed" "no" "$(exists)"
+assert_eq "delete failed build: owned proxy removed" "no" "$(proxy_exists)"
+
+fresh_box
+make_owned_proxy
+run 'false' <<< "n"
+assert_eq "keep failed build: agent remains" "yes" "$(exists)"
+assert_eq "keep failed build: owned proxy remains" "yes" "$(proxy_exists)"
+
+fresh_box
+make_owned_proxy
+export FAKE_INCUS_FAIL_CALL='^delete --force box$'
+run 'false' <<< ""
+assert_eq "failed cleanup delete: agent remains" "yes" "$(exists)"
+assert_eq "failed cleanup delete: proxy remains" "yes" "$(proxy_exists)"
+assert_contains "failed cleanup delete: says proxy was kept" "its proxy was kept" "$(cat "$SANDBOX/out")"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

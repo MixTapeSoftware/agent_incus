@@ -37,7 +37,8 @@ Commands:
   <container>                    Shell into container (default)
   -s, shell [--with-sudo] <container> [cmd]
                                  Shell into container (--with-sudo grants temporary sudo)
-  -i, init [args...]             Create/provision a new container
+  -i, init [args...]             Create a container with its own credential proxy
+                                   (--no-proxy to opt out)
   -n, net <container> [ports...] Manage port proxies
   -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)
   -d, delete <container>          Force delete a container
@@ -76,8 +77,9 @@ Examples:
   incs -ka                       Stop all agent-incus containers
   incs -u your-container                     Update packages in your-container
   incs -ua                       Update all agent-incus containers
-  incs proxy new work                        Create a credential proxy named work
-  incs proxy add your-container work         Give your-container GitHub access via work
+  incs -i scratch --no-proxy                 Create a container without a proxy
+  incs proxy add your-container --token      Add GitHub access through its proxy
+  incs proxy configure your-container-proxy  Configure its 1Password account
   incs cron install              Install 7pm daily update cron
   incs cron install 3            Install 3am daily update cron
 EOF
@@ -336,11 +338,14 @@ case "$1" in
     source "$SCRIPT_DIR/incus.proxy"
     proxy_refuse_delete_of_proxy "$1"
     # Read before the delete: both live in the container's config.
+    owned_proxy="$(incus config get "$1" user.incs.owned-proxy)"
     attached_proxy="$(proxy_attached_to "$1" || true)"
     attached_entries="$(proxy_entry_names "$1" || true)"
     incus delete --force "$1"
     log "Deleted $1"
     proxy_after_delete "$1" "$attached_proxy" "$attached_entries"
+    proxy_delete_owned "$1" "$owned_proxy" || \
+      error "Could not delete owned proxy '$owned_proxy'. Clean up with: incs proxy delete $owned_proxy"
     ;;
   -k|kill)
     shift

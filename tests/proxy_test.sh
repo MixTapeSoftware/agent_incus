@@ -1185,131 +1185,138 @@ out="$(printf 'github_pat_x\n' | incs proxy add proj bare --token 2>&1)" && rc=0
 assert_eq "--token works on such a proxy" "0" "$rc"
 
 # ===========================================================================
-echo "plugin (incs -i --proxy)"
-# ===========================================================================
-# Runs the plugin's prompt and install hooks the way incus.init does, with the
-# framework's helpers stubbed. Answers to prompts arrive on stdin.
-run_plugin() {
-  local container="$1" gh_auth_selected="${2:-0}"
-  (
-    set -euo pipefail
-    log()   { echo "[+] $1"; }
-    warn()  { echo "[!] $1"; }
-    error() { echo "[ERROR] $1" >&2; exit 1; }
-    selected_get() { if [[ "$1" == "gh-auth" ]]; then echo "$gh_auth_selected"; else echo 0; fi; }
-    selected_set() { echo "$1=$2" >> "$FAKE_INCUS_STATE/selected.log"; }
-    SCRIPT_DIR="$REPO_ROOT" CONTAINER_NAME="$container" HOST_USER="$USER_NAME"
-    # shellcheck disable=SC1091
-    source "$REPO_ROOT/plugins/60-proxy.sh"
-    plugin_prompt
-    plugin_install
-  )
+echo "default proxy lifecycle (incs -i)"
+# Run the real init CLI through creation of the pair, stopping before guest
+# package installation. This exercises parsing, dry-run, templates, and the
+# actual init exit trap without pretending the fake can provision an OS.
+INIT_FIXTURE="$SANDBOX/init"
+mkdir -p "$INIT_FIXTURE/plugins" "$SANDBOX/workspace"
+cp "$REPO_ROOT"/incus.{proxy,prompt,profile,macos.setup,envscan} "$INIT_FIXTURE/"
+cp "$REPO_ROOT"/plugins/*.sh "$INIT_FIXTURE/plugins/"
+awk '/^# Provision \(skipped/ {exit} {print}' "$REPO_ROOT/incus.init" > "$INIT_FIXTURE/incus.init"
+printf 'trap - EXIT INT TERM HUP\n' >> "$INIT_FIXTURE/incus.init"
+cat >> "$INIT_FIXTURE/incus.init" <<'CHECK_ENV'
+if [[ -n "${EXPECT_NO_PROXY:-}" ]]; then
+  [[ "${NO_PROXY:-}" == "$EXPECT_NO_PROXY" ]]
+fi
+CHECK_ENV
+# Only command-presence checks use these during the creation phase.
+for cmd in sudo curl; do
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/$cmd"
+  chmod +x "$SANDBOX/bin/$cmd"
+done
+run_init() {
+  bash "$INIT_FIXTURE/incus.init" --no-tui --ack-env --no-mount --path "$SANDBOX/workspace" "$@"
 }
 
 fresh_state
-FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
-make_agent proj
-# Answers: reference (blank = default), git name, git email.
-out="$(printf '\nAda Lovelace\nada@example.com\n' | run_plugin proj 2>&1)" && rc=0 || rc=$?
-assert_eq "plugin: succeeds" "0" "$rc"
-assert_eq "plugin: a single proxy is chosen without asking" "work" "$(cfg proj user.incs.proxy)"
-assert_contains "plugin: default reference is used" \
-  "op://agent-tokens/proj/credential" "$(cat "$(fs work /etc/iron-proxy/entries/proj--github.yaml)" 2>/dev/null || true)"
-gitconfig="$(fs proj "/home/$USER_NAME/.gitconfig")"
-assert_eq "plugin: git identity name is configured for the container user" \
-  "Ada Lovelace" "$(git config --file "$gitconfig" user.name 2>/dev/null || true)"
-assert_eq "plugin: git identity email is configured for the container user" \
-  "ada@example.com" "$(git config --file "$gitconfig" user.email 2>/dev/null || true)"
-assert_contains "plugin: git is told to get credentials from gh" \
-  "auth setup-git" "$(cat "$FAKE_INCUS_STATE/gh.log" 2>/dev/null || true)"
+out="$(run_init proj 2>&1)" && rc=0 || rc=$?
+assert_eq "default init succeeds without input" "0" "$rc"
+assert_eq "default proxy is running" "RUNNING" "$(incus list '^proj-proxy$' --format csv --columns s)"
+assert_eq "container records its owned proxy" "proj-proxy" "$(cfg proj user.incs.owned-proxy)"
+assert_eq "proxy records its owner" "proj" "$(cfg proj-proxy user.incs.proxy-owner)"
+assert_eq "empty proxy needs no 1Password account" "false" "$(cfg proj-proxy user.incs.proxy-1password)"
+assert_eq "no services are attached at creation" "" "$(cfg proj user.incs.proxy)"
+assert_eq "no GitHub credential is set at creation" "" "$(cfg proj environment.GH_TOKEN)"
+assert_not_contains "no secret is requested at creation" "1Password service account token" "$out"
+assert_contains "list identifies an empty proxy's owner" "owner:proj" "$(incs proxy list)"
+incs -d proj >/dev/null
+assert_eq "deleting an empty pair removes both instances" "" "$(incus list --format csv --columns n)"
 
 fresh_state
-make_proxy work; make_proxy acme
-make_agent proj
-# Answers: which proxy, reference, git name, git email.
-out="$(printf 'acme\n\nAda\nada@example.com\n' | run_plugin proj 2>&1)" && rc=0 || rc=$?
-assert_eq "plugin: with several proxies, the named one is used" "acme" "$(cfg proj user.incs.proxy)"
-assert_contains "plugin: …after listing the choices" "work" "$out"
+run_init plain --no-proxy > "$SANDBOX/out" 2>&1
+assert_eq "--no-proxy creates only the container" "plain" "$(incus list --format csv --columns n)"
+assert_eq "opt-out has no ownership pointer" "" "$(cfg plain user.incs.owned-proxy)"
+out="$(NO_PROXY=127.0.0.1 EXPECT_NO_PROXY=127.0.0.1 run_init network-env 2>&1)" && rc=0 || rc=$?
+assert_eq "default proxy creation preserves the host's NO_PROXY setting" "0" "$rc"
 
-out="$(printf 'nope\n\nAda\nada@example.com\n' | run_plugin proj 2>&1)" && rc=0 || rc=$?
-assert_eq "plugin: an unknown proxy name is refused" "1" "$rc"
 
 fresh_state
-make_proxy work; make_proxy acme
-make_agent proj
-out="$(printf 'Ada\nada@example.com\n' \
-  | INCS_PROXY=acme INCS_PROXY_REF="op://X/Y/z" run_plugin proj 2>&1)" && rc=0 || rc=$?
-assert_eq "plugin: INCS_PROXY selects the proxy without a prompt" "acme" "$(cfg proj user.incs.proxy)"
-assert_contains "plugin: INCS_PROXY_REF sets the reference without a prompt" \
-  'secret_ref: "op://X/Y/z"' "$(cat "$(fs acme /etc/iron-proxy/entries/proj--github.yaml)" 2>/dev/null || true)"
+out="$(run_init preview --dry-run 2>&1)"
+assert_contains "dry-run describes the default proxy" "preview-proxy (empty)" "$out"
+assert_eq "dry-run creates nothing" "" "$(incus list --format csv --columns n)"
+out="$(run_init preview --dry-run --no-proxy 2>&1)"
+assert_contains "dry-run shows opt-out" "Proxy:       none" "$out"
+
+fresh_state
+mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"
+run_init child --from base > "$SANDBOX/out" 2>&1
+run_init sibling --from base > "$SANDBOX/out" 2>&1
+assert_eq "template child gets its own proxy" "child-proxy" "$(cfg child user.incs.owned-proxy)"
+assert_eq "another launch gets a different proxy" "sibling-proxy" "$(cfg sibling user.incs.owned-proxy)"
+run_init bare --from base --no-proxy > "$SANDBOX/out" 2>&1
+assert_eq "template supports opt-out" "" "$(cfg bare user.incs.owned-proxy)"
+run_init vm --vm --no-copy > "$SANDBOX/out" 2>&1
+assert_eq "VM also gets a proxy" "vm-proxy" "$(cfg vm user.incs.owned-proxy)"
+
+fresh_state
+make_agent proj-proxy
+out="$(run_init proj 2>&1)" && rc=0 || rc=$?
+assert_eq "name collision stops creation" "1" "$rc"
+assert_eq "collision leaves the existing instance alone" "proj-proxy" "$(incus list --format csv --columns n)"
+assert_eq "collision never claims the existing instance" "" "$(cfg proj-proxy user.incs.proxy-owner)"
+
+fresh_state
+out="$(FAKE_INCUS_FAIL_EXEC='^bash -s' run_init broken 2>&1)" && rc=0 || rc=$?
+assert_eq "proxy provisioning failure stops init" "1" "$rc"
+assert_eq "failed proxy is rolled back; unanswered cleanup keeps the agent" "broken" "$(incus list --format csv --columns n)"
+assert_eq "failed proxy is not recorded as ready" "" "$(cfg broken user.incs.owned-proxy)"
+assert_contains "init's cleanup trap survives proxy rollback" "Container 'broken' was partially created" "$out"
+
+fresh_state
+run_init proj > "$SANDBOX/out" 2>&1
+echo CERT > "$(fs proj-proxy /etc/iron-proxy/ca.crt)"
+printf '127.0.0.1 localhost\n' | incus file push -p - proj/etc/hosts
+printf 'github_pat_LATER\n' | incs proxy add proj --token > "$SANDBOX/out" 2>&1
+assert_eq "add infers the owned proxy" "proj-proxy" "$(cfg proj user.incs.proxy)"
+assert_eq "key is stored in the proxy" "github_pat_LATER" "$(cat "$(fs proj-proxy /etc/iron-proxy/tokens/proj--github)")"
+assert_not_contains "agent receives only a placeholder" "github_pat_LATER" "$(cfg proj environment.GH_TOKEN)"
+incs proxy rm proj >/dev/null
+assert_eq "detaching services preserves proxy ownership" "proj-proxy" "$(cfg proj user.incs.owned-proxy)"
+
+out="$(printf '\033[Oops_LATER\033[I\n' | incs proxy configure proj-proxy --vault later-vault 2>&1)" && rc=0 || rc=$?
+assert_eq "configure enables 1Password later" "0" "$rc"
+assert_eq "configured vault" "later-vault" "$(cfg proj-proxy user.incs.proxy-vault)"
+assert_eq "configured proxy can read 1Password" "true" "$(cfg proj-proxy user.incs.proxy-1password)"
+assert_contains "configure cleans pasted escapes" "OP_SERVICE_ACCOUNT_TOKEN=ops_LATER" "$(cat "$(fs proj-proxy /etc/iron-proxy/env)")"
+assert_not_contains "configure does not echo the token" "ops_LATER" "$out"
+assert_not_contains "configure does not pass the token in argv" "ops_LATER" "$(cat "$FAKE_INCUS_STATE/calls.log")"
+printf 'github:\n' > "$SANDBOX/default-services.yaml"
+incs proxy apply proj "$SANDBOX/default-services.yaml" >/dev/null
+assert_contains "apply infers the owned proxy and configured vault" "op://later-vault/proj/credential" "$(cat "$(fs proj-proxy /etc/iron-proxy/entries/proj--github.yaml)")"
+make_agent other
+out="$(incs proxy add other proj-proxy 2>&1)" && rc=0 || rc=$?
+assert_eq "owned proxies cannot be shared" "1" "$rc"
+assert_eq "rejected sharing leaves other unattached" "" "$(cfg other user.incs.proxy)"
+
+out="$(FAKE_INCUS_FAIL_CALL='^delete --force proj$' incs -d proj 2>&1)" && rc=0 || rc=$?
+assert_eq "failed agent deletion fails the command" "1" "$rc"
+assert_eq "failed agent deletion keeps its proxy" "RUNNING" "$(incus list '^proj-proxy$' --format csv --columns s)"
+assert_eq "failed agent deletion keeps attachments" "proj-proxy" "$(cfg proj user.incs.proxy)"
+incs -d proj >/dev/null
+assert_eq "successful agent deletion removes the owned proxy with its credentials" "" "$(incus list '^proj-proxy$' --format csv --columns n)"
+
+fresh_state
+run_init proj > "$SANDBOX/out" 2>&1
+out="$(FAKE_INCUS_FAIL_CALL='^delete --force proj-proxy$' incs -d proj 2>&1)" && rc=0 || rc=$?
+assert_eq "proxy deletion failure is reported" "1" "$rc"
+assert_contains "proxy deletion failure gives recovery command" "incs proxy delete proj-proxy" "$out"
+assert_eq "remaining proxy retains ownership for diagnosis" "proj" "$(cfg proj-proxy user.incs.proxy-owner)"
 
 fresh_state
 make_agent proj
-out="$(printf '\n' | run_plugin proj 2>&1)" && rc=0 || rc=$?
-assert_eq "plugin: with no proxies, it stops" "1" "$rc"
-assert_contains "plugin: …and says how to create one" "incs proxy new" "$out"
+make_proxy shared
+incus config set proj user.incs.owned-proxy=shared
+out="$(incs -d proj 2>&1)" && rc=0 || rc=$?
+assert_eq "invalid ownership does not delete someone else's proxy" "1" "$rc"
+assert_eq "shared proxy survives incorrect pointer" "RUNNING" "$(incus list '^shared$' --format csv --columns s)"
 
 fresh_state
-make_proxy work
-make_agent proj
-out="$(printf '\nAda\nada@example.com\n' | run_plugin proj 1 2>&1)" && rc=0 || rc=$?
-assert_eq "plugin: GitHub Auth is deselected so it cannot write a real token" \
-  "gh-auth=0" "$(cat "$FAKE_INCUS_STATE/selected.log" 2>/dev/null || true)"
-assert_eq "plugin: …and the container holds the placeholder" \
-  "match" "$([[ "$(cfg proj environment.GH_TOKEN)" =~ ^ghp_[0-9a-f]{36}$ ]] && echo match || echo no)"
+run_init proj > "$SANDBOX/out" 2>&1
+incs proxy delete proj-proxy >/dev/null
+assert_eq "explicit proxy deletion clears ownership on the agent" "" "$(cfg proj user.incs.owned-proxy)"
 
-# Pasted answers arrive wrapped in terminal escapes.
-fresh_state
-make_proxy work; make_proxy acme
-make_agent proj
-out="$(printf '\033[Oacme\033[I\n\033[Oop://Shared/GitHub proj/token\033[I\nAda\nada@example.com\n' \
-  | run_plugin proj 2>&1)" && rc=0 || rc=$?
-assert_eq "plugin: a pasted proxy name is cleaned" "acme" "$(cfg proj user.incs.proxy)"
-assert_contains "plugin: a pasted reference is cleaned" \
-  'secret_ref: "op://Shared/GitHub proj/token"' "$(cat "$(fs acme /etc/iron-proxy/entries/proj--github.yaml)" 2>/dev/null || true)"
 
-fresh_state
-make_proxy work
-make_agent proj
-printf '\n\033[OAda Lovelace\033[I\n\033[Oada@example.com\033[I\n' | run_plugin proj >/dev/null 2>&1 || true
-gitconfig="$(fs proj "/home/$USER_NAME/.gitconfig")"
-assert_eq "plugin: a pasted git name is cleaned" \
-  "Ada Lovelace" "$(git config --file "$gitconfig" user.name 2>/dev/null || true)"
-assert_eq "plugin: a pasted git email is cleaned" \
-  "ada@example.com" "$(git config --file "$gitconfig" user.email 2>/dev/null || true)"
-
-fresh_state
-make_proxy work
-make_agent proj
-# Input ends after the reference: the optional git identity is skipped.
-# Called as a plain command, not inside `&&`/`||`, so set -e is live in the
-# plugin exactly as it is in incus.init.
-set +e
-out="$(printf '\n' | run_plugin proj 2>&1)"
-rc=$?
-set -e
-assert_eq "plugin: end of input at the git identity prompts is not an error" "0" "$rc"
-assert_eq "plugin: …and the container is still attached" "work" "$(cfg proj user.incs.proxy)"
-
-fresh_state
-printf '\n' | incs proxy new bare >/dev/null 2>&1
-echo CERT > "$(fs bare /etc/iron-proxy/ca.crt)"
-make_agent proj
-printf '\033[Ogithub_pat_PLUGIN_PASTED\033[I\nAda\nada@example.com\n' | run_plugin proj >/dev/null 2>&1 || true
-assert_eq "plugin: a pasted token is stored clean" \
-  "github_pat_PLUGIN_PASTED" "$(cat "$(fs bare /etc/iron-proxy/tokens/proj--github)" 2>/dev/null; echo)"
-
-fresh_state
-printf '\n' | incs proxy new bare >/dev/null 2>&1
-echo CERT > "$(fs bare /etc/iron-proxy/ca.crt)"
-make_agent proj
-# Answers: token (hidden), git name, git email.
-out="$(printf 'github_pat_PLUGIN\nAda\nada@example.com\n' | run_plugin proj 2>&1)" && rc=0 || rc=$?
-assert_eq "plugin: a proxy without 1Password asks for the token instead" \
-  "github_pat_PLUGIN" "$(cat "$(fs bare /etc/iron-proxy/tokens/proj--github)" 2>/dev/null; echo)"
-assert_not_contains "plugin: …without echoing it" "github_pat_PLUGIN" "$out"
-
-# ===========================================================================
 echo "templates (incs -i --template)"
 # ===========================================================================
 # save_template lives in incus.init, which cannot be sourced without running.

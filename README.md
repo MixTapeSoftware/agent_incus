@@ -83,8 +83,8 @@ incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
-incs proxy new work                    # Create a credential proxy
-incs proxy add my-project work         # Give a container GitHub access through it
+incs proxy add my-project --token      # Add GitHub access through its default proxy
+incs -i scratch --no-proxy             # Create a container without a proxy
 incs proxy list                        # Show proxies and attached containers
 incs cron install                      # Install 7pm daily update cron
 incs cron install 3                    # Install 3am daily update cron
@@ -115,12 +115,14 @@ Options:
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
+  --no-proxy                Do not create a credential proxy for this container
   --dry-run                 Show what would be done without doing it
 ```
 
 ### What incus.init does
 
 1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits (credential proxies get the same profile with 512MB / 1 CPU)
+2. Creates an empty credential proxy named `<container>-proxy` (skip with `--no-proxy`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
 5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+)
@@ -158,7 +160,6 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
-| [Credential Proxy](#credential-proxy) | GitHub access through a proxy; the real token never enters the container. Replaces GitHub Auth. Other API keys: `incs proxy add` |
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
 | [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
@@ -233,8 +234,9 @@ incs -i project-agent
 # Dev container — with credentials
 incs -i --1pass --gh-token project-dev
 
-# Agent container that can push, without ever holding the token
-incs -i --proxy project-agent
+# Agent container with its own credential proxy
+incs -i project-agent
+incs proxy add project-agent --token  # add GitHub access when needed
 
 # Shell in with temporary sudo to install something
 incs shell --with-sudo project-dev
@@ -405,29 +407,41 @@ graph LR
 
 It is built on [iron-proxy](https://github.com/paradigmxyz/iron-proxy), pinned to a specific release and verified by checksum.
 
-**1. Create a proxy.** One per 1Password account is typical, for example one for work and one for personal projects.
+**1. Create a container.** `incs -i` also creates an empty credential proxy named `<container>-proxy`. This applies to fresh containers, VMs, template builds, and launches from a template.
 
 ```bash
-incs proxy new work                      # default vault: agent-tokens
-incs proxy new acme --vault acme-agents  # a different vault
+incs -i my-project                    # creates my-project and my-project-proxy
+incs -i scratch --no-proxy            # creates only scratch
+incs -i another --from base-dev       # creates another and another-proxy
 ```
 
-You are asked for a 1Password **service account token**. Give that account read-only access to a single vault that holds only these keys. Leave it blank to skip 1Password and store keys in the proxy container instead.
+Creation needs no keys or 1Password account. The empty proxy has no attached services, and no traffic is routed through it until you add a service. Proxy setup is required: if it fails, provisioning stops and removes the failed proxy. `--dry-run` shows the planned proxy without creating anything. `--proxy` is accepted as an explicit opt-in, but now means the same as the default; it no longer prompts for GitHub credentials. `--no-proxy` opts out of automatic proxy creation, including with `--no-tui`.
 
-**2. Store the container's keys in 1Password.** Use one item per container, named after the container. The GitHub token goes in a field named `credential`. Every other key goes in a field named after its environment variable. The default references are `op://<vault>/<container>/credential` and, for example, `op://<vault>/<container>/OPENAI_API_KEY`.
-
-**3. Attach the container.** For GitHub, name the container and the proxy:
+**2. Add credentials when needed.** Paste a key at the hidden prompt to store it in the proxy:
 
 ```bash
-incs proxy add my-project work
+incs proxy add my-project --token
+incs proxy add my-project --env OPENAI_API_KEY --host api.openai.com --token
 ```
 
-For any other API, also name the variable the container reads the key from and the host the key may be sent to:
+`add` automatically uses the container's proxy. The real key stays there; the container receives a placeholder.
+
+For **1Password**, configure the proxy with a service account token scoped to your keys' vault:
 
 ```bash
-incs proxy add my-project work --env OPENAI_API_KEY    --host api.openai.com
-incs proxy add my-project work --env ANTHROPIC_API_KEY --host api.anthropic.com --prefix sk-ant-
-incs proxy add my-project work --env STRIPE_KEY        --host api.stripe.com --service stripe
+incs proxy configure my-project-proxy                  # default vault: agent-tokens
+incs proxy configure my-project-proxy --vault acme-agents
+```
+
+Use one vault item per container, named after the container. The GitHub token goes in `credential`; other keys go in a field named after their environment variable. The default references are `op://<vault>/<container>/credential` and, for example, `op://<vault>/<container>/OPENAI_API_KEY`.
+
+Then attach the services that the container needs:
+
+```bash
+incs proxy add my-project
+incs proxy add my-project --env OPENAI_API_KEY    --host api.openai.com
+incs proxy add my-project --env ANTHROPIC_API_KEY --host api.anthropic.com --prefix sk-ant-
+incs proxy add my-project --env STRIPE_KEY        --host api.stripe.com --service stripe
 ```
 
 | Option | Meaning |
@@ -455,19 +469,24 @@ anthropic:
 ```
 
 ```bash
-incs proxy apply my-project work services.yaml
-incs proxy apply my-project work services.yaml --prune   # also detach what the file no longer lists
+incs proxy apply my-project services.yaml
+incs proxy apply my-project services.yaml --prune   # also detach what the file no longer lists
 ```
 
 Each service takes the same settings as the flags: `env`, `host` for one host or `hosts` for a list, `prefix` and `ref`. Leave `ref` out to use the default reference. `github:` needs no settings. Running it again changes only the services you edited; the rest keep their placeholders, so shells that are already open keep working. The file holds no secrets, so it can live in the project's repository. A key stored with `--token` cannot be listed in a file.
 
-Or attach GitHub at creation. This replaces `--gh-token`:
+After attaching, open a new shell to pick up the placeholder and trust settings. `git`, `gh`, and API clients can then use the configured service. Set your git name and email inside the container if needed.
+
+**Shared proxies are still supported.** Create one explicitly and pass its name to `add` or `apply`:
 
 ```bash
-incs -i my-project --proxy
+incs proxy new work --vault acme-agents
+incs -i shared-client --no-proxy
+incs proxy add shared-client work
+incs proxy apply shared-client work services.yaml
 ```
 
-`git`, `gh` and API clients then work as usual inside the container, with no changes to how you use them.
+A proxy created by `incs -i` belongs to that container and cannot be shared. Manually created proxies can serve several containers.
 
 **Manage:**
 
@@ -478,7 +497,7 @@ incs proxy rm my-project                   # detach everything; the placeholders
 incs proxy delete work                     # refused while containers are attached, unless --force
 ```
 
-Deleting a container with `incs -d` also removes it from its proxy. Proxies are skipped by `incs -ka` and `incs -ua`.
+Deleting a container with `incs -d` also deletes its owned proxy and the credentials stored there. A shared proxy keeps running; only the deleted container's entries are removed. If container deletion fails, its proxy and credentials remain intact. `incs proxy rm` detaches services while preserving the owned proxy for later use. Explicitly deleting an owned proxy with `incs proxy delete` clears its ownership link on the container. Proxies are skipped by `incs -ka` and `incs -ua`.
 
 **What attaching does:**
 
@@ -504,12 +523,12 @@ The proxy accepts connections from containers on one port, and that port speaks 
 - **The API returns 401.** Either the proxy could not read the key, or it swapped in a key the API does not accept. The proxy's log records each swap and each unavailable secret. If it shows the secret was unavailable, check the reference and the service account's access. If it shows a swap, check that the stored key is valid and has the access you need:
 
   ```bash
-  incus exec work -- journalctl -u iron-proxy -n 50
+  incus exec my-project-proxy -- journalctl -u iron-proxy -n 50
   ```
 
 - **Tailscale is unaffected.** Only the hosts you attached are sent to the proxy.
 
-**Templates.** Saving a template strips the placeholders and the `/etc/hosts` lines from the image. Launch with `--proxy` to attach the new container with a placeholder of its own. The proxy's certificate authority does remain trusted in the image.
+**Templates.** Saving a template strips the placeholders and the `/etc/hosts` lines from the image. Each launch creates a new empty proxy by default; attach its services afterward. Use `--no-proxy` to opt out. The proxy's certificate authority does remain trusted in the image.
 
 **Existing containers.** A key that has already lived in a container should be treated as exposed. After attaching, create a new key, store it in 1Password, and revoke the old one.
 

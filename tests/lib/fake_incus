@@ -120,6 +120,11 @@ case "$cmd" in
     rm -rf "$(inst_dir "$name")"
     ;;
 
+  image)
+    [[ "$1" == info && -d "$S/images/$2" ]] || die "Image not found: ${2:-}"
+    echo "Type: container"
+    ;;
+
   publish)
     # incus publish <name> --alias <alias>: snapshot the filesystem as it is now.
     name="$1"; alias=""

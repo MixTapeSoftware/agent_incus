@@ -114,6 +114,20 @@ result "tokens_dir_mode=$(stat -c %a /etc/iron-proxy/tokens)"
 result "config_mode=$(stat -c %a /etc/iron-proxy/proxy.yaml)"
 result "empty_config_is_base_only=$(grep -c 'proxy_value' /etc/iron-proxy/proxy.yaml || true)"
 
+# Default proxies must start before any services or credentials are added.
+IRON_METRICS_LISTEN=127.0.0.1:9090 /usr/local/bin/iron-proxy \
+  -config /etc/iron-proxy/proxy.yaml >/tmp/empty-proxy.log 2>&1 &
+empty_pid=$!
+empty_ready=no
+for i in $(seq 1 50); do
+  if curl -sk --max-time 2 -o /dev/null --resolve upstream.test:443:127.0.0.1 https://upstream.test/; then empty_ready=yes; break; fi
+  if ! kill -0 "$empty_pid" 2>/dev/null; then cat /tmp/empty-proxy.log; exit 1; fi
+  sleep 0.2
+done
+[[ "$empty_ready" == yes ]] || { cat /tmp/empty-proxy.log; exit 1; }
+result "empty_proxy_starts=$empty_ready"
+kill "$empty_pid"; wait "$empty_pid" 2>/dev/null || true
+
 before="$(sha256sum < /etc/iron-proxy/ca.crt)"
 bash /work/provision.sh
 result "reprovision_keeps_ca=$([ "$before" = "$(sha256sum < /etc/iron-proxy/ca.crt)" ] && echo yes || echo no)"
@@ -223,6 +237,7 @@ OUT="$(docker run --rm --add-host upstream.test:127.0.0.1 -v "$WORK:/work:ro" \
 
 r() { printf '%s\n' "$OUT" | sed -n "s/^RESULT $1=//p"; }
 
+assert_eq "empty proxy starts without credentials or services" "yes" "$(r empty_proxy_starts)"
 assert_eq "provisioning installs a working iron-proxy binary"      "yes" "$(r binary_runs)"
 assert_eq "generated certificate is a certificate authority"       "1"   "$(r ca_is_a_ca)"
 assert_eq "certificate authority key is private"                   "600" "$(r ca_key_mode)"

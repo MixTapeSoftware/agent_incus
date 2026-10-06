@@ -315,6 +315,17 @@ proxy_cmd_new() {
   read_secret token "1Password service account token (input hidden): "
   [[ "$token" =~ [[:space:]] ]] && error "Token must not contain whitespace"
 
+  proxy_create "$name" "$vault" "$token"
+  echo "  Attach a container: incs proxy add <container> $name"
+}
+
+# A subshell keeps proxy creation's rollback trap separate from incus.init's
+# exit handler. The token is a shell argument only, never an external argv.
+proxy_create() (
+  set -e
+  local name="$1" vault="$2" token="${3:-}" owner="${4:-}"
+  proxy_valid_name "$name" || error "Invalid proxy name: $name"
+  proxy_instance_exists "$name" && error "Instance '$name' already exists"
   ensure_profile
   log "Creating proxy container: $name"
   incus init "$PROXY_IMAGE" "$name" -p default -p "$AGENT_PROFILE" >/dev/null
@@ -324,6 +335,9 @@ proxy_cmd_new() {
   incus config set "$name" limits.memory=512MB
   incus config set "$name" limits.cpu=1
   incus config set "$name" user.incs.role=proxy
+  if [[ -n "$owner" ]]; then
+    incus config set "$name" user.incs.proxy-owner="$owner"
+  fi
   incus config set "$name" user.incs.proxy-vault="$vault"
   if [[ -n "$token" ]]; then
     incus config set "$name" user.incs.proxy-1password=true
@@ -363,11 +377,13 @@ proxy_cmd_new() {
     error "iron-proxy is not running in '$name' (its recent log is above)"
   fi
 
+  if [[ -n "$owner" ]]; then
+    incus config set "$owner" user.incs.owned-proxy="$name"
+  fi
   _PROXY_NEW_CLEANUP=""
   trap - EXIT
   log "Proxy '$name' is up at $ip:$PROXY_PORT"
-  echo "  Attach a container: incs proxy add <container> $name"
-}
+)
 
 _PROXY_NEW_CLEANUP=""
 _proxy_new_cleanup() {
@@ -377,6 +393,74 @@ _proxy_new_cleanup() {
     incus delete --force "$_PROXY_NEW_CLEANUP" >/dev/null 2>&1 || true
   fi
   exit $rc
+}
+
+# Creation and credential attachment have separate lifetimes. An empty owned
+# proxy has no attachment tag, placeholders, host overrides, or trusted CA yet.
+proxy_create_owned() {
+  local container="$1" proxy="$1-proxy"
+  proxy_create "$proxy" "$PROXY_DEFAULT_VAULT" "" "$container"
+}
+
+proxy_delete_owned() {
+  local container="$1" proxy="${2:-}" owner attached
+  [[ -n "$proxy" ]] || return 0
+  proxy_instance_exists "$proxy" || return 0
+  owner="$(incus config get "$proxy" user.incs.proxy-owner)" || return 1
+  if ! proxy_is_proxy "$proxy" || [[ "$owner" != "$container" ]]; then
+    warn "Refusing to delete '$proxy': it is not owned by '$container'"
+    return 1
+  fi
+  attached="$(proxy_attached_containers "$proxy")" || return 1
+  if [[ -n "$attached" ]]; then
+    warn "Refusing to delete '$proxy': containers are still attached: $attached"
+    return 1
+  fi
+  incus delete --force "$proxy" || return 1
+  log "Deleted owned proxy '$proxy'"
+}
+
+# Resolve a service's proxy when add/apply omits it. An explicit attachment
+# takes precedence, so a container can still use a manually managed proxy.
+proxy_for_container() {
+  local container="$1" proxy
+  proxy_instance_exists "$container" || error "Container not found: $container"
+  proxy="$(proxy_attached_to "$container")"
+  if [[ -z "$proxy" ]]; then
+    proxy="$(incus config get "$container" user.incs.owned-proxy)"
+  fi
+  [[ -n "$proxy" ]] || error "$container has no default proxy. Specify one: incs proxy add $container <proxy>"
+  echo "$proxy"
+}
+
+# Configure an empty default proxy for 1Password after container creation.
+# Keys stored with add --token do not need this step.
+proxy_cmd_configure() {
+  local name="${1:-}" vault="" token=""
+  [[ -n "$name" ]] || error "Usage: incs proxy configure <proxy> [--vault NAME]"
+  shift
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --vault) [[ $# -ge 2 ]] || error "$1 requires an argument"; vault="$2"; shift 2 ;;
+      *) error "Unknown option: $1" ;;
+    esac
+  done
+  proxy_is_proxy "$name" || error "Not a credential proxy: '$name'"
+  read_secret token "1Password service account token (input hidden): "
+  [[ -n "$token" && ! "$token" =~ [[:space:]] ]] || error "A non-empty token without whitespace is required"
+  proxy_ensure_running "$name"
+  {
+    echo "IRON_METRICS_LISTEN=127.0.0.1:9090"
+    echo "OP_SERVICE_ACCOUNT_TOKEN=$token"
+  } | proxy_push "$name" "$PROXY_DIR/env" 0600
+  unset token
+  incus exec "$name" -- systemctl restart iron-proxy </dev/null
+  incus exec "$name" -- systemctl is-active --quiet iron-proxy </dev/null
+  if [[ -n "$vault" ]]; then
+    incus config set "$name" user.incs.proxy-vault="$vault"
+  fi
+  incus config set "$name" user.incs.proxy-1password=true
+  log "Configured 1Password for '$name'"
 }
 
 # ---------------------------------------------------------------------------
@@ -657,6 +741,11 @@ proxy_attach() {
   proxy_is_proxy "$proxy"            || error "'$proxy' is not a proxy (create one: incs proxy new <name>)"
   proxy_is_proxy "$container"        && error "'$container' is a proxy; attach an agent container instead"
 
+  local owner
+  owner="$(incus config get "$proxy" user.incs.proxy-owner)"
+  [[ -z "$owner" || "$owner" == "$container" ]] || \
+    error "Proxy '$proxy' belongs to '$owner'; it cannot be shared"
+
   local attached services pair
   attached="$(proxy_attached_to "$container")"
   if [[ -n "$attached" && "$attached" != "$proxy" ]]; then
@@ -779,7 +868,7 @@ proxy_attach() {
 }
 
 # ---------------------------------------------------------------------------
-# incs proxy add <container> <proxy> [--service NAME] [--env VAR --host HOST...]
+# incs proxy add <container> [<proxy>] [--service NAME] [--env VAR --host HOST...]
 #                [--prefix STR] [--ref op://... | --token]
 # ---------------------------------------------------------------------------
 proxy_cmd_add() {
@@ -801,8 +890,9 @@ proxy_cmd_add() {
         shift ;;
     esac
   done
-  [[ -z "$container" || -z "$proxy" ]] && \
-    error "Usage: incs proxy add <container> <proxy> [--env VAR --host HOST...] [--ref op://vault/item/field | --token]"
+  [[ -z "$container" ]] && \
+    error "Usage: incs proxy add <container> [<proxy>] [--env VAR --host HOST...] [--ref op://vault/item/field | --token]"
+  [[ -n "$proxy" ]] || proxy="$(proxy_for_container "$container")"
   [[ "$want_token" == "1" && -n "$ref" ]] && error "Use either --ref or --token, not both"
 
   if [[ -z "$env" && ${#hosts[@]} -eq 0 && -z "$prefix" ]]; then
@@ -1125,8 +1215,12 @@ proxy_cmd_apply() {
         shift ;;
     esac
   done
+  if [[ -z "$file" && -n "$proxy" ]]; then
+    file="$proxy"
+    proxy="$(proxy_for_container "$container")"
+  fi
   [[ -z "$container" || -z "$proxy" || -z "$file" ]] && \
-    error "Usage: incs proxy apply <container> <proxy> <file> [--prune]"
+    error "Usage: incs proxy apply <container> [<proxy>] <file> [--prune]"
 
   proxy_manifest_parse "$file"
   proxy_manifest_check "$file"
@@ -1182,11 +1276,12 @@ proxy_cmd_list() {
     echo "No proxies. Create one: incs proxy new <name>"
     return 0
   fi
-  printf '%-20s %-9s %-22s %s\n' "PROXY" "STATUS" "ADDRESS" "CONTAINERS"
+  printf '%-20s %-9s %-22s %s\n' "PROXY" "STATUS" "ADDRESS" "OWNER / ATTACHED"
   local name status ip attached c svcs pair
   while IFS=, read -r name status; do
     ip="$(incus config get "$name" user.incs.proxy-ip 2>/dev/null)"
-    attached=""
+    attached="$(incus config get "$name" user.incs.proxy-owner)"
+    [[ -z "$attached" ]] || attached="owner:$attached"
     for c in $(proxy_attached_containers "$name"); do
       svcs=""
       for pair in $(proxy_services "$c"); do svcs+="${svcs:+,}${pair%%=*}"; done
@@ -1212,7 +1307,8 @@ proxy_cmd_delete() {
   proxy_instance_exists "$name" || error "Proxy not found: $name"
   proxy_is_proxy "$name" || error "'$name' is not a proxy (to delete a container: incs -d $name)"
 
-  local attached c
+  local attached c owner
+  owner="$(incus config get "$name" user.incs.proxy-owner)"
   attached="$(proxy_attached_containers "$name")"
   if [[ -n "$attached" && "$force" != "1" ]]; then
     error "Proxy '$name' is in use by: $(echo "$attached" | tr '\n' ' ')
@@ -1221,6 +1317,10 @@ proxy_cmd_delete() {
 
   incus delete --force "$name"
   log "Deleted proxy '$name'"
+  if [[ -n "$owner" ]] && proxy_instance_exists "$owner" &&
+      [[ "$(incus config get "$owner" user.incs.owned-proxy)" == "$name" ]]; then
+    incus config unset "$owner" user.incs.owned-proxy
+  fi
   for c in $attached; do
     # One container that cannot be cleaned must not stop the rest. Its tag is
     # cleared last, so on failure it stays and `incs proxy rm` can finish.
@@ -1273,8 +1373,10 @@ Commands:
   new <name> [--vault NAME]        Create a proxy. Prompts for a 1Password
                                    service account token (default vault:
                                    agent-tokens). Blank for none.
-  add <container> <proxy>          Attach GitHub (GH_TOKEN).
-  add <container> <proxy> --env VAR --host HOST [--host HOST...]
+  configure <proxy> [--vault NAME] Set a 1Password service account token.
+  add <container> [<proxy>]        Attach GitHub (GH_TOKEN). Defaults to the
+                                   container's attached or owned proxy.
+  add <container> [<proxy>] --env VAR --host HOST [--host HOST...]
                                    Attach any other API: VAR holds the
                                    placeholder, swapped on requests to HOST.
       [--service NAME]               Name for it (default: VAR, lowercased)
@@ -1285,7 +1387,7 @@ Commands:
                                      (GitHub: .../credential)
       [--token]                      Prompt for the key and store it in the
                                      proxy instead of 1Password
-  apply <container> <proxy> <file> [--prune]
+  apply <container> [<proxy>] <file> [--prune]
                                    Attach every service listed in a file.
                                    Unchanged ones are left alone. --prune
                                    also detaches services not in the file.
@@ -1295,13 +1397,18 @@ Commands:
                                    are attached unless --force.
 
 Examples:
-  incs proxy new work
-  incs proxy add my-project work
-  incs proxy add my-project work --env OPENAI_API_KEY --host api.openai.com
-  incs proxy add my-project work --env ANTHROPIC_API_KEY --host api.anthropic.com --token
-  incs proxy apply my-project work services.yaml
+  incs -i my-project              Create my-project and an empty my-project-proxy
+  incs -i scratch --no-proxy      Create scratch without a proxy
+  incs proxy add my-project --token
+  incs proxy configure my-project-proxy
+  incs proxy add my-project --env OPENAI_API_KEY --host api.openai.com
+  incs proxy apply my-project services.yaml
   incs proxy rm my-project --service openai-api-key
-  incs -i my-project --proxy       Attach GitHub at creation (asks which proxy)
+  incs -d my-project              Delete my-project and its owned proxy
+
+Shared proxies:
+  incs proxy new work
+  incs proxy add existing-container work
 
 A services file for `apply`:
   github:
@@ -1321,6 +1428,7 @@ proxy_main() {
   [[ $# -gt 0 ]] && shift
   case "$sub" in
     new)            proxy_cmd_new "$@" ;;
+    configure)      proxy_cmd_configure "$@" ;;
     add)            proxy_cmd_add "$@" ;;
     apply)          proxy_cmd_apply "$@" ;;
     rm|remove)      proxy_cmd_rm "$@" ;;
