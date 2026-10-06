@@ -112,18 +112,28 @@ eval "$hook_src"
 warn() { :; }
 
 FAILED_PLUGIN_NAMES=()
+FAILED_PLUGIN_IDS=()
 marker="$fixture/hook_kept_going"
 boom() { false; touch "$marker"; }
 PLUGIN_NAME="Boom"
+PLUGIN_ID="boom"
 _run_plugin_hook boom
 assert_eq "hook: plugin stops at its first error"  "absent" "$([[ -f "$marker" ]] && echo present || echo absent)"
 assert_eq "hook: failure recorded"                 "Boom" "${FAILED_PLUGIN_NAMES[0]:-}"
+assert_eq "hook: failure tracked by ID"            "boom" "${FAILED_PLUGIN_IDS[0]:-}"
 
 fine() { :; }
 PLUGIN_NAME="Fine"
+PLUGIN_ID="fine"
 _run_plugin_hook fine
 assert_eq "hook: success not recorded"             "1" "${#FAILED_PLUGIN_NAMES[@]}"
 assert_eq "hook: script still alive after failure" "alive" "alive"
+
+eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/incus.init")"
+assert_eq "hook: failed ID is recognized" "failed" "$(_plugin_failed boom && echo failed || echo ok)"
+PLUGIN_ID="same-label" PLUGIN_NAME="Boom"
+_run_plugin_hook fine
+assert_eq "hook: successful plugin with same label is not failed" "ok" "$(_plugin_failed same-label && echo failed || echo ok)"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"

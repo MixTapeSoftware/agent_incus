@@ -267,6 +267,7 @@ USER_PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agent_incus/plugins"
 
 # Parallel arrays (bash 3.2 compatible — macOS /bin/bash has no associative arrays)
 _P_ID=() _P_NAME=() _P_DESC=() _P_FILE=() _P_SELECTED=() _P_AGENT_COMMAND=()
+_P_CLI_FLAGS=()            # effective metadata after user overrides
 _P_FLAGS=() _P_FLAG_IDS=()   # parallel: _P_FLAGS[i] -> _P_FLAG_IDS[i]
 PLUGIN_COUNT=0
 
@@ -318,7 +319,7 @@ print_agent_launches() {
   local i launch
   for ((i=0; i<PLUGIN_COUNT; i++)); do
     [[ "${_P_SELECTED[$i]}" == "1" && -n "${_P_AGENT_COMMAND[$i]}" ]] || continue
-    _plugin_failed "${_P_NAME[$i]}" && continue
+    _plugin_failed "${_P_ID[$i]}" && continue
     printf 'Start %s:\n' "${_P_NAME[$i]}"
     printf -v launch 'cd %q && %q' "$MOUNT_PATH" "${_P_AGENT_COMMAND[$i]}"
     printf '  incs -s %q %q\n' "$CONTAINER_NAME" "$launch"
@@ -362,10 +363,7 @@ for _dir in "$BUILTIN_PLUGINS_DIR" "$USER_PLUGINS_DIR"; do
       _P_FILE[$_existing]="$_f"
       _P_SELECTED[$_existing]="${_pdefault:-0}"
       _P_AGENT_COMMAND[$_existing]="$_pagent"
-      for _flag in $_pcli; do
-        _P_FLAGS+=("$_flag")
-        _P_FLAG_IDS+=("$_pid")
-      done
+      _P_CLI_FLAGS[$_existing]="$_pcli"
       continue
     fi
 
@@ -376,15 +374,20 @@ for _dir in "$BUILTIN_PLUGINS_DIR" "$USER_PLUGINS_DIR"; do
     _P_FILE[$_i]="$_f"
     _P_SELECTED[$_i]="${_pdefault:-0}"
     _P_AGENT_COMMAND[$_i]="$_pagent"
-
-    for _flag in $_pcli; do
-      _P_FLAGS+=("$_flag")
-      _P_FLAG_IDS+=("$_pid")
-    done
+    _P_CLI_FLAGS[$_i]="$_pcli"
 
     PLUGIN_COUNT=$((_i + 1))
   done
 done
+# Build aliases only from the final plugin definitions. Replaced definitions
+# must not leave their flags attached to a user plugin that did not declare them.
+for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+  for _flag in ${_P_CLI_FLAGS[$_i]}; do
+    _P_FLAGS+=("$_flag")
+    _P_FLAG_IDS+=("${_P_ID[$_i]}")
+  done
+done
+unset _P_CLI_FLAGS
 unset _dir _f _meta _i _pid _pname _pdesc _pdefault _pcli _pprompt _plaunch _pagent _flag _existing
 
 # Sort plugins by PLUGIN_NAME, case-insensitive A-Z (stable).
@@ -542,9 +545,11 @@ _run_plugin_prompts() {
 
 # Run a plugin hook in a subshell so one plugin's failure can't kill the whole
 # build. Under plain set -e, a failing plugin_install aborted the script and
-# silently skipped every plugin sorted after it. The subshell re-enables set -e so the plugin itself still stops at its first error; the
+# silently skipped every plugin sorted after it. The subshell re-enables set -e
+# so the plugin itself still stops at its first error; the
 # parent records the failure and moves on. Failures are listed in the summary.
 FAILED_PLUGIN_NAMES=()
+FAILED_PLUGIN_IDS=()
 _run_plugin_hook() {
   local hook="$1" rc=0
   set +e
@@ -554,12 +559,13 @@ _run_plugin_hook() {
   if [[ $rc -ne 0 ]]; then
     warn "$PLUGIN_NAME: $hook failed (exit $rc) — continuing with remaining plugins"
     FAILED_PLUGIN_NAMES+=("$PLUGIN_NAME")
+    FAILED_PLUGIN_IDS+=("$PLUGIN_ID")
   fi
 }
 
 _plugin_failed() {
   local n
-  for n in ${FAILED_PLUGIN_NAMES[@]+"${FAILED_PLUGIN_NAMES[@]}"}; do
+  for n in ${FAILED_PLUGIN_IDS[@]+"${FAILED_PLUGIN_IDS[@]}"}; do
     [[ "$n" == "$1" ]] && return 0
   done
   return 1
@@ -1235,7 +1241,7 @@ echo "Installed:"
 for entry in "${PLUGINS[@]}"; do
   IFS=: read -r id name desc default <<< "$entry"
   if [[ "$(selected_get "$id")" == "1" ]]; then
-    if _plugin_failed "$name"; then
+    if _plugin_failed "$id"; then
       echo "  ✗ $name (FAILED — see warnings above)"
     else
       echo "  ✓ $name"

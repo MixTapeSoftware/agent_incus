@@ -81,14 +81,37 @@ PLUGIN_DEFAULT=0
 OVERRIDE
 if out="$(dry_run --agent codex 2>&1)"; then echo 'FAIL: inherited agent metadata'; exit 1; fi
 assert_contains 'override clears agent metadata' 'Unknown coding agent: codex' "$out"
+if out="$(dry_run --codex 2>&1)"; then echo 'FAIL: inherited built-in CLI flag'; exit 1; fi
+assert_contains 'override removes built-in CLI flag' 'Unknown option: --codex' "$out"
+out="$(dry_run --claude --grok)"
+assert_contains 'override preserves other Claude flags' '[x] Claude Code' "$out"
+assert_contains 'override preserves other Grok flags' '[x] Grok Build' "$out"
+
+cat > "$XDG_DATA_HOME/agent_incus/plugins/50-grok.sh" <<'OVERRIDE'
+PLUGIN_ID="grok"
+PLUGIN_NAME="Custom Grok Agent"
+PLUGIN_DESC="A replacement agent with its own alias"
+PLUGIN_DEFAULT=0
+PLUGIN_CLI_FLAGS="--custom-grok"
+PLUGIN_AGENT_COMMAND="custom-grok-cli"
+OVERRIDE
+out="$(dry_run --custom-grok)"
+assert_contains 'override registers replacement flags' '[x] Custom Grok Agent' "$out"
+out="$(dry_run --agent custom-grok)"
+assert_contains 'replacement flags select replacement agents' '[x] Custom Grok Agent' "$out"
+if out="$(dry_run --agent grokbot 2>&1)"; then echo 'FAIL: inherited built-in agent alias'; exit 1; fi
+assert_contains 'override removes built-in agent alias' 'Unknown coding agent: grokbot' "$out"
 
 # Run the summary helper with multiple agents and an install failure.
 eval "$(awk '/^print_agent_launches\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/incus.init")"
 PLUGIN_COUNT=3
 _P_SELECTED=(1 1 1)
+_P_ID=(claude-code codex grok)
 _P_AGENT_COMMAND=(claude codex grok)
 _P_NAME=('Claude Code' Codex 'Grok Build')
-_plugin_failed() { [[ "$1" == Codex ]]; }
+eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/incus.init")"
+FAILED_PLUGIN_IDS=(codex)
+FAILED_PLUGIN_NAMES=(Codex)
 CONTAINER_NAME=audit MOUNT_PATH='/work tree'
 out="$(print_agent_launches)"
 assert_contains 'launch Claude' 'Start Claude Code:' "$out"
@@ -99,6 +122,13 @@ incs() { printf 'launch_arg=%s\n' "$3"; }
 line="$(printf '%s\n' "$out" | sed -n '2p')"
 out="$(eval "$line")"
 assert_contains 'launch command quotes custom workspace' 'launch_arg=cd /work\ tree && claude' "$out"
+
+# A distinct failed plugin sharing an agent's label must not hide its launch.
+FAILED_PLUGIN_IDS=(other-claude)
+FAILED_PLUGIN_NAMES=('Claude Code')
+out="$(print_agent_launches)"
+assert_contains 'duplicate display name keeps successful agent launch' 'Start Claude Code:' "$out"
+assert_contains 'previously failed agent now launches after reset' 'Start Codex:' "$out"
 
 out="$(INCS_CONTAINER=generic CLAUDE_CONTAINER=legacy bash "$REPO_ROOT/incus.shell")"
 assert_contains 'generic default instance' 'instance=generic' "$out"
