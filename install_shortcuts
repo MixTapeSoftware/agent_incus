@@ -131,7 +131,7 @@ case "$CHADMUX_STATE" in
     [[ "$CHADMUX" != "no" ]] && \
       warn "Chadmux needs ${CHADMUX_STATE#missing } on this host; skipping"
     ;;
-  absent)
+  absent|incomplete)
     if [[ "$CHADMUX" == "ask" && -t 0 ]]; then
       echo ""
       echo "Chadmux is Chad's tmux config. It labels each pane with the Incus"
