@@ -93,6 +93,12 @@ cpu=$(run_status | awk '$2 == "alpha" {print $5}')
 if [[ "$cpu" =~ ^[1-9][0-9]*\.[0-9]%$ ]]; then busy=yes; else busy="no ($cpu)"; fi
 assert_eq "alpha shows non-zero CPU %" "yes" "$busy"
 
+echo "CPU missing from first sample:"
+cp "$stub/sample1.json" "$stub/sample2.json"
+sed -i.bak 's/"cpu":{"usage":5000000000}/"cpu":{}/' "$stub/sample1.json"
+cpu=$(run_status | awk '$2 == "alpha" {print $5}') || cpu="(status failed)"
+assert_eq "alpha CPU is -" "-" "$cpu"
+
 echo "empty:"
 echo '[]' > "$stub/sample1.json"
 echo '[]' > "$stub/sample2.json"

@@ -252,7 +252,7 @@ def row($t):
         (if .type == "virtual-machine" then "VM" else "CT" end),
         (if $c["user.managed-by"] == "agent-incus" then "yes" else "-" end),
         # Same pid in both samples, or the instance restarted in between.
-        (if .status == "Running" and $u != null and $p != null and $p[1] == $s.pid and $u >= $p[0] and $t > $prev.t
+        (if .status == "Running" and $u != null and $p[0] != null and $p[1] == $s.pid and $u >= $p[0] and $t > $prev.t
            then "\(($u - $p[0]) / 1e9 / ($t - $prev.t) * 100 | dp1)%" else "-" end),
         (if (.status == "Running" or .status == "Frozen") and ($s.memory.usage // 0) > 0
            then ($s.memory.usage | human) + (if $c["limits.memory"] then " / " + $c["limits.memory"] else "" end)
