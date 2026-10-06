@@ -12,6 +12,7 @@ plugin_is_installed() {
     test -d "$HOME/.config/tmux/.git" &&
     test -f "$HOME/.config/tmux/tmux.conf" &&
     test -x "$HOME/.config/tmux/scripts/incus-panes.sh" &&
+    test -L "$HOME/.tmux.conf" &&
     test "$HOME/.tmux.conf" -ef "$HOME/.config/tmux/tmux.conf" &&
     test -d "$HOME/.tmux/plugins/tpm"
   ' &>/dev/null
@@ -50,7 +51,7 @@ plugin_install() {
       trap - EXIT
     fi
     # The legacy config takes precedence over ~/.config/tmux/tmux.conf.
-    if [[ ! "$HOME/.tmux.conf" -ef "$config_dir/tmux.conf" ]]; then
+    if [[ ! -L "$HOME/.tmux.conf" || ! "$HOME/.tmux.conf" -ef "$config_dir/tmux.conf" ]]; then
       preserve_existing "$HOME/.tmux.conf"
       ln -s "$config_dir/tmux.conf" "$HOME/.tmux.conf"
     fi

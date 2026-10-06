@@ -58,8 +58,11 @@ reset_guest() {
 }
 install() {
   # Match the production hook: the plugin runs with errexit in its own shell.
-  bash -ec 'source "$1"; plugin_install' bash "$REPO_ROOT/plugins/50-chadmux.sh" \
-    > "$fixture/install.log" 2>&1
+  if ! bash -ec 'source "$1"; plugin_install' bash "$REPO_ROOT/plugins/50-chadmux.sh" \
+      > "$fixture/install.log" 2>&1; then
+    cat "$fixture/install.log" >&2
+    return 1
+  fi
 }
 
 reset_guest
@@ -71,6 +74,22 @@ git -C "$fixture/upstream" commit -qam update
 install
 assert 'existing upstream checkout fast-forwards' cmp "$fixture/upstream/tmux.conf" "$TEST_HOME/.config/tmux/tmux.conf"
 assert 'reinstall does not create a backup' test "$(find "$TEST_HOME" -name '*.backup.*' | wc -l | tr -d ' ')" = 0
+
+rm "$TEST_HOME/.tmux.conf"
+ln "$TEST_HOME/.config/tmux/tmux.conf" "$TEST_HOME/.tmux.conf"
+if plugin_is_installed; then
+  echo 'FAIL: hard link counted as the required symlink' >&2
+  exit 1
+fi
+PASS=$((PASS + 1))
+echo '  ok  hard link is not recognized as installed'
+install
+assert 'hard link is replaced with a symlink' test -L "$TEST_HOME/.tmux.conf"
+assert 'old hard link is preserved' test "$TEST_HOME"/.tmux.conf.backup.*/.tmux.conf -ef "$TEST_HOME/.config/tmux/tmux.conf"
+echo '# later config' >> "$fixture/upstream/tmux.conf"
+git -C "$fixture/upstream" commit -qam later
+git -C "$TEST_HOME/.config/tmux" pull -q --ff-only origin main
+assert 'legacy path follows Git config replacement' cmp "$fixture/upstream/tmux.conf" "$TEST_HOME/.tmux.conf"
 
 reset_guest
 mkdir -p "$TEST_HOME/.config/tmux"
@@ -115,12 +134,13 @@ mkdir -p "$TEST_HOME/.config/tmux"
 echo 'keep config' > "$TEST_HOME/.config/tmux/tmux.conf"
 echo 'keep legacy' > "$TEST_HOME/.tmux.conf"
 mv "$fixture/upstream" "$fixture/unavailable"
-if install; then
+if install 2> "$fixture/failure.log"; then
   echo 'FAIL: failed clone reported success' >&2
   exit 1
 fi
 PASS=$((PASS + 1))
 echo '  ok  failed clone stops installation'
+assert 'failed clone exposes Git diagnostics' grep -q 'fatal:' "$fixture/failure.log"
 assert 'failed clone preserves active config' test "$(cat "$TEST_HOME/.config/tmux/tmux.conf")" = 'keep config'
 assert 'failed clone preserves legacy config' test "$(cat "$TEST_HOME/.tmux.conf")" = 'keep legacy'
 assert 'failed clone cleans staging directory' test "$(find "$TEST_HOME/.config" -name '.chadmux.*' | wc -l | tr -d ' ')" = 0
