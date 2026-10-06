@@ -196,6 +196,16 @@ assert_eq "archive fails: no backup is left" "0" "$(backups)"
 assert_eq "archive fails: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
 assert_contains "archive fails: tailscaled is started again" "box :: systemctl start tailscaled" "$(execs)"
 
+# …and the partial file cannot be removed either.
+fresh_box
+rm() { [[ "$*" == *incs-tailscale.* ]] && return 1; command rm "$@"; }
+FAKE_INCUS_FAIL_EXEC='^tar -C /var/lib -cf' stash_sub
+unset -f rm
+assert_eq "partial archive kept: still stops the build" "1" "$RC"
+assert_contains "partial archive kept: names the file" "$XDG_RUNTIME_DIR/incs-tailscale." "$OUT"
+assert_contains "partial archive kept: tailscaled is still started again" "box :: systemctl start tailscaled" "$(execs)"
+rm -f "$XDG_RUNTIME_DIR"/incs-tailscale.*
+
 
 fresh_box
 mkdir -p "$FAKE_INCUS_STATE/still-active"; touch "$FAKE_INCUS_STATE/still-active/tailscaled"

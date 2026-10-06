@@ -530,7 +530,9 @@ stash_tailscale_state() {
   # archive is complete: half an archive must never go back over the state.
   if ! backup="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")" || \
      ! incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$backup" </dev/null; then
-    [[ -n "$backup" ]] && rm -f "$backup"
+    if [[ -n "$backup" ]] && ! rm -f "$backup"; then
+      warn "A partial Tailscale archive is left in $backup (it may hold the node key): delete it."
+    fi
     incus exec "$CONTAINER_NAME" -- systemctl start tailscaled 2>/dev/null </dev/null || true
     error "Could not archive the Tailscale state in $CONTAINER_NAME. No template saved."
   fi
