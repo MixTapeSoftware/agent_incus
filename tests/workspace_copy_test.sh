@@ -140,7 +140,7 @@ assert_contains "help: --no-copy is not VM-only" "Start with an empty workspace"
 for gone in "--no-mount" "--git-rw" "--mount-path" "--workspace" "mount"; do
   assert_not_contains "help: no $gone" "$gone" "$help"
 done
-for flag in --no-mount --git-rw --mount-path --workspace; do
+for flag in --no-mount --git-rw --mount-path -m --workspace -w; do
   out="$(bash "$REPO_ROOT/incus.init" "$flag" x box 2>&1)" && rc=0 || rc=$?
   assert_eq "$flag: rejected" "1" "$rc"
   assert_contains "$flag: as an unknown option" "Unknown option: $flag" "$out"
