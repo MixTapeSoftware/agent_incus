@@ -141,6 +141,19 @@ assert_eq "failed cleanup delete: agent remains" "yes" "$(exists)"
 assert_eq "failed cleanup delete: proxy remains" "yes" "$(proxy_exists)"
 assert_contains "failed cleanup delete: says proxy was kept" "its proxy was kept" "$(cat "$SANDBOX/out")"
 
+# A template build that failed with the Tailscale state stashed on the host.
+echo KEY > "$SANDBOX/ts-backup"
+fresh_box
+FAKE_INCUS_FAIL_CALL='^info box' run "TS_STATE_BACKUP='$SANDBOX/ts-backup'; error 'publish failed'" </dev/null
+assert_contains "Incus unreachable: the node-key backup is still reported" "$SANDBOX/ts-backup" "$(cat "$SANDBOX/out")"
+assert_contains "Incus unreachable: …with the restore command" "tar -C /var/lib -xf -" "$(cat "$SANDBOX/out")"
+assert_eq "Incus unreachable: the backup is kept" "yes" "$([[ -f "$SANDBOX/ts-backup" ]] && echo yes || echo no)"
+
+fresh_box
+FAKE_INCUS_FAIL_EXEC='^tar -C /var/lib -xf' run "TS_STATE_BACKUP='$SANDBOX/ts-backup'; error 'publish failed'" </dev/null
+assert_contains "restore fails: the node-key backup is reported" "$SANDBOX/ts-backup" "$(cat "$SANDBOX/out")"
+assert_eq "restore fails: …once" "1" "$(grep -c "is in $SANDBOX/ts-backup" "$SANDBOX/out")"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

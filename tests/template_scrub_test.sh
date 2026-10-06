@@ -175,6 +175,26 @@ assert_eq "no tailscaled: the host copy of the key is gone" "0" "$(backups)"
 assert_contains "no tailscaled: says how to start it" "systemctl start tailscaled" "$OUT"
 assert_not_contains "no tailscaled: does not point at a deleted backup" "incs-tailscale." "$OUT"
 
+# ===========================================================================
+echo "tailscaled will not stop"
+# ===========================================================================
+fresh_box
+mkdir -p "$FAKE_INCUS_STATE/still-active"; touch "$FAKE_INCUS_STATE/still-active/tailscaled"
+stash_sub
+assert_eq "stash, still running: stops the build" "1" "$RC"
+assert_contains "stash, still running: says why" "Could not stop tailscaled" "$OUT"
+assert_eq "stash, still running: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "stash, still running: no backup" "0" "$(backups)"
+
+fresh_box
+stash
+backup="$TS_STATE_BACKUP"
+mkdir -p "$FAKE_INCUS_STATE/still-active"; touch "$FAKE_INCUS_STATE/still-active/tailscaled"
+restore
+assert_eq "restore, still running: fails" "1" "$RC"
+assert_eq "restore, still running: the backup is kept" "present" "$(present "$backup")"
+assert_eq "restore, still running: nothing extracted over the live state" "gone" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

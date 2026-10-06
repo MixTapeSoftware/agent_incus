@@ -47,8 +47,10 @@ declare -F copy_workspace >/dev/null || { echo "copy_workspace not found in incu
 HOST="$SANDBOX/project"
 mkdir -p "$HOST"
 git -C "$HOST" init -q
-git -C "$HOST" -c user.name=t -c user.email=t@t commit -q --allow-empty -m first
 echo "committed" > "$HOST/README"
+git -C "$HOST" add README
+git -C "$HOST" -c user.name=t -c user.email=t@t commit -q -m first
+echo "edited" > "$HOST/README"
 echo "untracked" > "$HOST/notes.txt"
 
 CONTAINER_NAME=box HOST_USER=dev BASE_IMAGE=images:ubuntu/24.04
@@ -71,7 +73,9 @@ echo "a fresh container"
 fresh_box
 copy
 assert_eq "copy: succeeds" "0" "$RC"
-assert_eq "copy: the working tree arrives" "committed" "$(cat "$(root)/workspace/README" 2>/dev/null)"
+assert_eq "copy: uncommitted edits arrive" "edited" "$(cat "$(root)/workspace/README" 2>/dev/null)"
+assert_eq "copy: …still uncommitted in the copy" " M README" "$(git -C "$(root)/workspace" status --porcelain README)"
+assert_eq "copy: the commit arrives" "first" "$(git -C "$(root)/workspace" log -1 --format=%s)"
 assert_eq "copy: untracked files arrive" "untracked" "$(cat "$(root)/workspace/notes.txt" 2>/dev/null)"
 assert_eq "copy: .git arrives" "yes" "$([[ -f "$(root)/workspace/.git/HEAD" ]] && echo yes || echo no)"
 assert_contains "copy: handed to the user" "box :: chown -R dev:dev /workspace" "$(execs)"
@@ -82,7 +86,7 @@ assert_contains "copy: git trusts the workspace" "safe.directory '/workspace'" "
 # A different path inside the container.
 fresh_box
 CONTAINER_WORKSPACE=/src copy
-assert_eq "--workspace: copies to that path" "committed" "$(cat "$(root)/src/README" 2>/dev/null)"
+assert_eq "--workspace: copies to that path" "edited" "$(cat "$(root)/src/README" 2>/dev/null)"
 
 # ===========================================================================
 echo "starting empty"
@@ -115,6 +119,22 @@ assert_eq "not from a template: stops" "1" "$RC"
 assert_contains "not from a template: says why" "is not empty inside the container" "$OUT"
 
 # ===========================================================================
+echo "Incus cannot be asked"
+# ===========================================================================
+fresh_box
+FAKE_INCUS_FAIL_EXEC='test -d' copy
+assert_eq "probe fails: stops" "1" "$RC"
+assert_contains "probe fails: says why" "Could not check /workspace" "$OUT"
+assert_eq "probe fails: copies nothing" "no" "$([[ -e "$(root)/workspace/README" ]] && echo yes || echo no)"
+
+fresh_box
+mkdir -p "$(root)/workspace"; echo old > "$(root)/workspace/leftover"
+FAKE_INCUS_FAIL_EXEC='^ls -A' copy
+assert_eq "listing fails: stops" "1" "$RC"
+assert_contains "listing fails: says why" "Could not list /workspace" "$OUT"
+assert_eq "listing fails: copies nothing over the files" "no" "$([[ -e "$(root)/workspace/README" ]] && echo yes || echo no)"
+
+# ===========================================================================
 echo "the CLI"
 # ===========================================================================
 help="$(bash "$REPO_ROOT/incus.init" --help 2>&1 || true)"
@@ -129,6 +149,15 @@ for flag in --no-mount --git-rw --mount-path; do
   assert_eq "$flag: rejected" "1" "$rc"
   assert_contains "$flag: as an unknown option" "Unknown option: $flag" "$out"
 done
+
+# --no-copy never touches the host path, so a missing one is fine.
+for cmd in sudo curl; do printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/$cmd"; chmod +x "$SANDBOX/bin/$cmd"; done
+fresh_box
+out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --dry-run --no-copy --path "$SANDBOX/missing" fresh 2>&1)" && rc=0 || rc=$?
+assert_eq "--no-copy with a missing --path: dry run succeeds" "0" "$rc"
+assert_contains "--no-copy with a missing --path: empty workspace" "Workspace:   empty /workspace (--no-copy)" "$out"
+out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --dry-run --path "$SANDBOX/missing" fresh 2>&1)" && rc=0 || rc=$?
+assert_eq "a missing --path is still an error when copying" "1" "$rc"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

@@ -143,11 +143,9 @@ cleanup_on_exit() {
     # Before the prompt: the container may be kept, or the prompt never answered.
     revoke_build_sudo || \
       warn "Could not revoke build-time sudo in '$CONTAINER_NAME'. Delete it: incus delete --force $CONTAINER_NAME"
-    # A template build that failed after moving the Tailscale state out.
-    restore_tailscale_state || \
-      warn "Tailscale state for '$CONTAINER_NAME' is in ${TS_STATE_BACKUP:-} (it holds the node key: keep it private).
-  Restore it (start the container first if it is stopped: incus start $CONTAINER_NAME):
-    incus exec $CONTAINER_NAME -- tar -C /var/lib -xf - < ${TS_STATE_BACKUP:-}"
+    # A template build that failed after moving the Tailscale state out. A
+    # failure is reported below, with the case where Incus cannot be reached.
+    restore_tailscale_state || true
     if [[ $rc -ne 0 ]]; then
       echo ""
       warn "Script failed. Container '$CONTAINER_NAME' was partially created."
@@ -169,6 +167,13 @@ cleanup_on_exit() {
         warn "Container left in place. Clean up manually with: incs -d $CONTAINER_NAME"
       fi
     fi
+  fi
+  # Never leave the host copy of a node key unmentioned, even when Incus could
+  # not be asked about the container at all.
+  if [[ -n "${TS_STATE_BACKUP:-}" && -f "$TS_STATE_BACKUP" ]]; then
+    warn "Tailscale state for '${CONTAINER_NAME:-}' is in $TS_STATE_BACKUP (it holds the node key: keep it private, or delete it).
+  To restore it (start the container first if it is stopped: incus start ${CONTAINER_NAME:-}):
+    incus exec ${CONTAINER_NAME:-} -- tar -C /var/lib -xf - < $TS_STATE_BACKUP"
   fi
   exit "$rc"
 }
@@ -513,7 +518,10 @@ stash_tailscale_state() {
     *)   error "Could not check $CONTAINER_NAME for Tailscale state. No template saved: it might carry the node key." ;;
   esac
   log "Removing the Tailscale node identity from the image..."
-  incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null || true
+  # A tailscaled still running could write the state back before publish.
+  incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null </dev/null || true
+  [[ "$(incus exec "$CONTAINER_NAME" -- sh -c 'systemctl is-active --quiet tailscaled && echo running || echo stopped' </dev/null)" == "stopped" ]] || \
+    error "Could not stop tailscaled in $CONTAINER_NAME. No template saved: it could write the node key back."
   TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")"
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$TS_STATE_BACKUP"
   incus exec "$CONTAINER_NAME" -- rm -rf /var/lib/tailscale
@@ -534,7 +542,9 @@ restore_tailscale_state() {
     sleep 1
   done
   # tailscaled came back up at boot with a fresh, logged-out state; replace it.
-  incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null || true
+  # If it keeps running it can overwrite the restored state, so it must stop.
+  incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null </dev/null || true
+  [[ "$(incus exec "$CONTAINER_NAME" -- sh -c 'systemctl is-active --quiet tailscaled && echo running || echo stopped' </dev/null)" == "stopped" ]] || return 1
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -xf - < "$TS_STATE_BACKUP" || return 1
   # The state is back in place, so the host copy of the node key can go.
   rm -f "$TS_STATE_BACKUP"
@@ -549,12 +559,19 @@ restore_tailscale_state() {
 # leaves through git.
 # ---------------------------------------------------------------------------
 copy_workspace() {
-  local existing
+  local present existing=""
   # A template built before templates were emptied carries a workspace owned
   # by whoever built it. If our UID differs those files are unwritable (git
   # commit fails on .git/index.lock), so re-own them rather than error. Files
   # in a workspace that did not come from a template are a mistake: stop.
-  existing="$(incus exec "$CONTAINER_NAME" -- ls -A "$CONTAINER_WORKSPACE" 2>/dev/null </dev/null || true)"
+  # An exec error must not read as "empty": files could be copied over.
+  present="$(incus exec "$CONTAINER_NAME" -- sh -c "test -d '$CONTAINER_WORKSPACE' && echo yes || echo no" </dev/null)" || present=""
+  case "$present" in
+    no)  ;;
+    yes) existing="$(incus exec "$CONTAINER_NAME" -- ls -A "$CONTAINER_WORKSPACE" </dev/null)" || \
+           error "Could not list $CONTAINER_WORKSPACE in $CONTAINER_NAME" ;;
+    *)   error "Could not check $CONTAINER_WORKSPACE in $CONTAINER_NAME" ;;
+  esac
   if [[ -n "$existing" ]]; then
     [[ "$FROM_BASE_IMAGE" == "1" ]] || \
       error "$CONTAINER_WORKSPACE is not empty inside the container: $BASE_IMAGE already has files there."
@@ -723,25 +740,22 @@ HOST_GID="$(id -g)"
 
 # ---------------------------------------------------------------------------
 # Resolve the workspace path and warn about .env files: they are copied in with
-# everything else. Template builds publish an empty workspace, so nothing is
-# exposed and there is no host tree to resolve. --no-copy starts empty too, so
-# its host directory is not scanned.
+# everything else. Template builds and --no-copy start empty, so nothing is
+# exposed and the host path is never used.
 # ---------------------------------------------------------------------------
 ENV_FILES_LIST=""
-if [[ "$SAVE_TEMPLATE" != "1" ]]; then
+if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]]; then
   WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
   WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
   [[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
 
-  if [[ "$NO_COPY" != "1" ]]; then
-    ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"
-    if [[ -n "$ENV_FILES_LIST" ]]; then
-      echo ""
-      while IFS= read -r _line; do
-        echo -e "${YELLOW}${_line}${NC}" >&2
-      done < <(printf '%s\n' "$ENV_FILES_LIST" | format_env_warning_lines "$WORKSPACE_PATH")
-      confirm_env_acknowledgement "$ACK_ENV"
-    fi
+  ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"
+  if [[ -n "$ENV_FILES_LIST" ]]; then
+    echo ""
+    while IFS= read -r _line; do
+      echo -e "${YELLOW}${_line}${NC}" >&2
+    done < <(printf '%s\n' "$ENV_FILES_LIST" | format_env_warning_lines "$WORKSPACE_PATH")
+    confirm_env_acknowledgement "$ACK_ENV"
   fi
 fi
 
