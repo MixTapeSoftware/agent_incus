@@ -318,9 +318,9 @@ defaults are `20GiB` disk / `4GiB` memory / `4` vCPUs (override with
 `--vm-disk`/`--vm-memory`/`--vm-cpus`).
 
 **Plugins are VM-aware:** Docker installs natively inside a VM (no
-`security.nesting`/AppArmor workarounds — those config keys are container-only
-and would be rejected by Incus), and Tailscale uses the VM's native
-`/dev/net/tun` instead of a device passthrough.
+`security.nesting` or syscall interception — those config keys are
+container-only and would be rejected by Incus), and Tailscale uses the VM's
+native `/dev/net/tun` instead of a device passthrough.
 
 **Templates work the same** — with one rule: `--vm` must be on **both** the
 build and the launch, because a published VM image can only launch as a VM.

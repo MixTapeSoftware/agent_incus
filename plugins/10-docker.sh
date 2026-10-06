@@ -27,43 +27,31 @@ plugin_install() {
 
   # Container config is always needed -- not preserved in templates.
   #
-  # Security tradeoff: Docker-in-Incus requires relaxing the inner container's
-  # sandbox so Docker can manage its own containers. Specifically:
-  #   - nesting:  lets the container create cgroups/namespaces (container primitives)
-  #   - mknod:    lets it create device nodes in /dev/ (kernel driver access)
-  #   - setxattr: lets it set security labels on files
+  # Security tradeoff: Docker-in-Incus relaxes the container's sandbox so
+  # Docker can manage its own containers. Specifically:
+  #   - nesting:  lets the container create cgroups/namespaces, and swaps its
+  #               AppArmor profile for one that allows mount/pivot_root and
+  #               gives the container its own AppArmor namespace, so dockerd
+  #               loads docker-default inside it as usual
+  #   - mknod:    lets it create a limited set of device nodes in /dev/
+  #   - setxattr: lets it set a limited set of security labels on files
   #
   # A normal Incus container can't do any of this. Enabling these means a process
   # that escapes Docker inside the container has more capabilities than it would
   # in a plain Incus container. The Incus boundary still protects the host -- it's
   # one wall instead of two. For dev containers this is fine; for untrusted code,
   # consider using --no-sudo to limit what the container user can do.
+  #
+  # The container is NOT run unconfined. Older builds did, to get around an
+  # AppArmor deny that broke runc under the nesting profile; Incus 6.19 fixed
+  # that (lxc/incus#2624), and unconfined cost Docker its own AppArmor layer.
   log "Configuring container for Docker..."
   incus config set "$CONTAINER_NAME" security.nesting=true
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.mknod=true
   incus config set "$CONTAINER_NAME" security.syscalls.intercept.setxattr=true
-
-  # AppArmor (mandatory access control) causes two problems for Docker-in-Incus:
-  #   1. runc fails with "ip_unprivileged_port_start: permission denied"
-  #      because AppArmor's default profile restricts nested containers.
-  #   2. Docker checks if AppArmor is enabled, sees "Y", and tries to load
-  #      its "docker-default" profile via securityfs -- which isn't accessible
-  #      inside an Incus container, so it fails.
-  #
-  # Fix: run unconfined (removes restriction #1), then mask the AppArmor
-  # enabled flag so Docker thinks it's not available (removes #2).
-  #
-  # Security tradeoff: Docker's AppArmor profile normally restricts containers
-  # from writing to /proc/sys, mounting filesystems, and accessing raw kernel
-  # interfaces. We lose that layer here, but Incus compensates with its own
-  # isolation: user namespaces (container root maps to an unprivileged host
-  # UID), seccomp syscall filtering, PID/network/mount namespaces, and cgroup
-  # resource limits. An attacker would need to escape both Docker and Incus to
-  # reach the host. Loading the profile from outside is impractical -- Docker
-  # expects to manage AppArmor profiles dynamically, and exposing securityfs
-  # into the container would let it weaken the host's own confinement.
-  incus config set "$CONTAINER_NAME" raw.lxc="lxc.apparmor.profile=unconfined"
-  # raw.lxc is only read at container start, so restart to apply it.
+  _docker_warn_old_incus
+  _docker_remove_apparmor_mask
+  # The syscall interception keys are only read at container start.
   incus restart "$CONTAINER_NAME"
   wait_for_container "$CONTAINER_NAME" "${READY_TIMEOUT:-30}"
   wait_for_network "$CONTAINER_NAME" "${READY_TIMEOUT:-30}"
@@ -75,37 +63,37 @@ plugin_install() {
   fi
 
   log "Installing Docker..."
-
-  # Mask AppArmor enabled flag so Docker skips it entirely.
-  incus exec "$CONTAINER_NAME" -- sh -s <<'APPARMOR_EOF'
-    if [ -f /sys/module/apparmor/parameters/enabled ] && \
-       grep -q Y /sys/module/apparmor/parameters/enabled 2>/dev/null; then
-      echo N > /run/apparmor_disabled
-      mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled
-
-      # Make the mask persistent across reboots.
-      cat > /etc/systemd/system/mask-apparmor.service <<'UNIT'
-[Unit]
-Description=Mask AppArmor enabled flag for Docker-in-Incus
-DefaultDependencies=no
-Before=docker.service containerd.service docker.socket
-
-[Service]
-Type=oneshot
-RemainAfterExit=yes
-ExecStart=/bin/sh -c 'echo N > /run/apparmor_disabled && mount --bind /run/apparmor_disabled /sys/module/apparmor/parameters/enabled'
-
-[Install]
-WantedBy=multi-user.target
-UNIT
-      systemctl daemon-reload
-      systemctl enable mask-apparmor.service
-    fi
-APPARMOR_EOF
-
   _docker_install_packages
   incus exec "$CONTAINER_NAME" -- sh -c "usermod -aG docker $HOST_USER"
   wait_for_container "$CONTAINER_NAME" "${READY_TIMEOUT:-30}"
+}
+
+# Before Incus 6.19 the nesting profile denied the sysctl writes runc makes
+# for every container (lxc/incus#2623), and the only way around it was to run
+# unconfined. Say so rather than do that.
+_docker_warn_old_incus() {
+  local v major minor
+  v="$(incus version 2>/dev/null | awk -F': *' '/^Server version/ {print $2}')"
+  [[ -n "$v" ]] || return 0
+  major="${v%%.*}"; minor="${v#*.}"; minor="${minor%%[^0-9]*}"
+  [[ "$major" =~ ^[0-9]+$ && "$minor" =~ ^[0-9]+$ ]] || return 0
+  if (( major < 6 || (major == 6 && minor < 19) )); then
+    warn "Incus $v may predate the fix that lets Docker run under the nesting AppArmor profile (lxc/incus#2624, Incus 6.19).
+    If containers fail to start with 'ip_unprivileged_port_start: permission denied', update Incus."
+  fi
+}
+
+# Older builds hid AppArmor from dockerd behind a bind mount over
+# /sys/module/apparmor/parameters/enabled, kept by a unit that templates of
+# that era still carry. Take it out before the restart, so dockerd comes up
+# with AppArmor and loads docker-default.
+_docker_remove_apparmor_mask() {
+  incus exec "$CONTAINER_NAME" -- test -f /etc/systemd/system/mask-apparmor.service || return 0
+  log "Removing the AppArmor mask an older build left in this image..."
+  incus exec "$CONTAINER_NAME" -- systemctl disable mask-apparmor.service >/dev/null 2>&1 || true
+  incus exec "$CONTAINER_NAME" -- umount /sys/module/apparmor/parameters/enabled >/dev/null 2>&1 || true
+  incus file delete "$CONTAINER_NAME/etc/systemd/system/mask-apparmor.service"
+  incus exec "$CONTAINER_NAME" -- systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
 _docker_install_packages() {
@@ -121,7 +109,7 @@ _docker_install_packages() {
 DOCKER_EOF
 }
 
-# Docker container config (nesting, apparmor) isn't preserved in templates.
+# Docker container config (nesting, syscall interception) isn't preserved in templates.
 plugin_on_launch() {
   plugin_install
 }

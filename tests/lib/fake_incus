@@ -23,6 +23,7 @@
 #   FAKE_INCUS_FAIL_EXEC   regex; an exec whose command matches exits 1
 #   FAKE_INCUS_NEXT_IP     address handed to the next created instance
 #   FAKE_INCUS_FAIL_CALL   regex; any invocation whose argv matches exits 1
+#   FAKE_INCUS_VERSION     what `incus version` reports (default 6.19)
 set -uo pipefail
 
 S="${FAKE_INCUS_STATE:?FAKE_INCUS_STATE must be set}"
@@ -343,6 +344,11 @@ case "$cmd" in
         ;;
       *) : ;;
     esac
+    ;;
+
+  version)
+    echo "Client version: ${FAKE_INCUS_VERSION:-6.19}"
+    echo "Server version: ${FAKE_INCUS_VERSION:-6.19}"
     ;;
 
   *) die "fake_incus: unsupported command: $cmd" ;;
