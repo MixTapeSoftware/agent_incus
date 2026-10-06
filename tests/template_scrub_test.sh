@@ -220,9 +220,10 @@ echo "the host copy cannot be deleted"
 fresh_box
 stash
 backup="$TS_STATE_BACKUP"
-chmod 500 "$XDG_RUNTIME_DIR"
+# Fail the delete itself (a read-only directory would not stop root).
+rm() { [[ "$*" == *incs-tailscale.* ]] && return 1; command rm "$@"; }
 restore
-chmod 700 "$XDG_RUNTIME_DIR"
+unset -f rm
 assert_eq "undeletable backup: restore reports failure" "1" "$RC"
 assert_eq "undeletable backup: the node key is back in the container" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state")"
 assert_eq "undeletable backup: the path is still remembered" "$backup" "$TS_STATE_BACKUP"
