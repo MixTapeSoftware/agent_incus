@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # init-incus-claude
-# Creates an Incus container with Claude Code and a mounted workspace.
+# Creates an Incus container with Claude Code and a copy of your workspace.
 #
 # Default image: Ubuntu 24.04. Override with --image.
 
@@ -28,23 +28,20 @@ usage() {
   cat << EOF
 Usage: $(basename "$0") [OPTIONS] <container-name>
 
-Create an Incus container with a mounted workspace.
+Create an Incus container with a copy of a host directory as its workspace.
 Default image is Ubuntu 24.04. Shows an interactive TUI to select plugins.
 
 Options:
-  -p, --path PATH           Host directory to mount (default: current directory)
-  -m, --mount-path PATH     Container mount point (default: /workspace)
+  -p, --path PATH           Host directory to copy in (default: current directory)
+  -w, --workspace PATH      Where the copy goes in the container (default: /workspace)
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
-  -t, --template            Save container as a reusable local template (implies --no-mount)
+  -t, --template            Save container as a reusable local template (empty workspace)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
-  --no-mount                Clone repo into container instead of mounting host directory
-  --git-rw                  Let the container write .git/config and .git/hooks
-                            (default: read-only, so it cannot plant commands the host's git runs)
   --vm                      Provision a KVM virtual machine instead of a container
-  --no-copy                 VM only: start with an empty (sealed) workspace
+  --no-copy                 Start with an empty workspace instead of copying the host directory
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
@@ -126,73 +123,6 @@ wait_for_network() {
 }
 
 # ---------------------------------------------------------------------------
-# Mount workspace with user mapping (requires kernel 5.12+ idmapped mounts)
-# ---------------------------------------------------------------------------
-mount_workspace() {
-  local container="$1" source="$2" target="$3" err
-
-  if err="$(incus config device add "$container" workspace disk \
-      source="$source" path="$target" shift=true raw.mount.options=nosuid 2>&1)"; then
-    log "Mounted with shift=true"
-    return 0
-  fi
-
-  incus config device remove "$container" workspace 2>/dev/null || true
-  error "Workspace mount failed: $err
-  (shift=true needs Linux 5.12+ with idmapped mount support)"
-}
-
-# ---------------------------------------------------------------------------
-# Guard .git — the host runs git in the mounted tree, and git runs whatever
-# .git/config names (core.fsmonitor, core.hooksPath, core.pager, diff.external)
-# and whatever is in .git/hooks, during `git status` and without asking. The
-# mount is written as your UID, so git's ownership check does not notice.
-# Mounting those read-only on top of the workspace keeps a process in the
-# container from planting a command for the host to run. Commits, branches,
-# fetches and pushes still work; writing config does not (git remote add,
-# git push -u), which --git-rw allows again. Submodules keep their own
-# config and hooks under .git/modules and get the same treatment.
-# ---------------------------------------------------------------------------
-guard_git_dir() {
-  local container="$1" source="$2" target="$3"
-  local git="$source/.git" gitdir rel path n=0 unshifted=0
-  # No repository, or a linked worktree: its .git is a file pointing at a
-  # directory outside the mount, which the container cannot reach anyway.
-  [[ -d "$git" ]] || return 0
-  local -a gitdirs=("$git")
-  if [[ -d "$git/modules" ]]; then
-    while IFS= read -r rel; do gitdirs+=("$(dirname "$rel")"); done \
-      < <(find "$git/modules" -type f -name config | sort)
-  fi
-  for gitdir in "${gitdirs[@]}"; do
-    # Create them first, or the container could. config.worktree is read
-    # only when extensions.worktreeConfig is on, but that can be switched on
-    # from the host at any time.
-    mkdir -p "$gitdir/hooks"
-    [[ -e "$gitdir/config.worktree" ]] || : > "$gitdir/config.worktree"
-    for rel in config hooks config.worktree; do
-      [[ -e "$gitdir/$rel" ]] || continue
-      n=$((n + 1))
-      path="$target${gitdir#"$source"}/$rel"
-      # Shifted like the workspace, so the files keep your ownership and mode
-      # inside. Unshifted they belong to nobody, and a 0600 config could not
-      # be read there, so that is only a fallback.
-      if ! incus config device add "$container" "git-ro-$n" disk \
-          source="$gitdir/$rel" path="$path" readonly=true shift=true >/dev/null 2>&1; then
-        incus config device remove "$container" "git-ro-$n" >/dev/null 2>&1 || true
-        incus config device add "$container" "git-ro-$n" disk \
-          source="$gitdir/$rel" path="$path" readonly=true >/dev/null
-        unshifted=1
-      fi
-    done
-  done
-  log "Guarded .git: config, config.worktree and hooks are read-only in the container ($n mounts; --git-rw to allow writes)"
-  if [[ "$unshifted" == "1" ]]; then
-    warn "The read-only .git mounts could not be UID-shifted; they appear owned by nobody in the container"
-  fi
-}
-
-# ---------------------------------------------------------------------------
 # Exit trap — revoke build-time sudo, offer to delete the container on failure
 # ---------------------------------------------------------------------------
 BUILD_SUDO_GRANTED=0
@@ -247,19 +177,15 @@ cleanup_on_exit() {
 # Defaults
 # ---------------------------------------------------------------------------
 WORKSPACE_PATH="$PWD"
-MOUNT_PATH="/workspace"
+CONTAINER_WORKSPACE="/workspace"
 BASE_IMAGE="images:ubuntu/24.04"
 CONTAINER_NAME=""
 DRY_RUN=0
 NO_TUI=0
 SKIP_CREDENTIAL_PROXY=0
 SAVE_TEMPLATE=0
-NO_MOUNT=0
-GIT_GUARD=1
 TS_STATE_BACKUP=""
 ACK_ENV=0
-MAP_USER=0
-IDMAP_METHOD=""
 IS_VM=0
 NO_COPY=0
 VM_OPT_SET=0
@@ -617,6 +543,39 @@ restore_tailscale_state() {
     warn "Tailscale state is restored in $CONTAINER_NAME, but tailscaled did not start. Start it: incus exec $CONTAINER_NAME -- systemctl start tailscaled"
 }
 
+# ---------------------------------------------------------------------------
+# Copy the workspace in. The host directory is copied once and never mounted:
+# nothing the container writes reaches the host, which sees only the work that
+# leaves through git.
+# ---------------------------------------------------------------------------
+copy_workspace() {
+  local existing
+  # A template built before templates were emptied carries a workspace owned
+  # by whoever built it. If our UID differs those files are unwritable (git
+  # commit fails on .git/index.lock), so re-own them rather than error. Files
+  # in a workspace that did not come from a template are a mistake: stop.
+  existing="$(incus exec "$CONTAINER_NAME" -- ls -A "$CONTAINER_WORKSPACE" 2>/dev/null </dev/null || true)"
+  if [[ -n "$existing" ]]; then
+    [[ "$FROM_BASE_IMAGE" == "1" ]] || \
+      error "$CONTAINER_WORKSPACE is not empty inside the container: $BASE_IMAGE already has files there."
+    log "Reusing workspace from template; re-owning to $HOST_USER..."
+  else
+    incus exec "$CONTAINER_NAME" -- mkdir -p "$CONTAINER_WORKSPACE" </dev/null
+    # The working tree as it is on disk, .git and uncommitted work included.
+    # Extracted as the container's root (--no-same-owner), then handed to the
+    # user. Template builds and --no-copy start empty.
+    if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]]; then
+      log "Copying $WORKSPACE_PATH into $CONTAINER_WORKSPACE (includes .git)..."
+      tar -C "$WORKSPACE_PATH" -cf - . \
+        | incus exec "$CONTAINER_NAME" -- tar --no-same-owner -C "$CONTAINER_WORKSPACE" -xf -
+    fi
+  fi
+  incus exec "$CONTAINER_NAME" -- chown -R "$HOST_USER:$HOST_USER" "$CONTAINER_WORKSPACE" </dev/null
+  # Git refuses a repository it considers someone else's ("dubious ownership").
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+    "git config --global --add safe.directory '$CONTAINER_WORKSPACE' 2>/dev/null || true"
+}
+
 save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
@@ -649,13 +608,13 @@ save_template() {
 
   # Empty the workspace before publishing. A template is a reusable *provisioned
   # base* (packages, mise, shell, tools) — not a frozen copy of one repo. Baking
-  # the clone in also drags the builder's UID into every future container, where
+  # the copy in also drags the builder's UID into every future container, where
   # it surfaces as the overflow UID 65534 (nobody). Leaving /workspace empty lets
   # each launch populate it fresh, owned by the launching user. The guard keeps a
-  # misresolved MOUNT_PATH from ever expanding to `rm -rf /`.
-  if [[ -n "$MOUNT_PATH" && "$MOUNT_PATH" != "/" ]]; then
+  # misresolved CONTAINER_WORKSPACE from ever expanding to `rm -rf /`.
+  if [[ -n "$CONTAINER_WORKSPACE" && "$CONTAINER_WORKSPACE" != "/" ]]; then
     log "Emptying workspace so the template stays a clean base..."
-    incus exec "$CONTAINER_NAME" -- rm -rf "$MOUNT_PATH"
+    incus exec "$CONTAINER_NAME" -- rm -rf "$CONTAINER_WORKSPACE"
   fi
 
   stash_tailscale_state
@@ -691,7 +650,7 @@ TOKENS"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p|--path)       [[ $# -lt 2 ]] && error "$1 requires an argument"; WORKSPACE_PATH="$2"; shift 2 ;;
-    -m|--mount-path) [[ $# -lt 2 ]] && error "$1 requires an argument"; MOUNT_PATH="$2"; shift 2 ;;
+    -w|--workspace)  [[ $# -lt 2 ]] && error "$1 requires an argument"; CONTAINER_WORKSPACE="$2"; shift 2 ;;
     -f|--from)       [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="incus-init/$2"; shift 2 ;;
     -i|--image)      [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="$2"; shift 2 ;;
     -t|--template) SAVE_TEMPLATE=1; shift ;;
@@ -699,12 +658,10 @@ while [[ $# -gt 0 ]]; do
     --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
     --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
     --vm)            IS_VM=1; shift ;;
-    --no-copy)       NO_COPY=1; VM_OPT_SET=1; shift ;;
+    --no-copy)       NO_COPY=1; shift ;;
     --vm-disk)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_DISK="$2"; VM_OPT_SET=1; shift 2 ;;
     --vm-memory)     [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_MEMORY="$2"; VM_OPT_SET=1; shift 2 ;;
     --vm-cpus)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_CPUS="$2"; VM_OPT_SET=1; shift 2 ;;
-    --no-mount)      NO_MOUNT=1; shift ;;
-    --git-rw)        GIT_GUARD=0; shift ;;
     --ack-env)       ACK_ENV=1; shift ;;
     --no-tui)        NO_TUI=1; shift ;;
     --no-proxy)      SKIP_CREDENTIAL_PROXY=1; shift ;;
@@ -751,18 +708,13 @@ if [[ "$SKIP_CREDENTIAL_PROXY" == "0" ]]; then
     error "Instance '$CONTAINER_NAME-proxy' already exists; choose another container name or use --no-proxy"
 fi
 
-# Template builds never mount the host workspace.
-if [[ "$SAVE_TEMPLATE" == "1" ]]; then
-  NO_MOUNT=1
-fi
-
 # VM flag validation. VM-only options are meaningless for containers: warn and
 # ignore rather than error, so an errant flag never blocks a build.
 if [[ "$IS_VM" == "1" ]]; then
   [[ "$VM_CPUS" =~ ^[1-9][0-9]*$ ]] || error "--vm-cpus must be a positive integer (got: $VM_CPUS)"
   READY_TIMEOUT=90
 elif [[ "$VM_OPT_SET" == "1" ]]; then
-  warn "VM options (--no-copy/--vm-disk/--vm-memory/--vm-cpus) are ignored without --vm"
+  warn "VM options (--vm-disk/--vm-memory/--vm-cpus) are ignored without --vm"
 fi
 
 HOST_USER="$(whoami)"
@@ -770,35 +722,10 @@ HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
 # ---------------------------------------------------------------------------
-# Mount decision — mount the host workspace (writable as you) or clone the repo
-# into the container instead. --no-mount and --template force the clone path;
-# otherwise ask, defaulting to mount+map. Answering "n" means "don't touch my
-# host files": clone into the container rather than leave a degraded, unmapped
-# mount (owned by nobody but still writing through to the host). Non-interactive
-# (--no-tui) runs honor the flags without prompting.
-# ---------------------------------------------------------------------------
-if [[ "$NO_MOUNT" == "0" && "$IS_VM" == "0" ]]; then
-  if [[ "$NO_TUI" == "0" ]]; then
-    echo ""
-    read -rp "Mount your host workspace, writable as you? [Y/n] " MOUNT_CHOICE
-    if [[ "${MOUNT_CHOICE:-Y}" =~ ^[Nn]$ ]]; then
-      NO_MOUNT=1          # clone into the container instead
-    else
-      MAP_USER=1          # mount + map host user for write access
-    fi
-  else
-    MAP_USER=1            # non-interactive default: mount with user mapping
-  fi
-fi
-
-# ---------------------------------------------------------------------------
-# Resolve the workspace path and warn about .env files. Host files enter the
-# container either way — a live bind mount (mount mode) or a copy including .git
-# (no-mount) — so the secret-exposure warning applies to both. Template builds
-# are the exception: save_template publishes an empty workspace, so nothing is
-# exposed and there is no host tree to resolve. A sealed VM (--vm --no-copy) is
-# also exempt: the guest /workspace is created empty, so no host files enter it
-# and its (nonexistent) workspace is not scanned.
+# Resolve the workspace path and warn about .env files: they are copied in with
+# everything else. Template builds publish an empty workspace, so nothing is
+# exposed and there is no host tree to resolve. --no-copy starts empty too, so
+# its host directory is not scanned.
 # ---------------------------------------------------------------------------
 ENV_FILES_LIST=""
 if [[ "$SAVE_TEMPLATE" != "1" ]]; then
@@ -806,7 +733,7 @@ if [[ "$SAVE_TEMPLATE" != "1" ]]; then
   WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
   [[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
 
-  if [[ ! ( "$IS_VM" == "1" && "$NO_COPY" == "1" ) ]]; then
+  if [[ "$NO_COPY" != "1" ]]; then
     ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"
     if [[ -n "$ENV_FILES_LIST" ]]; then
       echo ""
@@ -876,18 +803,12 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "Type:        container"
   fi
-  # A template build publishes an empty workspace regardless of copy/mount mode,
-  # so report that rather than the copy/mount wording that never happens.
   if [[ "$SAVE_TEMPLATE" == "1" ]]; then
     echo "Workspace:   empty (template base)"
-  elif [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
-    echo "Workspace:   sealed (empty $MOUNT_PATH)"
-  elif [[ "$IS_VM" == "1" ]]; then
-    echo "Workspace:   copy host tree into $MOUNT_PATH incl .git"
-  elif [[ "$NO_MOUNT" == "1" ]]; then
-    echo "Workspace:   copy host tree into $MOUNT_PATH incl .git (no host mount)"
+  elif [[ "$NO_COPY" == "1" ]]; then
+    echo "Workspace:   empty $CONTAINER_WORKSPACE (--no-copy)"
   else
-    echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+    echo "Workspace:   copy $WORKSPACE_PATH into $CONTAINER_WORKSPACE (incl .git)"
   fi
   if [[ -n "$ENV_FILES_LIST" ]]; then
     _env_count="$(printf '%s\n' "$ENV_FILES_LIST" | wc -l | tr -d ' ')"
@@ -901,18 +822,6 @@ if [[ "$DRY_RUN" == "1" ]]; then
       echo "  ${_envpath#$WORKSPACE_PATH/}"
       _shown=$(( _shown + 1 ))
     done <<< "$ENV_FILES_LIST"
-  fi
-  if [[ "$SAVE_TEMPLATE" == "1" ]]; then
-    echo "Write access: n/a (template base)"
-  elif [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
-    echo "Write access: yes (sealed, owned by you)"
-  elif [[ "$IS_VM" == "1" || "$NO_MOUNT" == "1" ]]; then
-    echo "Write access: yes (copied in, owned by you)"
-  else
-    echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (shift=true)" || echo "no" )"
-    if [[ -d "$WORKSPACE_PATH/.git" ]]; then
-      echo ".git guard:  $( [[ "$GIT_GUARD" == "1" ]] && echo "config, config.worktree and hooks read-only" || echo "off (--git-rw)" )"
-    fi
   fi
   echo ""
   echo "Selected plugins:"
@@ -1083,70 +992,9 @@ incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'MISECFG'
 MISECFG
 
 # ---------------------------------------------------------------------------
-# Mount workspace or clone repo
+# Copy the workspace in
 # ---------------------------------------------------------------------------
-if [[ "$NO_MOUNT" == "1" || "$IS_VM" == "1" ]]; then
-  # /workspace may already be populated when launching from a saved template:
-  # save_template bakes the clone into the published image, owned by the UID of
-  # whoever built the template. If our UID differs, those files are unwritable
-  # (git commit fails on .git/index.lock, etc.), so re-own the tree to the
-  # launching user instead of erroring. A genuinely unexpected non-empty
-  # workspace (not a template launch) still errors.
-  if incus exec "$CONTAINER_NAME" -- sh -c "[ -d '$MOUNT_PATH' ] && [ \"\$(ls -A '$MOUNT_PATH')\" ]"; then
-    if [[ "$FROM_BASE_IMAGE" == "1" ]]; then
-      log "Reusing workspace from template; re-owning to $HOST_USER..."
-      incus exec "$CONTAINER_NAME" -- chown -R "$HOST_USER:$HOST_USER" "$MOUNT_PATH"
-    else
-      error "$MOUNT_PATH is not empty inside the container. Rebuild the base image with --no-mount."
-    fi
-  else
-    # Fresh workspace: copy the host working tree in — including .git and any
-    # uncommitted work — via a tar pipe. Needs no git credentials or network
-    # (unlike a remote clone) and reproduces the exact on-disk state. Extract
-    # with --no-same-owner (files land as the container's root), then chown the
-    # whole tree to the launching user. Skipped for template builds, which
-    # publish an empty workspace.
-    incus exec "$CONTAINER_NAME" -- sh -c "mkdir -p '$MOUNT_PATH'"
-    # Copy the host tree in unless this is a template build (publishes an empty
-    # workspace) or a sealed VM (--no-copy: start empty on purpose).
-    if [[ "$SAVE_TEMPLATE" != "1" && ! ( "$IS_VM" == "1" && "$NO_COPY" == "1" ) ]]; then
-      log "Copying workspace into instance (includes .git)..."
-      tar -C "$WORKSPACE_PATH" -cf - . \
-        | incus exec "$CONTAINER_NAME" -- tar --no-same-owner -C "$MOUNT_PATH" -xf -
-    fi
-    incus exec "$CONTAINER_NAME" -- chown -R "$HOST_USER:$HOST_USER" "$MOUNT_PATH"
-  fi
-  # Belt-and-suspenders: even with correct ownership, git refuses "dubious
-  # ownership" repos; register the workspace as safe for the launching user.
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "git config --global --add safe.directory '$MOUNT_PATH' 2>/dev/null || true"
-  if [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
-    IDMAP_METHOD="sealed"
-  else
-    IDMAP_METHOD="copy"
-  fi
-else
-  log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
-
-  if [[ "$MAP_USER" == "1" ]]; then
-    mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH"
-  else
-    incus config device add "$CONTAINER_NAME" workspace disk \
-      source="$WORKSPACE_PATH" path="$MOUNT_PATH"
-    IDMAP_METHOD="none"
-  fi
-
-  if [[ "$GIT_GUARD" == "1" ]]; then
-    guard_git_dir "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH"
-    # With .git/config read-only, keep git from needing to write it: push the
-    # current branch without an upstream entry, and record no tracking on
-    # checkout. Both would otherwise fail after doing the rest of their work.
-    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-      "git config --global push.default current && git config --global branch.autoSetupMerge false"
-  else
-    warn "--git-rw: the container can write .git/config and .git/hooks, which your host's git runs"
-  fi
-fi
+copy_workspace
 
 # Final readiness check
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
@@ -1195,12 +1043,12 @@ _run_plugin_installs "$FROM_BASE_IMAGE"
 log "Revoking build-time sudo..."
 revoke_build_sudo || error "Could not revoke build-time sudo"
 
-# Run mise install if the workspace has a config. Skipped for a sealed VM
-# (--vm --no-copy): its /workspace is created empty, so there is no host
-# mise config to probe.
-if [[ ! ( "$IS_VM" == "1" && "$NO_COPY" == "1" ) ]] && [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
+# Run mise install if the workspace has a config. Skipped for template builds
+# and --no-copy: the workspace starts empty, so the host's mise config never
+# reached it.
+if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] && [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
   log "Trusting workspace mise config..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise trust'
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cd '$CONTAINER_WORKSPACE' && mise trust"
 
   # Pre-clone asdf plugins with system git before `mise install`.
   # mise's built-in gix cloner trips on some plugin repos (e.g. asdf-php)
@@ -1265,7 +1113,7 @@ PRECLONE
   log "Running mise install for workspace..."
   # Non-fatal: a broken tool version in the workspace config shouldn't nuke an
   # otherwise-complete instance (plugins and env are already applied by now).
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'cd /workspace && mise install' || \
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cd '$CONTAINER_WORKSPACE' && mise install" || \
     warn "mise install failed — fix tool versions and rerun 'mise install' inside the instance"
 fi
 
@@ -1317,14 +1165,11 @@ else
 fi
 if [[ "$SAVE_TEMPLATE" == "1" ]]; then
   echo "Workspace:   empty (template base)"
-elif [[ "$IS_VM" == "1" && "$NO_COPY" == "1" ]]; then
-  echo "Workspace:   sealed (empty $MOUNT_PATH)"
-elif [[ "$IS_VM" == "1" || "$NO_MOUNT" == "1" ]]; then
-  echo "Workspace:   copied host tree into $MOUNT_PATH (incl .git)"
+elif [[ "$NO_COPY" == "1" ]]; then
+  echo "Workspace:   empty $CONTAINER_WORKSPACE (--no-copy)"
 else
-  echo "Workspace:   $WORKSPACE_PATH -> $MOUNT_PATH"
+  echo "Workspace:   copy of $WORKSPACE_PATH in $CONTAINER_WORKSPACE (incl .git)"
 fi
-echo "Write access: ${IDMAP_METHOD:-none}"
 # Env var names (never values) that made it into the instance config — answers
 # "did the token take?" at a glance after a long build.
 _env_keys="$(incus config show "$CONTAINER_NAME" 2>/dev/null \
@@ -1351,7 +1196,7 @@ echo "  incs $CONTAINER_NAME"
 echo ""
 if [[ "$(selected_get claude-code)" == "1" ]]; then
 echo "Start Claude Code:"
-echo "  incs -s $CONTAINER_NAME 'cd $MOUNT_PATH && claude'"
+echo "  incs -s $CONTAINER_NAME 'cd $CONTAINER_WORKSPACE && claude'"
 fi
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 # incus.envscan
-# Detect .env* files in the workspace about to be mounted, format a warning,
+# Detect .env* files in the workspace about to be copied in, format a warning,
 # and gate the launch on user acknowledgement.
 #
 # Sourced by incus.init — inherits colors, log/warn/error, set -euo pipefail.
