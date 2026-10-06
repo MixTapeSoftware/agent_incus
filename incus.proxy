@@ -220,6 +220,16 @@ proxy_valid_name() { [[ "$1" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]]; }
 
 proxy_instance_exists() { incus info "$1" >/dev/null 2>&1; }
 
+# proxy_instance_state <name>
+# Prints "present" or "absent", and fails when Incus could not say. Revoking
+# a placeholder must not mistake an unreachable Incus for a missing proxy, so
+# detach asks this instead of proxy_instance_exists.
+proxy_instance_state() {
+  local rows
+  rows="$(incus list "^$1\$" --format csv --columns n 2>/dev/null)" || return 1
+  if grep -qxF "$1" <<< "$rows"; then echo present; else echo absent; fi
+}
+
 proxy_wait_ready() {
   local name="$1" elapsed=0
   while [[ $elapsed -lt $PROXY_READY_TIMEOUT ]]; do
@@ -985,13 +995,20 @@ proxy_attached_containers() {
 # proxy_detach <container> [<service>]
 # Detach one service or everything: the proxy first, then the container.
 proxy_detach() {
-  local container="$1" service="${2:-}" proxy names
+  local container="$1" service="${2:-}" proxy names state
   proxy="$(proxy_attached_to "$container")"
   [[ -z "$proxy" ]] && error "$container is not attached to a proxy"
   names="$(proxy_entry_names "$container" "$service")"
   [[ -n "$service" && -z "$names" ]] && error "$container has no service '$service' attached"
 
-  if proxy_instance_exists "$proxy"; then
+  # Only a confirmed absence skips the proxy side. If Incus cannot answer, the
+  # placeholder may still be honored, and clearing the container's record of
+  # it would leave nothing to find and revoke it by later.
+  state="$(proxy_instance_state "$proxy")" || \
+    error "Could not ask Incus whether proxy '$proxy' still exists.
+       $container is still attached and its placeholder may still work.
+       Check Incus, then run again: incs proxy rm $container"
+  if [[ "$state" == "present" ]]; then
     # The attachment tag is cleared last, by the container side, so a failure
     # here leaves the container attached and this command can be run again.
     # shellcheck disable=SC2086  # one argument per entry name
@@ -1346,16 +1363,22 @@ proxy_refuse_delete_of_proxy() {
 # delete succeeded, so a failed delete leaves the container fully attached.
 # <entry-names> must be read before the delete: they live in its config.
 proxy_after_delete() {
-  local container="$1" proxy="${2:-}" names="${3:-}"
+  local container="$1" proxy="${2:-}" names="${3:-}" state revoke
   [[ -n "$proxy" && -n "$names" ]] || return 0
-  proxy_instance_exists "$proxy" || return 0
+  revoke="Revoke them: incus exec $proxy -- iron-rebuild drop $(printf '%s' "$names" | tr '\n' ' ')"
+  if ! state="$(proxy_instance_state "$proxy")"; then
+    warn "Could not ask Incus whether proxy '$proxy' still exists — the placeholders $container held may still work.
+    $revoke"
+    return 0
+  fi
+  [[ "$state" == "present" ]] || return 0
   # shellcheck disable=SC2086  # one argument per entry name
   proxy_try proxy_detach_proxy_side "$proxy" $names >/dev/null 2>&1
   if [[ $PROXY_TRY_RC -eq 0 ]]; then
     log "Removed $container from proxy '$proxy'"
   else
     warn "Could not update proxy '$proxy' — the placeholders $container held may still work.
-    Revoke them: incus exec $proxy -- iron-rebuild drop $(printf '%s' "$names" | tr '\n' ' ')"
+    $revoke"
   fi
 }
 
