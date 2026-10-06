@@ -28,6 +28,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 - **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
 - **macOS**: [Homebrew](https://brew.sh/) installed — `incus.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
 - `~/.local/bin` in your `PATH`
+- `jq` — only for `incs status` (preinstalled on macOS 15+; `sudo apt install jq` on Ubuntu)
 
 ## Install
 
@@ -60,7 +61,7 @@ incs my-project claude
 
 | Script | Alias | Purpose |
 |---|---|---|
-| `incs` | — | Unified CLI (shell, init, network, update) |
+| `incs` | — | Unified CLI (shell, init, network, update, status) |
 | `incus.init` | `inci` | Create and provision a container |
 | `incus.shell` | — | Open a login shell (or run a command) in a container |
 | `incus.network` | `incn` | Manage port proxy devices |
@@ -86,6 +87,7 @@ incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
+incs status                            # State, CPU, memory, disk, IPv4 of all instances
 incs cron install                      # Install 7pm daily update cron
 incs cron install 3                    # Install 3am daily update cron
 incs cron status                       # Show current cron schedule
@@ -93,6 +95,8 @@ incs cron remove                       # Remove the update cron
 ```
 
 The individual scripts and aliases (`inci`, `incn`) still work directly.
+
+`incs status` marks running instances `●`, frozen `◐`, and stopped `○`. CPU is sampled over one second and scaled like `docker stats`: 100% is one full core, so a busy 4-vCPU instance can read 400%. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
 
 ## incus.init Options
 
@@ -191,7 +195,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | Plugin | Description |
 |---|---|
 | [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
-| Chadmux | Chad's tmux config + TPM plugins |
+| [Chadmux](https://github.com/chadfennell/chadmux) | Chad's tmux config, Incus pane labels, and TPM plugins |
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
@@ -210,6 +214,10 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | Tailscale + Supabase serve | Preset `tailscale serve` map for app + Supabase ports (443→3000, 4410→3010, 4431→3001, 5432→54321, 5433→54323, 5434→54324, 8443→8000); auto-selects Tailscale |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`).
+
+Chadmux clones the `main` branch into `~/.config/tmux` and links `~/.tmux.conf` to the repo's config. To get newer config changes inside a container, run `git -C ~/.config/tmux pull --ff-only`, then reload with prefix + r.
+
+Installation preserves an existing config directory or unrelated Git checkout in a sibling `tmux.backup.*` directory after the download succeeds. An existing legacy `~/.tmux.conf` is also preserved in a sibling `.tmux.conf.backup.*` directory before linking the new config. Only a checkout with the Chadmux upstream as its origin is updated in place.
 
 Matt Pocock Skills installs the full collection globally for the instance user. Codex and Grok discover the shared `~/.agents/skills` directory, and Claude Code receives its own discovery links, so the same collection is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
 
