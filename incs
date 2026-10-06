@@ -30,6 +30,7 @@ Commands:
   -ka, kill-all                  Stop all agent-incus containers
   -u, update <container>         Update packages in a container
   -ua, update-all                Update packages in all agent-incus containers
+  status                         Show all instances: state, CPU, memory, disk, IPv4
   new-plugin <slug> [opts]       Generate a new plugin file from a template
   -h, help                       Show this help
 
@@ -54,6 +55,7 @@ Examples:
   incs -ka                       Stop all agent-incus containers
   incs -u your-container                     Update packages in your-container
   incs -ua                       Update all agent-incus containers
+  incs status                    One-time status of all instances
   incs cron install              Install 7pm daily update cron
   incs cron install 3            Install 3am daily update cron
 EOF
@@ -224,6 +226,78 @@ cmd_set_env() {
 }
 
 # ---------------------------------------------------------------------------
+# Status table. jq does the formatting; bash only samples and pipes.
+# Input: `incus list --format json`. $prev = {t, cpu: {name: [ns, pid]}} from
+# a sample ~1s earlier (for CPU %); $color = bool. Keep the program free of
+# single quotes — it lives in a single-quoted string.
+# ---------------------------------------------------------------------------
+STATUS_JQ='
+def pad($w): if length < $w then . + (" " * ($w - length)) else . end;
+def dp1: (. * 10 | round) as $d | "\($d / 10 | floor).\($d % 10)";
+def human:
+  [., 0] | until(.[0] < 1024 or .[1] == 4; [.[0] / 1024, .[1] + 1])
+  | "\(.[0] | dp1)\(["B", "KiB", "MiB", "GiB", "TiB"][.[1]])";
+def ipv4:
+  [ (.state.network // {}) | to_entries[]
+    | select(.key | (. == "lo" or startswith("docker") or startswith("br-") or startswith("veth")) | not)
+    | .value.addresses[]?
+    | select(.family == "inet" and .scope == "global") | .address ]
+  | if length == 0 then "-" else join(", ") end;
+def row($t):
+  .state as $s | .expanded_config as $c | ($s.cpu.usage // null) as $u | ($prev.cpu[.name] // null) as $p
+  | ([.expanded_devices // {} | .[] | select(.type == "disk" and .path == "/") | .size // empty] | first // null) as $quota
+  | { status,
+      cells: [
+        .name,
+        (if .type == "virtual-machine" then "VM" else "CT" end),
+        (if $c["user.managed-by"] == "agent-incus" then "yes" else "-" end),
+        # Same pid in both samples, or the instance restarted in between.
+        (if .status == "Running" and $u != null and $p[0] != null and $p[1] == $s.pid and $u >= $p[0] and $t > $prev.t
+           then "\(($u - $p[0]) / 1e9 / ($t - $prev.t) * 100 | dp1)%" else "-" end),
+        (if (.status == "Running" or .status == "Frozen") and ($s.memory.usage // 0) > 0
+           then ($s.memory.usage | human) + (if $c["limits.memory"] then " / " + $c["limits.memory"] else "" end)
+           else "-" end),
+        (if ($s.disk.root.usage // 0) > 0
+           then ($s.disk.root.usage | human) + (if $quota then " / " + $quota else "" end)
+           else "-" end),
+        ipv4 ] };
+def dot:
+  if .status == "Running" then (if $color then "\u001b[32m●\u001b[0m" else "●" end)
+  elif .status == "Frozen" then (if $color then "\u001b[33m◐\u001b[0m" else "◐" end)
+  else "○" end;
+def fmt($w): [range(0; length) as $i | if $i < length - 1 then .[$i] | pad($w[$i]) else .[$i] end] | join("  ");
+
+now as $t
+| if length == 0 then "No instances found" else
+    map(row($t)) as $rows
+    | ["NAME", "TYPE", "AGENT", "CPU", "MEMORY", "DISK", "IPV4"] as $hdr
+    | [range(0; $hdr | length) as $i | [$hdr[$i], $rows[].cells[$i]] | map(length) | max] as $w
+    | "   " + ($hdr | fmt($w)),
+      ($rows[] | dot + "  " + (.cells | fmt($w))),
+      "",
+      "\([$rows[] | select(.status == "Running")] | length) of \($rows | length) running"
+  end
+'
+
+cmd_status() {
+  command -v jq >/dev/null 2>&1 ||
+    error "incs status needs jq (macOS 15+ ships it; Ubuntu: sudo apt install jq; Homebrew: brew install jq)"
+
+  local color=false prev
+  if [[ -t 1 && -z "${NO_COLOR:-}" ]]; then color=true; fi
+
+  # CPU % = change in cumulative CPU time across two samples ~1s apart.
+  prev=$(incus list --format json |
+    jq -c '{t: now, cpu: (map(select(.status == "Running") | {key: .name, value: [.state.cpu.usage, .state.pid]}) | from_entries)}') ||
+    error "Failed to list instances"
+  if jq -e '.cpu | length > 0' <<<"$prev" >/dev/null; then sleep 1; fi
+
+  incus list --format json |
+    jq -r --argjson prev "$prev" --argjson color "$color" "$STATUS_JQ" ||
+    error "Failed to list instances"
+}
+
+# ---------------------------------------------------------------------------
 # Cron management
 # ---------------------------------------------------------------------------
 CRON_TAG="# incs-update-all"
@@ -328,6 +402,9 @@ case "$1" in
         log "Stopped $c"
       done
     fi
+    ;;
+  status)
+    cmd_status
     ;;
   -u|update)
     shift
