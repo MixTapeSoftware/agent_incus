@@ -50,10 +50,13 @@ Commands:
   -h, help                       Show this help
 
 Credential proxy (real tokens stay out of containers; see: incs proxy help):
-  proxy new <name>               Create a proxy
-  proxy add <container> <proxy>  Attach a container (GitHub, or any API with --env/--host)
-  proxy rm <container>           Detach a container
+  proxy add <container> [proxy]  Attach GitHub, or any API with --env/--host
+                                   (defaults to the container's own proxy)
+  proxy apply <container> <file> Attach every service listed in a file
+  proxy configure <proxy>        Set a 1Password service account token
+  proxy rm <container>           Detach a container's services
   proxy list                     Show proxies and attached containers
+  proxy new <name>               Create a shared proxy
   proxy delete <name>            Delete a proxy
 
 Cron:
