@@ -1,0 +1,111 @@
+#!/bin/bash
+set -euo pipefail
+
+# chadmux.host
+# Installs the Chadmux tmux config on the host, where its pane labels show
+# which panes are shelled into Incus instances. An existing host tmux config
+# is never moved, replaced, or linked over.
+#
+#   chadmux.host status    Print: installed | existing <path> | missing <cmd> | absent
+#   chadmux.host install   Install on a host with no tmux config (exit 1 otherwise)
+
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+log()   { echo -e "${GREEN}[+]${NC} $1"; }
+warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
+error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+
+UPSTREAM="https://github.com/chadfennell/chadmux.git"
+TPM_UPSTREAM="https://github.com/tmux-plugins/tpm"
+# Chadmux's tmux.conf refers to ~/.config/tmux by path, so install there
+# regardless of XDG_CONFIG_HOME.
+CONFIG_DIR="$HOME/.config/tmux"
+LEGACY_CONF="$HOME/.tmux.conf"
+TPM_DIR="$HOME/.tmux/plugins/tpm"
+
+# Every user config location tmux reads.
+config_paths() {
+  echo "$LEGACY_CONF"
+  echo "$CONFIG_DIR"
+  if [[ -n "${XDG_CONFIG_HOME:-}" && "$XDG_CONFIG_HOME/tmux" != "$CONFIG_DIR" ]]; then
+    echo "$XDG_CONFIG_HOME/tmux"
+  fi
+}
+
+is_installed() {
+  local origin
+  [[ -d "$CONFIG_DIR/.git" ]] || return 1
+  origin="$(git -C "$CONFIG_DIR" config --get remote.origin.url 2>/dev/null || true)"
+  [[ "$origin" == "$UPSTREAM" || "$origin" == "${UPSTREAM%.git}" ]] || return 1
+  [[ -L "$LEGACY_CONF" && "$LEGACY_CONF" -ef "$CONFIG_DIR/tmux.conf" ]]
+}
+
+host_status() {
+  local cmd path
+  if command -v git >/dev/null 2>&1 && is_installed; then
+    echo installed
+    return
+  fi
+  while IFS= read -r path; do
+    if [[ -e "$path" || -L "$path" ]]; then
+      echo "existing $path"
+      return
+    fi
+  done < <(config_paths)
+  for cmd in git tmux; do
+    if ! command -v "$cmd" >/dev/null 2>&1; then
+      echo "missing $cmd"
+      return
+    fi
+  done
+  echo absent
+}
+
+host_install() {
+  local state
+  state="$(host_status)"
+  case "$state" in
+    absent) ;;
+    installed) log "Chadmux is already installed on this host"; return 0 ;;
+    existing\ *) error "Found an existing tmux config at ${state#existing }; leaving it alone" ;;
+    missing\ *) error "Chadmux needs ${state#missing } on the host" ;;
+  esac
+
+  log "Installing Chadmux from chadfennell/chadmux..."
+  mkdir -p "$HOME/.config"
+  # Finish downloading before creating anything tmux would read. Global, not
+  # local: the EXIT trap runs after this function has returned.
+  staging="$(mktemp -d "$HOME/.config/.chadmux.XXXXXX")"
+  trap 'rm -rf "$staging"' EXIT
+  git clone --depth 1 --branch main "$UPSTREAM" "$staging"
+
+  # Re-check right before writing: never land on a config created meanwhile.
+  [[ "$(host_status)" == absent ]] || error "A tmux config appeared during installation; leaving it alone"
+  mv "$staging" "$CONFIG_DIR"
+  trap - EXIT
+  if ! ln -s "$CONFIG_DIR/tmux.conf" "$LEGACY_CONF"; then
+    rm -rf "$CONFIG_DIR"
+    error "Could not link $LEGACY_CONF"
+  fi
+  log "Linked $LEGACY_CONF -> $CONFIG_DIR/tmux.conf"
+
+  if [[ ! -d "$TPM_DIR" ]]; then
+    log "Cloning TPM..."
+    mkdir -p "${TPM_DIR%/*}"
+    git clone --depth 1 "$TPM_UPSTREAM" "$TPM_DIR"
+  fi
+
+  log "Installing TPM plugins..."
+  "$TPM_DIR/bin/install_plugins" || \
+    warn "TPM plugin install returned non-zero — run prefix + I inside tmux to retry"
+  log "Chadmux installed. Start tmux, or reload a running server with: tmux source-file ~/.tmux.conf"
+}
+
+case "${1:-}" in
+  status)  host_status ;;
+  install) host_install ;;
+  *)       echo "Usage: $(basename "$0") status|install" >&2; exit 1 ;;
+esac
