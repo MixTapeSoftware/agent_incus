@@ -47,7 +47,8 @@ Options:
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
-  --no-sudo                 Do not grant sudo to the container user (for AI agents)
+  --no-proxy                Do not create a credential proxy for this container
+  --proxy                   Create a credential proxy (the default)
   --no-tui                  Skip interactive plugin selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
@@ -123,114 +124,66 @@ wait_for_network() {
 }
 
 # ---------------------------------------------------------------------------
-# subuid / subgid helpers (internal plumbing for raw.idmap fallback)
-# ---------------------------------------------------------------------------
-id_in_subid_file() {
-  local id=$1 file=$2
-  [[ ! -f "$file" ]] && return 1
-  while IFS=: read -r name start count || [[ -n "$name" ]]; do
-    [[ -z "$name" || "$name" == \#* || "$name" != "root" ]] && continue
-    local end=$((start + count - 1))
-    [[ $id -ge $start && $id -le $end ]] && return 0
-  done < "$file"
-  return 1
-}
-
-entry_exists_in_file() {
-  local entry=$1 file=$2
-  [[ ! -f "$file" ]] && return 1
-  grep -qxF "$entry" "$file" 2>/dev/null
-}
-
-ensure_subid_entries() {
-  local uid="$1" gid="$2"
-  local subuid_ok=0 subgid_ok=0
-
-  id_in_subid_file "$uid" /etc/subuid && subuid_ok=1
-  id_in_subid_file "$gid" /etc/subgid && subgid_ok=1
-
-  [[ "$subuid_ok" == "1" && "$subgid_ok" == "1" ]] && return 0
-
-  echo ""
-  echo "Your UID/GID must be in /etc/subuid and /etc/subgid for write access."
-  local entries=()
-  [[ "$subuid_ok" == "0" ]] && ! entry_exists_in_file "root:$uid:1" /etc/subuid && \
-    entries+=("/etc/subuid: root:$uid:1")
-  [[ "$subgid_ok" == "0" ]] && ! entry_exists_in_file "root:$gid:1" /etc/subgid && \
-    entries+=("/etc/subgid: root:$gid:1")
-
-  [[ ${#entries[@]} -eq 0 ]] && return 0
-
-  echo "Need to add (requires sudo):"
-  printf '  %s\n' "${entries[@]}"
-  read -rp "Add these entries? [Y/n] " reply
-  [[ "$reply" =~ ^[Nn]$ ]] && return 1
-
-  [[ "$subuid_ok" == "0" ]] && ! entry_exists_in_file "root:$uid:1" /etc/subuid && \
-    echo "root:$uid:1" | sudo tee -a /etc/subuid > /dev/null
-  [[ "$subgid_ok" == "0" ]] && ! entry_exists_in_file "root:$gid:1" /etc/subgid && \
-    echo "root:$gid:1" | sudo tee -a /etc/subgid > /dev/null
-}
-
-# ---------------------------------------------------------------------------
-# Mount workspace with user mapping
-#
-# Tries shift=true first (clean, kernel-level, no config needed).
-# Falls back to raw.idmap (broader compat, needs subuid/subgid).
-# If both fail, mounts without mapping (read-only for container user).
+# Mount workspace with user mapping (requires kernel 5.12+ idmapped mounts)
 # ---------------------------------------------------------------------------
 mount_workspace() {
-  local container="$1" source="$2" target="$3" uid="$4" gid="$5"
+  local container="$1" source="$2" target="$3" err
 
-  # Attempt 1: shift=true (kernel idmapped mounts, 5.12+)
-  log "Trying shift=true mount..."
-  if incus config device add "$container" workspace disk \
-      source="$source" path="$target" shift=true 2>/dev/null; then
+  if err="$(incus config device add "$container" workspace disk \
+      source="$source" path="$target" shift=true raw.mount.options=nosuid 2>&1)"; then
     log "Mounted with shift=true"
     return 0
   fi
 
-  # shift failed, clean up
   incus config device remove "$container" workspace 2>/dev/null || true
-
-  # Attempt 2: raw.idmap
-  log "shift=true not supported, trying raw.idmap..."
-  if ensure_subid_entries "$uid" "$gid"; then
-    incus config device add "$container" workspace disk \
-      source="$source" path="$target"
-    incus config set "$container" raw.idmap="both $uid $uid"
-    log "Restarting container for raw.idmap..."
-    incus restart "$container"
-    wait_for_container "$container"
-    wait_for_network "$container"
-    log "Mounted with raw.idmap"
-    IDMAP_METHOD="raw"
-    return 0
-  fi
-
-  # Attempt 3: no mapping
-  warn "Could not configure user mapping. Mounting without write access."
-  incus config device add "$container" workspace disk \
-    source="$source" path="$target"
-  IDMAP_METHOD="none"
-  return 0
+  error "Workspace mount failed: $err
+  (shift=true needs Linux 5.12+ with idmapped mount support)"
 }
 
 # ---------------------------------------------------------------------------
-# Cleanup trap — offer to delete container on failure
+# Exit trap — revoke build-time sudo, offer to delete the container on failure
 # ---------------------------------------------------------------------------
-cleanup_on_failure() {
+BUILD_SUDO_GRANTED=0
+
+# The user gets passwordless sudo while plugins install. Take it back.
+revoke_build_sudo() {
+  [[ "$BUILD_SUDO_GRANTED" == "1" ]] || return 0
+  incus exec "$CONTAINER_NAME" -- rm -f "/etc/sudoers.d/$HOST_USER" </dev/null || return 1
+  BUILD_SUDO_GRANTED=0
+}
+
+# An EXIT trap, not ERR: error() calls exit directly, which ERR never sees.
+cleanup_on_exit() {
+  local rc=$? reply="" owned="" attached="" entries=""
+  trap - EXIT INT TERM HUP
+  set +e
   if [[ -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
-    echo ""
-    warn "Script failed. Container '$CONTAINER_NAME' was partially created."
-    read -rp "Delete it? [Y/n] " reply
-    if [[ ! "$reply" =~ ^[Nn]$ ]]; then
-      incus delete --force "$CONTAINER_NAME" 2>/dev/null || true
-      log "Deleted $CONTAINER_NAME"
-    else
-      warn "Container left in place. Clean up manually with: incus delete --force $CONTAINER_NAME"
+    # Before the prompt: the container may be kept, or the prompt never answered.
+    revoke_build_sudo || \
+      warn "Could not revoke build-time sudo in '$CONTAINER_NAME'. Delete it: incus delete --force $CONTAINER_NAME"
+    if [[ $rc -ne 0 ]]; then
+      echo ""
+      warn "Script failed. Container '$CONTAINER_NAME' was partially created."
+      # No answer (stdin closed) keeps the container: never delete unasked.
+      read -rp "Delete it? [Y/n] " reply || reply="n"
+      if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+        owned="$(incus config get "$CONTAINER_NAME" user.incs.owned-proxy 2>/dev/null)"
+        attached="$(proxy_attached_to "$CONTAINER_NAME")"
+        entries="$(proxy_entry_names "$CONTAINER_NAME")"
+        if incus delete --force "$CONTAINER_NAME"; then
+          log "Deleted $CONTAINER_NAME"
+          proxy_after_delete "$CONTAINER_NAME" "$attached" "$entries"
+          proxy_delete_owned "$CONTAINER_NAME" "$owned" || \
+            warn "Could not remove owned proxy '$owned'. Clean up with: incs proxy delete $owned"
+        else
+          warn "Could not delete '$CONTAINER_NAME'; its proxy was kept"
+        fi
+      else
+        warn "Container left in place. Clean up manually with: incs -d $CONTAINER_NAME"
+      fi
     fi
   fi
+  exit "$rc"
 }
 
 # ---------------------------------------------------------------------------
@@ -242,8 +195,8 @@ BASE_IMAGE="images:ubuntu/24.04"
 CONTAINER_NAME=""
 DRY_RUN=0
 NO_TUI=0
+SKIP_CREDENTIAL_PROXY=0
 SAVE_TEMPLATE=0
-NO_SUDO=0
 NO_MOUNT=0
 ACK_ENV=0
 MAP_USER=0
@@ -565,14 +518,31 @@ save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
 
-  # Save token lines from .zshenv, then strip them so they don't leak into the image
+  # Read /etc/hosts before changing anything: its proxy lines must not reach
+  # the image, so a template is not saved if they cannot be found.
+  local hosts_file saved_hosts
+  hosts_file="$(incus file pull -q "$CONTAINER_NAME/etc/hosts" - 2>/dev/null)" || \
+    error "Could not read /etc/hosts in $CONTAINER_NAME. No template saved: it might send hosts to a credential proxy."
+
+  # Save token lines from .zshenv, then strip them so they don't leak into the
+  # image. Lines written by a credential proxy attach (marked "# incs-proxy")
+  # go too: a placeholder and proxy address belong to one container, and a
+  # container launched from the template must not inherit them.
   local saved_tokens
   saved_tokens=$(incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=' ~/.zshenv 2>/dev/null || true")
+    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=|# incs-proxy(:[a-z0-9-]+)?\$' ~/.zshenv 2>/dev/null || true")
 
   log "Scrubbing secrets from image..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "sed -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d' ~/.zshenv 2>/dev/null || true"
+    "sed -E -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d; /# incs-proxy(:[a-z0-9-]+)?\$/d' ~/.zshenv 2>/dev/null || true"
+
+  # The same goes for the /etc/hosts lines an attach adds: they send API hosts
+  # to one proxy's address.
+  saved_hosts="$(grep -E ' # incs-proxy:[a-z0-9-]+$' <<< "$hosts_file" || true)"
+  if [[ -n "$saved_hosts" ]]; then
+    { grep -vE ' # incs-proxy:[a-z0-9-]+$' <<< "$hosts_file" || true; } \
+      | incus file push -q --uid 0 --gid 0 --mode 0644 - "$CONTAINER_NAME/etc/hosts"
+  fi
 
   # Empty the workspace before publishing. A template is a reusable *provisioned
   # base* (packages, mise, shell, tools) — not a frozen copy of one repo. Baking
@@ -597,6 +567,10 @@ save_template() {
     incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cat >> ~/.zshenv <<'TOKENS'
 $saved_tokens
 TOKENS"
+  fi
+  if [[ -n "$saved_hosts" ]]; then
+    { incus file pull -q "$CONTAINER_NAME/etc/hosts" -; printf '%s\n' "$saved_hosts"; } \
+      | incus file push -q --uid 0 --gid 0 --mode 0644 - "$CONTAINER_NAME/etc/hosts"
   fi
 
   wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
@@ -624,8 +598,9 @@ while [[ $# -gt 0 ]]; do
     --vm-cpus)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_CPUS="$2"; VM_OPT_SET=1; shift 2 ;;
     --no-mount)      NO_MOUNT=1; shift ;;
     --ack-env)       ACK_ENV=1; shift ;;
-    --no-sudo)       NO_SUDO=1; shift ;;
     --no-tui)        NO_TUI=1; shift ;;
+    --no-proxy)      SKIP_CREDENTIAL_PROXY=1; shift ;;
+    --proxy)         SKIP_CREDENTIAL_PROXY=0; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
     -*)
@@ -646,6 +621,12 @@ done
 # ---------------------------------------------------------------------------
 source "$SCRIPT_DIR/incus.macos.setup"
 source "$SCRIPT_DIR/incus.envscan"
+# read_secret / read_value, for plugin prompts that take pasted values.
+source "$SCRIPT_DIR/incus.prompt"
+# shellcheck source=incus.profile
+source "$SCRIPT_DIR/incus.profile"
+# shellcheck source=incus.proxy
+source "$SCRIPT_DIR/incus.proxy"
 
 # ---------------------------------------------------------------------------
 # Validate
@@ -655,6 +636,12 @@ require_commands incus curl sudo realpath
 [[ -z "$CONTAINER_NAME" ]] && { warn "Container name required"; echo ""; usage; }
 [[ ! "$CONTAINER_NAME" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] && error "Invalid container name: must start with a letter, only letters/digits/hyphens"
 incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAME' already exists"
+
+if [[ "$SKIP_CREDENTIAL_PROXY" == "0" ]]; then
+  [[ ${#CONTAINER_NAME} -le 57 ]] || error "Container name is too long for a -proxy suffix; shorten it or use --no-proxy"
+  proxy_instance_exists "$CONTAINER_NAME-proxy" && \
+    error "Instance '$CONTAINER_NAME-proxy' already exists; choose another container name or use --no-proxy"
+fi
 
 # Template builds never mount the host workspace.
 if [[ "$SAVE_TEMPLATE" == "1" ]]; then
@@ -814,7 +801,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   elif [[ "$IS_VM" == "1" || "$NO_MOUNT" == "1" ]]; then
     echo "Write access: yes (copied in, owned by you)"
   else
-    echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (auto-detect method)" || echo "no" )"
+    echo "Write access: $( [[ "$MAP_USER" == "1" ]] && echo "yes (shift=true)" || echo "no" )"
   fi
   echo ""
   echo "Selected plugins:"
@@ -827,6 +814,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
     fi
   done
   echo ""
+  if [[ "$SKIP_CREDENTIAL_PROXY" == "1" ]]; then
+    echo "Proxy:       none"
+  elif [[ "$(selected_get gh-auth)" == "1" ]]; then
+    echo "Proxy:       $CONTAINER_NAME-proxy (github, from GitHub Auth)"
+  else
+    echo "Proxy:       $CONTAINER_NAME-proxy (empty)"
+  fi
   echo "Template:    $( [[ "$SAVE_TEMPLATE" == "1" ]] && echo "incus-init/$CONTAINER_NAME" || echo no )"
   echo "========================================"
   exit 0
@@ -835,7 +829,12 @@ fi
 # ---------------------------------------------------------------------------
 # From here on, real work — set up cleanup trap
 # ---------------------------------------------------------------------------
-trap cleanup_on_failure ERR
+trap cleanup_on_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+
+ensure_profile
 
 # ---------------------------------------------------------------------------
 # Detect if launching from a local base image (skip provisioning)
@@ -868,12 +867,20 @@ if [[ "$IS_VM" == "1" ]]; then
     -c limits.cpu="$VM_CPUS" \
     -d root,size="$VM_DISK"
 else
-  incus launch "$BASE_IMAGE" "$CONTAINER_NAME"
+  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE"
 fi
 incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
 
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
+
+# Ownership belongs to this instance, including launches from a template.
+if [[ -n "$(incus config get "$CONTAINER_NAME" user.incs.owned-proxy)" ]]; then
+  incus config unset "$CONTAINER_NAME" user.incs.owned-proxy
+fi
+if [[ "$SKIP_CREDENTIAL_PROXY" == "0" ]]; then
+  proxy_create_owned "$CONTAINER_NAME"
+fi
 
 # ---------------------------------------------------------------------------
 # Provision (skipped when launching from a local base image)
@@ -907,6 +914,7 @@ fi  # end FROM_BASE_IMAGE == 0
 # Create user (always — base image may have been built by a different user)
 # ---------------------------------------------------------------------------
 log "Creating user $HOST_USER..."
+BUILD_SUDO_GRANTED=1
 incus exec "$CONTAINER_NAME" -- sh -c "
   # Skip creation if user already exists with correct UID
   if ! (id $HOST_USER >/dev/null 2>&1 && [ \"\$(id -u $HOST_USER)\" = \"$HOST_UID\" ]); then
@@ -929,13 +937,16 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 
   id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
 
-  # Sudo: always enforce current flag state (base image may differ)
-  if [ \"$NO_SUDO\" = \"1\" ]; then
-    rm -f /etc/sudoers.d/$HOST_USER
-  else
-    echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
-    chmod 0440 /etc/sudoers.d/$HOST_USER
-  fi
+  # Group-gated sudo: the user is not a member of _sudo. incus.shell adds the
+  # group to a single session when asked (--with-sudo).
+  groupadd -f _sudo
+  echo '%_sudo ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/_sudo
+  chmod 0440 /etc/sudoers.d/_sudo
+
+  # Grant user-level sudo for the build (plugins need it). Removed after
+  # plugin installs, and by the exit trap if the build stops early.
+  echo '$HOST_USER ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/$HOST_USER
+  chmod 0440 /etc/sudoers.d/$HOST_USER
 "
 
 # ---------------------------------------------------------------------------
@@ -1007,7 +1018,7 @@ else
   log "Mounting workspace: $WORKSPACE_PATH -> $MOUNT_PATH"
 
   if [[ "$MAP_USER" == "1" ]]; then
-    mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH" "$HOST_UID" "$HOST_GID"
+    mount_workspace "$CONTAINER_NAME" "$WORKSPACE_PATH" "$MOUNT_PATH"
   else
     incus config device add "$CONTAINER_NAME" workspace disk \
       source="$WORKSPACE_PATH" path="$MOUNT_PATH"
@@ -1057,6 +1068,10 @@ fi  # end FROM_BASE_IMAGE == 0
 # Install selected plugins
 # ---------------------------------------------------------------------------
 _run_plugin_installs "$FROM_BASE_IMAGE"
+
+# Revoke build-time sudo now that plugins are done
+log "Revoking build-time sudo..."
+revoke_build_sudo || error "Could not revoke build-time sudo"
 
 # Run mise install if the workspace has a config. Skipped for a sealed VM
 # (--vm --no-copy): its /workspace is created empty, so there is no host
@@ -1152,7 +1167,7 @@ incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c '
 # ---------------------------------------------------------------------------
 # Disable cleanup trap on success
 # ---------------------------------------------------------------------------
-trap - ERR
+trap - EXIT INT TERM HUP
 
 # ---------------------------------------------------------------------------
 # Done
@@ -1166,6 +1181,12 @@ echo ""
 echo "========================================"
 echo "Container:   $CONTAINER_NAME"
 echo "Image:       $BASE_IMAGE"
+if [[ "$SKIP_CREDENTIAL_PROXY" == "1" ]]; then
+  echo "Proxy:       none"
+else
+  _svcs="$(proxy_services "$CONTAINER_NAME" | sed -E 's/=[A-Za-z0-9_]+//g')"
+  echo "Proxy:       $CONTAINER_NAME-proxy (${_svcs:-empty})"
+fi
 echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
 if [[ "$IS_VM" == "1" ]]; then
   echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"

@@ -13,8 +13,7 @@ plugin_prompt() {
   log "(not as you). Create one at:"
   echo "  https://login.tailscale.com/admin/settings/keys"
   echo "with 'Tags' set (e.g. tag:incus-dev). Blank to skip and auth later."
-  read -rsp "Tailscale auth key: " TS_AUTH_KEY
-  echo ""
+  read_secret TS_AUTH_KEY "Tailscale auth key: "
 
   if [[ -n "$TS_AUTH_KEY" ]]; then
     # The Supabase serve preset already maps :443 (and six more ports); asking

@@ -131,7 +131,10 @@ plugin_install() {
 
 # plugin_prompt() {
 #   # Collect user input before install. Set globals for plugin_install to use.
-#   read -rp "Some setting: " MY_SETTING
+#   # For anything pasted, use read_secret (hidden) or read_value (shown): they
+#   # strip the escape sequences terminals can wrap around a paste.
+#   read_value MY_SETTING "Some setting: "
+#   read_secret MY_TOKEN "API token: "
 # }
 
 # plugin_on_launch() {

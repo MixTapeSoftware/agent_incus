@@ -1,8 +1,26 @@
 #!/bin/bash
 set -euo pipefail
-CONTAINER="${1:-${CLAUDE_CONTAINER:-}}"
+
+WITH_SUDO=0
+CONTAINER=""
+CMD_ARGS=()
+
+# Flags are only recognized before the container name; everything after it
+# belongs to the command.
+while [[ $# -gt 0 ]]; do
+  if [[ -n "$CONTAINER" ]]; then
+    CMD_ARGS+=("$1")
+  elif [[ "$1" == "--with-sudo" ]]; then
+    WITH_SUDO=1
+  else
+    CONTAINER="$1"
+  fi
+  shift
+done
+
+CONTAINER="${CONTAINER:-${CLAUDE_CONTAINER:-}}"
 if [[ -z "$CONTAINER" ]]; then
-  echo "Usage: $(basename "$0") <container> [command...]"
+  echo "Usage: $(basename "$0") [--with-sudo] <container> [command...]"
   exit 1
 fi
 STATUS=$(incus list "^${CONTAINER}$" --format csv --columns s 2>/dev/null)
@@ -28,34 +46,35 @@ HOST_USER="$(id -un)"
 HOST_UID="$(id -u)"
 HOST_GID="$(id -g)"
 
-# We use --user/--group instead of `su -` so incus manages the PTY
-# end-to-end (no signal-intercepting middleman that kills the session
-# on Ctrl+C).  However, --group only sets the primary GID — supplementary
-# groups (e.g. docker) are not loaded.  To fix this we ask the container
-# to resolve the user's supplementary groups and pass them via --group.
-SUPP_GIDS=$(incus exec "$CONTAINER" -- id -G "$HOST_USER" 2>/dev/null | tr ' ' ',')
-GROUP_FLAGS=()
-if [[ -n "$SUPP_GIDS" ]]; then
-  for gid in ${SUPP_GIDS//,/ }; do
-    GROUP_FLAGS+=(--group "$gid")
-  done
-else
-  GROUP_FLAGS=(--group "$HOST_GID")
+# `incus exec --group` takes a single GID, so it cannot carry supplementary
+# groups (docker, _sudo). Enter as root and let setpriv set the whole group
+# list before dropping to the user. setpriv execs the shell directly, so incus
+# still manages the PTY end-to-end (no su-style middleman that eats Ctrl+C).
+USER_GIDS=$(incus exec "$CONTAINER" -- id -G "$HOST_USER" 2>/dev/null | tr ' ' ',' || true)
+USER_GIDS="${USER_GIDS:-$HOST_GID}"
+PRIMARY_GID="${USER_GIDS%%,*}"   # id -G lists the primary group first
+
+if [[ "$WITH_SUDO" == "1" ]]; then
+  SUDO_GID=$(incus exec "$CONTAINER" -- getent group _sudo 2>/dev/null | cut -d: -f3 || true)
+  if [[ -z "$SUDO_GID" ]]; then
+    echo "Error: _sudo group not found in container (was it built with a recent incus.init?)" >&2
+    exit 1
+  fi
+  USER_GIDS+=",$SUDO_GID"
 fi
 
-if [[ $# -gt 1 ]]; then
-  shift
+RUN_AS=(setpriv --reuid="$HOST_UID" --regid="$PRIMARY_GID" --groups="$USER_GIDS" --inh-caps=-all --)
+
+if [[ ${#CMD_ARGS[@]} -gt 0 ]]; then
   exec incus exec "$CONTAINER" \
-    --user "$HOST_UID" "${GROUP_FLAGS[@]}" \
     --cwd /workspace \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
-    -- zsh -lic "$*"
+    -- "${RUN_AS[@]}" zsh -lic "${CMD_ARGS[*]}"
 else
   exec incus exec "$CONTAINER" \
-    --user "$HOST_UID" "${GROUP_FLAGS[@]}" \
     --cwd /workspace \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
-    -- zsh -li
+    -- "${RUN_AS[@]}" zsh -li
 fi
