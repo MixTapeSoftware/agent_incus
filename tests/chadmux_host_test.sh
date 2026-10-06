@@ -135,6 +135,42 @@ refute 'failed clone leaves no config' test -e "$HOME/.config/tmux" -o -e "$HOME
 assert 'failed clone cleans staging directory' test "$(find "$HOME/.config" -name '.chadmux.*' | wc -l | tr -d ' ')" = 0
 mv "$fixture/unavailable" "$fixture/chadmux"
 
+reset_home
+mv "$fixture/tpm" "$fixture/tpm-unavailable"
+refute 'failed TPM clone stops installation' install
+assert 'failed TPM clone is reported as incomplete' test "$(status)" = incomplete
+mv "$fixture/tpm-unavailable" "$fixture/tpm"
+config_before="$(cksum < "$HOME/.config/tmux/tmux.conf")"
+assert 're-running after a failed TPM clone succeeds' install
+assert 're-run finishes TPM setup' test "$(status)" = installed
+assert 're-run leaves the config alone' test "$(cksum < "$HOME/.config/tmux/tmux.conf")" = "$config_before"
+
+# A config created while Chadmux downloads (after the status check) must win.
+# This git wrapper creates one as soon as the Chadmux clone finishes.
+mkdir -p "$fixture/racebin"
+cat > "$fixture/racebin/git" <<EOF
+#!/bin/bash
+"$(command -v git)" "\$@" || exit
+[[ "\$1" == clone && "\$*" == *chadmux* ]] || exit 0
+eval "\$RACE"
+EOF
+chmod +x "$fixture/racebin/git"
+race_install() { RACE="$1" PATH="$fixture/racebin:$PATH" install; }
+
+reset_home
+refute 'config directory created mid-install stops installation' \
+  race_install 'mkdir -p "$HOME/.config/tmux" && echo racing > "$HOME/.config/tmux/tmux.conf"'
+assert 'config directory created mid-install keeps only its own file' \
+  test "$(ls -A "$HOME/.config/tmux")" = tmux.conf -a "$(cat "$HOME/.config/tmux/tmux.conf")" = racing
+refute 'no legacy link beside a racing config directory' test -e "$HOME/.tmux.conf" -o -L "$HOME/.tmux.conf"
+assert 'racing config directory cleans staging' test "$(find "$HOME/.config" -name '.chadmux.*' | wc -l | tr -d ' ')" = 0
+
+reset_home
+refute 'legacy config created mid-install stops installation' \
+  race_install 'echo racing > "$HOME/.tmux.conf"'
+assert 'legacy config created mid-install is unchanged' test "$(cat "$HOME/.tmux.conf")" = racing
+refute 'racing legacy config rolls back the checkout' test -e "$HOME/.config/tmux"
+
 # install_shortcuts: Chadmux is opt-in and never touches an existing config.
 shortcuts() { "$REPO_ROOT/install_shortcuts" "$@" > "$fixture/shortcuts.log" 2>&1; }
 

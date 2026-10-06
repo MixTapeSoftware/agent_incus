@@ -35,7 +35,8 @@ config_paths() {
   fi
 }
 
-is_installed() {
+# The Chadmux checkout and legacy link are in place (TPM may still be missing).
+config_installed() {
   local origin
   [[ -d "$CONFIG_DIR/.git" ]] || return 1
   origin="$(git -C "$CONFIG_DIR" config --get remote.origin.url 2>/dev/null || true)"
@@ -45,8 +46,10 @@ is_installed() {
 
 host_status() {
   local cmd path
-  if command -v git >/dev/null 2>&1 && is_installed; then
-    echo installed
+  if command -v git >/dev/null 2>&1 && config_installed; then
+    # Incomplete: a TPM clone failed after the config was linked. Installing
+    # again finishes the TPM step without touching the config.
+    if [[ -x "$TPM_DIR/bin/install_plugins" ]]; then echo installed; else echo incomplete; fi
     return
   fi
   while IFS= read -r path; do
@@ -64,16 +67,7 @@ host_status() {
   echo absent
 }
 
-host_install() {
-  local state
-  state="$(host_status)"
-  case "$state" in
-    absent) ;;
-    installed) log "Chadmux is already installed on this host"; return 0 ;;
-    existing\ *) error "Found an existing tmux config at ${state#existing }; leaving it alone" ;;
-    missing\ *) error "Chadmux needs ${state#missing } on the host" ;;
-  esac
-
+install_config() {
   log "Installing Chadmux from chadfennell/chadmux..."
   mkdir -p "$HOME/.config"
   # Finish downloading before creating anything tmux would read. Global, not
@@ -82,20 +76,33 @@ host_install() {
   trap 'rm -rf "$staging"' EXIT
   git clone --depth 1 --branch main "$UPSTREAM" "$staging"
 
-  # Re-check right before writing: never land on a config created meanwhile.
-  [[ "$(host_status)" == absent ]] || error "A tmux config appeared during installation; leaving it alone"
-  mv "$staging" "$CONFIG_DIR"
-  trap - EXIT
-  if ! ln -s "$CONFIG_DIR/tmux.conf" "$LEGACY_CONF"; then
-    rm -rf "$CONFIG_DIR"
-    error "Could not link $LEGACY_CONF"
-  fi
+  # mkdir and ln -s both fail rather than replace, so a config created since
+  # the status check is never written into or linked over.
+  mkdir "$CONFIG_DIR" 2>/dev/null || error "$CONFIG_DIR appeared during installation; leaving it alone"
+  trap 'rm -rf "$staging" "$CONFIG_DIR"' EXIT
+  (shopt -s dotglob && mv "$staging"/* "$CONFIG_DIR"/)
+  ln -s "$CONFIG_DIR/tmux.conf" "$LEGACY_CONF" 2>/dev/null || \
+    error "$LEGACY_CONF appeared during installation; leaving it alone"
+  trap 'rm -rf "$staging"' EXIT
   log "Linked $LEGACY_CONF -> $CONFIG_DIR/tmux.conf"
+}
+
+host_install() {
+  local state
+  state="$(host_status)"
+  case "$state" in
+    absent) install_config ;;
+    incomplete) log "Chadmux config is in place; finishing TPM setup" ;;
+    installed) log "Chadmux is already installed on this host"; return 0 ;;
+    existing\ *) error "Found an existing tmux config at ${state#existing }; leaving it alone" ;;
+    missing\ *) error "Chadmux needs ${state#missing } on the host" ;;
+  esac
 
   if [[ ! -d "$TPM_DIR" ]]; then
     log "Cloning TPM..."
     mkdir -p "${TPM_DIR%/*}"
-    git clone --depth 1 "$TPM_UPSTREAM" "$TPM_DIR"
+    git clone --depth 1 "$TPM_UPSTREAM" "$TPM_DIR" || \
+      error "TPM clone failed; the Chadmux config is installed. Re-run to finish TPM setup"
   fi
 
   log "Installing TPM plugins..."
