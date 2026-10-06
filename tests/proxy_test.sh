@@ -762,6 +762,27 @@ assert_eq "rm with the proxy gone: placeholder is removed" "" "$(cfg proj enviro
 assert_not_contains "rm with the proxy gone: proxy settings are removed" \
   "HTTPS_PROXY" "$(cat "$(fs proj "$ZSHENV")")"
 
+# Incus cannot say whether the proxy exists (daemon down, transient error).
+# That is not the proxy being gone: the placeholder may still be honored, so
+# rm must fail and keep the container's record of it, or nothing could find
+# and revoke the entry later.
+fresh_state
+make_proxy work
+make_agent proj
+printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
+ph="$(cfg proj environment.GH_TOKEN)"
+out="$(FAKE_INCUS_FAIL_CALL='^list \^work\$ ' incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm, Incus unreachable: fails" "1" "$rc"
+assert_contains     "rm, Incus unreachable: says the container is still attached" "still attached" "$out"
+assert_not_contains "rm, Incus unreachable: does not report a detach" "Detached" "$out"
+assert_eq "rm, Incus unreachable: tag is kept, so rm can be run again" "work" "$(cfg proj user.incs.proxy)"
+assert_eq "rm, Incus unreachable: container side is left as it was" "$ph" "$(cfg proj environment.GH_TOKEN)"
+assert_contains "rm, Incus unreachable: the proxy still has the entry" "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm once Incus answers: succeeds" "0" "$rc"
+assert_not_contains "rm once Incus answers: placeholder is revoked" "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_eq "rm once Incus answers: tag is cleared" "" "$(cfg proj user.incs.proxy)"
+
 # The proxy cannot revoke (broken, disk error): rm must not claim it did.
 fresh_state
 make_proxy work
@@ -1067,9 +1088,24 @@ assert_eq "incs -d: the proxy survives" "work" "$(incus list '^work$' --format c
 # The proxy cannot be updated (e.g. it is broken): the delete must still happen.
 out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild' incs -d keep 2>&1)" && rc=0 || rc=$?
 assert_eq "incs -d: proxy update failure does not block the delete" "" "$(incus list '^keep$' --format csv --columns n)"
+
 assert_contains "incs -d: …but is reported" "proxy" "$out"
 assert_contains "incs -d: …with the command that revokes the placeholder" \
   "iron-rebuild drop keep--github" "$out"
+
+# Incus cannot say whether the shared proxy still exists. The delete still
+# happens, but the hook must not pass that off as a revocation.
+make_agent flaky
+printf 'github_pat_FLAKY\n' | incs proxy add flaky work --token >/dev/null 2>&1
+out="$(FAKE_INCUS_FAIL_CALL='^list \^work\$ ' incs -d flaky 2>&1)" && rc=0 || rc=$?
+assert_eq "incs -d, Incus cannot check the proxy: container is still deleted" "" "$(incus list '^flaky$' --format csv --columns n)"
+assert_contains "incs -d, Incus cannot check the proxy: warns the placeholder may still work" "may still work" "$out"
+assert_contains "incs -d, Incus cannot check the proxy: names the revoke command" "iron-rebuild drop flaky--github" "$out"
+assert_not_contains "incs -d, Incus cannot check the proxy: does not claim removal" "Removed flaky from proxy" "$out"
+assert_eq "incs -d, Incus cannot check the proxy: the entry is kept for the manual revoke" \
+  "present" "$([[ -f "$(fs work /etc/iron-proxy/entries/flaky--github.yaml)" ]] && echo present || echo gone)"
+assert_eq "incs -d, Incus cannot check the proxy: …and its token" \
+  "github_pat_FLAKY" "$(cat "$(fs work /etc/iron-proxy/tokens/flaky--github)" 2>/dev/null; echo)"
 
 # ===========================================================================
 echo "concurrent changes to one proxy"
@@ -1206,7 +1242,7 @@ for cmd in sudo curl; do
   chmod +x "$SANDBOX/bin/$cmd"
 done
 run_init() {
-  bash "$INIT_FIXTURE/incus.init" --no-tui --ack-env --no-mount --path "$SANDBOX/workspace" "$@"
+  bash "$INIT_FIXTURE/incus.init" --no-tui --ack-env --path "$SANDBOX/workspace" "$@"
 }
 
 fresh_state
@@ -1384,11 +1420,12 @@ assert_contains "dry-run with --gh-token: GitHub goes to the proxy" "preview-pro
 echo "templates (incs -i --template)"
 # ===========================================================================
 # save_template lives in incus.init, which cannot be sourced without running.
-# Pull the function out and run it against the fake.
+# Pull the function out, with the Tailscale stash/restore it calls, and run it
+# against the fake.
 save_template_src="$(awk '
-  /^save_template\(\)/ {capture=1}
+  /^(save_template|stash_tailscale_state|restore_tailscale_state)\(\)/ {capture=1}
   capture {print}
-  capture && /^}/ {exit}
+  capture && /^}/ {capture=0}
 ' "$REPO_ROOT/incus.init")"
 
 run_save_template() {
@@ -1399,7 +1436,7 @@ run_save_template() {
     warn() { :; }
     wait_for_container() { :; }
     wait_for_network()   { :; }
-    CONTAINER_NAME="$container" HOST_USER="$USER_NAME" MOUNT_PATH="/workspace" READY_TIMEOUT=1
+    CONTAINER_NAME="$container" HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1 TS_STATE_BACKUP=""
     eval "$save_template_src"
     save_template
   )
@@ -1444,7 +1481,7 @@ out="$( (
   error() { echo "[ERROR] $1" >&2; exit 1; }
   log()  { :; }; warn() { :; }; wait_for_container() { :; }; wait_for_network() { :; }
   set -euo pipefail
-  CONTAINER_NAME=base HOST_USER="$USER_NAME" MOUNT_PATH="/workspace" READY_TIMEOUT=1
+  CONTAINER_NAME=base HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1
   eval "$save_template_src"
   save_template
 ) 2>&1)" && rc=0 || rc=$?
@@ -1454,6 +1491,31 @@ assert_eq "template, /etc/hosts unreadable: no image is published" \
   "none" "$([[ -d "$FAKE_INCUS_STATE/images/incus-init/base" ]] && echo published || echo none)"
 assert_contains "template, /etc/hosts unreadable: the container keeps its placeholder" \
   "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
+
+# The Tailscale stash refuses (tailscaled will not stop): nothing else in the
+# builder may have been scrubbed by then.
+fresh_state
+make_proxy work
+make_agent base
+incs proxy add base work >/dev/null 2>&1
+ph="$(cfg base environment.GH_TOKEN)"
+mkdir -p "$(fs base /var/lib/tailscale)" "$FAKE_INCUS_STATE/still-active"
+echo NODE-KEY > "$(fs base /var/lib/tailscale/tailscaled.state)"
+touch "$FAKE_INCUS_STATE/still-active/tailscaled"
+out="$( (
+  error() { echo "[ERROR] $1" >&2; exit 1; }
+  log()  { :; }; warn() { :; }; wait_for_container() { :; }; wait_for_network() { :; }
+  set -euo pipefail
+  CONTAINER_NAME=base HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1 TS_STATE_BACKUP=""
+  eval "$save_template_src"
+  save_template
+) 2>&1)" && rc=0 || rc=$?
+assert_eq "template, stash refuses: save fails" "1" "$rc"
+assert_contains "template, stash refuses: says why" "Could not stop tailscaled" "$out"
+assert_contains "template, stash refuses: the builder keeps its placeholder" \
+  "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
+assert_contains "template, stash refuses: …and its /etc/hosts lines" \
+  "# incs-proxy:github" "$(hosts_of base)"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"

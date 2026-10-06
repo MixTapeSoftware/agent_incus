@@ -14,6 +14,8 @@
 #   instances/<name>/root/...      the instance filesystem
 #   instances/<name>/root/etc/group   answers `getent group <name>`
 #   instances/<name>/root/etc/id-G    answers `id -G <user>` (absent: exit 1)
+#   instances/<name>/root/usr/bin/<tool>  answers `sh -c 'command -v <tool>'`
+#   still-active/tailscaled        tailscaled stays active after `systemctl stop`
 #   instances/<name>/profiles      profiles passed with -p at init/launch, one per line
 #   images/<alias>/root/...        filesystem captured by `publish`
 #   profiles/<name>/<key>          one file per profile config key
@@ -23,6 +25,7 @@
 #   FAKE_INCUS_FAIL_EXEC   regex; an exec whose command matches exits 1
 #   FAKE_INCUS_NEXT_IP     address handed to the next created instance
 #   FAKE_INCUS_FAIL_CALL   regex; any invocation whose argv matches exits 1
+#   FAKE_INCUS_VERSION     what `incus version` reports (default 6.19)
 set -uo pipefail
 
 S="${FAKE_INCUS_STATE:?FAKE_INCUS_STATE must be set}"
@@ -160,10 +163,27 @@ case "$cmd" in
         ;;
       device)
         # incus config device override <name> <device> key=value
-        op="$1"; name="$2"; dev="$3"; kv="${4:-}"
+        # incus config device add <name> <device> <type> key=value...
+        # incus config device remove <name> <device>
+        op="$1"; name="$2"; dev="$3"; shift 3
         need_inst "$name"
-        [[ "$op" == "override" ]] || die "unsupported device op: $op"
-        printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+        case "$op" in
+          override)
+            kv="${1:-}"
+            printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+            ;;
+          add)
+            [[ -f "$(inst_dir "$name")/config/devices.$dev.type" ]] && die "Device already exists: $dev"
+            printf '%s' "$1" > "$(inst_dir "$name")/config/devices.$dev.type"; shift
+            for kv in "$@"; do
+              printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+            done
+            ;;
+          remove)
+            rm -f "$(inst_dir "$name")/config/devices.$dev."*
+            ;;
+          *) die "unsupported device op: $op" ;;
+        esac
         ;;
       *) die "unsupported config subcommand: $sub" ;;
     esac
@@ -309,9 +329,48 @@ case "$cmd" in
         [[ -f "$script" ]] || die "iron-rebuild: command not found"
         IRON_PROXY_DIR="$root/etc/iron-proxy" PATH="$stub:$PATH" sh "$script" "${@:2}"
         ;;
+      # tailscaled stops on `systemctl stop` unless a test keeps it running.
+      "systemctl is-active tailscaled")
+        if [[ -f "$S/still-active/tailscaled" ]]; then echo active; else echo inactive; exit 3; fi
+        ;;
       "systemctl is-active"*) echo active ;;
+      # File checks and archive moves, against the fake filesystem.
+      "sh -c test -"[df]" "*" && echo yes || echo no")
+        set -- ${command_line#sh -c test }
+        probe_path="${2//\'/}"
+        if [[ ( "$1" == -d && -d "$root$probe_path" ) || ( "$1" == -f && -f "$root$probe_path" ) ]]; then echo yes; else echo no; fi
+        ;;
+      # A tool is installed when the fixture put it on a bin path.
+      "sh -c command -v "*)
+        tool="${command_line#sh -c command -v }"
+        for d in /usr/local/bin /usr/bin /bin; do
+          [[ -f "$root$d/$tool" ]] && { echo "$d/$tool"; exit 0; }
+        done
+        exit 1
+        ;;
+      "test -d "*) [[ -d "$root${command_line#test -d }" ]] ;;
+      "test -f "*) [[ -f "$root${command_line#test -f }" ]] ;;
+      "rm -rf /"*) rm -rf "$root${command_line#rm -rf }" ;;
+      "ls -A /"*)  ls -A "$root${command_line#ls -A }" ;;
+      "mkdir -p /"*) mkdir -p "$root${command_line#mkdir -p }" ;;
+      "tar -C "*|"tar --no-same-owner -C "*)
+        # tar [--no-same-owner] -C <dir> -cf - <name>   |   ... -C <dir> -xf -
+        command_line="${command_line#tar }"; command_line="${command_line#--no-same-owner }"
+        set -- ${command_line#-C }
+        case "$2" in
+          -cf) tar -C "$root$1" -cf - "$4" ;;
+          -xf) stdin_file="$S/exec-stdin/$n"; [[ -f "$stdin_file" ]] || stdin_file=/dev/null
+               mkdir -p "$root$1"; tar -C "$root$1" -xf - < "$stdin_file" ;;
+          *)   die "fake_incus: unsupported tar: $command_line" ;;
+        esac
+        ;;
       *) : ;;
     esac
+    ;;
+
+  version)
+    echo "Client version: ${FAKE_INCUS_VERSION:-6.19}"
+    echo "Server version: ${FAKE_INCUS_VERSION:-6.19}"
     ;;
 
   *) die "fake_incus: unsupported command: $cmd" ;;

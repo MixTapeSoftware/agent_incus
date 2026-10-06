@@ -4,16 +4,20 @@ A set of shell scripts that automate the creation of [Incus](https://linuxcontai
 
 Why shell scripts? They introduce no dependencies, are ergonomic enough for simple systems administration tasks, and transparently convey their purpose.
 
+In order to head off a variety of attack vectors, nothing on the host is mounted into the container. All work happens inside a sealed sandbox (Incus system container or VM) via provided tools such as nvim and GitHub integration. See [No Host Mounts](#no-host-mounts).
+
 ## Contents
 
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [No Host Mounts](#no-host-mounts)
 - [Scripts](#scripts)
 - [incus.init Options](#incusinit-options)
   - [What incus.init does](#what-incusinit-does)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
+  - [Getting work out](#getting-work-out)
   - [Templates](#templates)
   - [Virtual Machines](#virtual-machines)
   - [Tailscale](#tailscale)
@@ -42,7 +46,7 @@ This symlinks the helper scripts into `~/.local/bin`.
 ## Quick Start
 
 ```bash
-# Create a container with the current directory mounted as /workspace
+# Create a container with a copy of the current directory in /workspace
 incs -i my-project
 
 # Open a shell
@@ -51,6 +55,27 @@ incs my-project
 # Run a command (e.g. Claude Code)
 incs my-project claude
 ```
+
+## No Host Mounts
+
+A container never sees a live host directory. `incs -i` copies your directory into `/workspace` once, `.git` and uncommitted work included, and that copy is the container's from then on. Nothing it writes lands on your host. Work comes back out the way it would from any other machine: through git, as commits you fetch and read (see [Getting work out](#getting-work-out)).
+
+**Why.** Your host runs what's in a checkout, usually without asking:
+
+- git runs commands that `.git/config` names: `core.fsmonitor` on every `git status`, including the ones your editor runs every few seconds; `core.pager` when you read a log or a diff; and the hooks in `.git/hooks` (or wherever `core.hooksPath` points) when you commit, check out, merge or push
+- `npm install` runs `package.json` scripts, direnv loads `.envrc`, and your editor reads `.vscode/tasks.json`
+- mise reads `mise.toml`, and hook managers like husky and lefthook read their configs
+
+A writable mount hands all of that to whatever runs in the container: an agent, a dependency, a prompt injection. Earlier versions mounted the workspace and tried to fence off the dangerous parts: `.git/config` and hooks read-only, then config.worktree, then submodules. A guard like that is never finished, because the next thing your host executes from the tree is one you didn't list. And with `shift=true`, root inside the container was root over your checkout, able to leave setuid files on the host. So the mount is gone, along with every flag that kept it alive.
+
+**What you give up**, and how this repo expects you to work instead:
+
+- **Editing host files from a host editor.** Edit inside the container. The Chadception plugin (Chad's [NvChad](https://nvchad.com/) config, see [Optional Plugins](#optional-plugins)) sets up Neovim there.
+- **Live sync.** A container doesn't see host edits made after it was created, and the host doesn't see the container's edits until you fetch them. Commit and push often.
+- **One checkout shared by several containers.** Each container gets its own copy, and git moves work between them.
+- **A safety net.** The copy lives only in the container, so `incs -d` deletes any work you haven't pushed.
+
+There is no flag to bring the mount back, and there won't be one.
 
 ## Scripts
 
@@ -105,15 +130,13 @@ The individual scripts and aliases (`inci`, `incn`) still work directly.
 Usage: incus.init [OPTIONS] <container-name>
 
 Options:
-  -p, --path PATH           Host directory to mount (default: current directory)
-  -m, --mount-path PATH     Container mount point (default: /workspace)
+  -p, --path PATH           Host directory to copy in (default: current directory)
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
-  -t, --template            Save container as a reusable local template (implies --no-mount)
+  -t, --template            Save container as a reusable local template (empty workspace)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
-  --no-mount                Clone repo into container instead of mounting host directory
   --vm                      Provision a KVM virtual machine instead of a container
-  --no-copy                 VM only: start with an empty (sealed) workspace
+  --no-copy                 Start with an empty workspace instead of copying the host directory
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
@@ -130,7 +153,7 @@ Options:
 2. Creates an empty credential proxy named `<container>-proxy` (skip with `--no-proxy`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
-5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+)
+5. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional plugins (see below)
 
@@ -161,12 +184,13 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | Plugin | Description |
 |---|---|
 | [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
+| Chadception | Chad's [NvChad](https://nvchad.com/) Neovim config, for editing inside the container |
 | Chadmux | Chad's tmux config + TPM plugins |
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
-| [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
+| [Docker](https://www.docker.com/) | Container runtime & compose. Off by default: the `docker` group is root inside the container (`--docker`) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials. The token goes to the container's credential proxy; with `--no-proxy` it goes into the container |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
@@ -178,7 +202,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
 | Tailscale + Supabase serve | Preset `tailscale serve` map for app + Supabase ports (443→3000, 4410→3010, 4431→3001, 5432→54321, 5433→54323, 5434→54324, 8443→8000); auto-selects Tailscale |
 
-Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`).
+Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`, `--docker`).
 
 Matt Pocock Skills installs the full collection globally for the container user, so it is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
 
@@ -225,14 +249,17 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin, on by default, puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container itself as the boundary. Use `incs shell --with-sudo` when you need to install packages interactively:
+Each container gets its own copy of the directory you create it from, and the host only sees work that leaves through git (see [No Host Mounts](#no-host-mounts) and [Getting work out](#getting-work-out)).
+
+Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container as the boundary. Use `incs shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
-graph TB
-    W["/workspace (app files)"]
-    H["Host Machine"] --> W
-    A["Agent Container"] --> W
-    D["Dev Container"] --> W
+graph LR
+    H["Host checkout"] -- "copied at incs -i" --> A["Agent container"]
+    H -- "copied at incs -i" --> D["Dev container"]
+    A -- "git push" --> R["Git remote"]
+    D -- "git push" --> R
+    R -- "git fetch" --> H
 ```
 
 ```bash
@@ -251,11 +278,24 @@ incs -i --template project-base
 incs -i --from project-base project-agent-2
 ```
 
-The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
+Each container works on its own copy. Work moves between containers, and back to the host, through git.
+
+### Getting work out
+
+Commit inside the container and push a branch. Git there reaches GitHub through the container's credential proxy: pass `--gh-token` when you create it, or add a token later with `incs proxy add <container> --token`. Then fetch the branch on the host and read it before you run anything:
+
+```bash
+git fetch origin
+git diff main..origin/<branch>
+```
+
+A fetch brings commits, never the container's git config or hooks. The commits can still change anything in the tree, including `package.json` scripts, `Makefile`s, `.envrc`, `.vscode/tasks.json` and hook managers like husky, so read the diff before you run it.
+
+The copy lives only in the container. Deleting the container (`incs -d`) deletes any work you haven't pushed.
 
 ### Templates
 
-Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and Docker. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container with no secrets baked in, stored in the local Incus image store.
+Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and whichever plugins you picked. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container, stored in the local Incus image store.
 
 **Build once:**
 
@@ -263,7 +303,13 @@ Provisioning a container from scratch installs packages, build tools, mise, Oh M
 incs -i --template my-base
 ```
 
-This provisions the container (without mounting host files), scrubs any tokens, and saves it locally as `incus-init/my-base`. The original container keeps running with its tokens intact.
+This provisions the container (with an empty workspace) and saves it locally as `incus-init/my-base`. Before publishing it removes:
+
+- `GH_TOKEN` and `OP_SERVICE_ACCOUNT_TOKEN` exports from `~/.zshenv`
+- credential-proxy lines in `~/.zshenv` and `/etc/hosts`
+- the Tailscale node identity and serve certificates (`/var/lib/tailscale`)
+
+Anything else stays in the image, including logins made during the build (for example Claude Code's credentials under `~/.claude`, `gh auth login`, or cloud CLI configs). Log out of those, or remove their files, before saving a template. The original container keeps running with its tokens and tailnet membership intact.
 
 **Reuse instantly:**
 
@@ -275,7 +321,7 @@ incs -i --from my-base my-project
 incs -i --from my-base --1pass --gh-token my-dev
 ```
 
-When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected plugins run.
+When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only the workspace copy, user creation (if needed), and selected plugins run.
 
 **Manage templates:**
 
@@ -293,21 +339,19 @@ identical; only the workspace model and resources differ.
 
 ```bash
 incs -i --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
-incs -i --vm --no-copy my-vm                # VM with an empty, sealed /workspace
+incs -i --vm --no-copy my-vm                # VM with an empty /workspace
 incs -i --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
 ```
 
-**Workspace:** VMs never bind-mount the host. By default the working tree is
-**copied in** (including `.git`), owned by you and fully writable — no idmap
-juggling, because a VM runs its own kernel. Pass `--no-copy` for a sealed VM
-that starts with an empty workspace and never touches host files. Resource
+**Workspace:** the same as a container: your working tree is copied in
+(including `.git`), and `--no-copy` starts empty. Resource
 defaults are `20GiB` disk / `4GiB` memory / `4` vCPUs (override with
 `--vm-disk`/`--vm-memory`/`--vm-cpus`).
 
 **Plugins are VM-aware:** Docker installs natively inside a VM (no
-`security.nesting`/AppArmor workarounds — those config keys are container-only
-and would be rejected by Incus), and Tailscale uses the VM's native
-`/dev/net/tun` instead of a device passthrough.
+`security.nesting` or syscall interception — those config keys are
+container-only and would be rejected by Incus), and Tailscale uses the VM's
+native `/dev/net/tun` instead of a device passthrough.
 
 **Templates work the same** — with one rule: `--vm` must be on **both** the
 build and the launch, because a published VM image can only launch as a VM.
@@ -381,7 +425,7 @@ Since Tailscale runs inside the container, your dev server can bind to `localhos
 
 So Supabase Studio is at `https://project-dev.<tailnet>.ts.net:5433/`, and so on.
 
-**Templates.** The Tailscale plugin re-runs when you launch from a template, so each new container joins as its own machine. Serve mappings are stored by Tailscale and survive restarts. The Supabase preset re-applies on every launch too, so a template built with it keeps working.
+**Templates.** The Tailscale plugin re-runs when you launch from a template, so each new container joins as its own machine. The template itself holds no node key: `--template` moves `/var/lib/tailscale` (the node key and any `tailscale serve` certificates) out of the container while the image is published, then puts it back. Serve mappings are stored by Tailscale and survive restarts. The Supabase preset re-applies on every launch too, so a template built with it keeps working.
 
 **Option 2: Tailscale on the host.** If the host machine is already on your tailnet and you don't want the container joining separately, proxy the port to the host with `incs -n` and let the host's Tailscale serve it:
 
@@ -504,7 +548,7 @@ incs proxy rm my-project                   # detach everything; the placeholders
 incs proxy delete work                     # refused while containers are attached, unless --force
 ```
 
-Deleting a container with `incs -d` also deletes its owned proxy and the credentials stored there. A shared proxy keeps running; only the deleted container's entries are removed. If container deletion fails, its proxy and credentials remain intact. `incs proxy rm` detaches services while preserving the owned proxy for later use. Explicitly deleting an owned proxy with `incs proxy delete` clears its ownership link on the container. Proxies are skipped by `incs -ka` and `incs -ua`.
+`rm` is a revocation, so it fails closed: if the proxy cannot be updated, or Incus cannot say whether the proxy still exists, the container stays attached and the command says so; run it again once Incus is back. Deleting a container with `incs -d` also deletes its owned proxy and the credentials stored there. A shared proxy keeps running; only the deleted container's entries are removed. If container deletion fails, its proxy and credentials remain intact. `incs proxy rm` detaches services while preserving the owned proxy for later use. Explicitly deleting an owned proxy with `incs proxy delete` clears its ownership link on the container. Proxies are skipped by `incs -ka` and `incs -ua`.
 
 **What attaching does:**
 
