@@ -83,8 +83,13 @@ incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
-incs proxy add my-project --token      # Add GitHub access through its default proxy
+incs -d my-project                     # Delete a container and its owned proxy
 incs -i scratch --no-proxy             # Create a container without a proxy
+incs proxy add my-project --token      # Add GitHub access through its default proxy
+incs proxy add my-project --env OPENAI_API_KEY --host api.openai.com   # Any header-key API
+incs proxy apply my-project services.yaml   # Attach every service listed in a file
+incs proxy configure my-project-proxy  # Read keys from 1Password
+incs proxy rm my-project               # Detach services from a container
 incs proxy list                        # Show proxies and attached containers
 incs cron install                      # Install 7pm daily update cron
 incs cron install 3                    # Install 3am daily update cron
@@ -228,15 +233,12 @@ graph TB
 ```
 
 ```bash
-# Agent container — no credentials
+# Agent container — no credentials (gets an empty project-agent-proxy)
 incs -i project-agent
+incs proxy add project-agent --token  # add GitHub access through the proxy when needed
 
-# Dev container — with credentials
+# Dev container — GitHub token stored in project-dev-proxy, 1Password CLI inside
 incs -i --1pass --gh-token project-dev
-
-# Agent container with its own credential proxy
-incs -i project-agent
-incs proxy add project-agent --token  # add GitHub access when needed
 
 # Shell in with temporary sudo to install something
 incs shell --with-sudo project-dev
@@ -488,7 +490,7 @@ incs proxy add shared-client work
 incs proxy apply shared-client work services.yaml
 ```
 
-A proxy created by `incs -i` belongs to that container and cannot be shared. Manually created proxies can serve several containers.
+`incs proxy new` prompts for a 1Password service account token; leave it blank to use only pasted (`--token`) keys, and add one later with `incs proxy configure`. A proxy created by `incs -i` belongs to that container and cannot be shared. Manually created proxies can serve several containers.
 
 **Manage:**
 
