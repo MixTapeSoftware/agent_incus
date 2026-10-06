@@ -1316,7 +1316,71 @@ run_init proj > "$SANDBOX/out" 2>&1
 incs proxy delete proj-proxy >/dev/null
 assert_eq "explicit proxy deletion clears ownership on the agent" "" "$(cfg proj user.incs.owned-proxy)"
 
+# ===========================================================================
+echo "GitHub Auth plugin (incs -i --gh-token)"
+# ===========================================================================
+# Runs the plugin's hooks the way incus.init does after creating the container
+# and its proxy. Answers to prompts arrive on stdin: token, git name, email.
+run_gh_auth() {
+  local container="$1" skip="${2:-0}"
+  (
+    set -euo pipefail
+    log()   { echo "[+] $1"; }
+    warn()  { echo "[!] $1"; }
+    error() { echo "[ERROR] $1" >&2; exit 1; }
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/incus.prompt"
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/incus.proxy"
+    SCRIPT_DIR="$REPO_ROOT" CONTAINER_NAME="$container" HOST_USER="$USER_NAME"
+    SKIP_CREDENTIAL_PROXY="$skip"
+    # shellcheck disable=SC1091
+    source "$REPO_ROOT/plugins/60-gh-auth.sh"
+    plugin_prompt
+    plugin_install
+  )
+}
+gitconfig_of() { cat "$(fs "$1" "/home/$USER_NAME/.gitconfig")" 2>/dev/null || true; }
 
+fresh_state
+FAKE_INCUS_NEXT_IP=10.99.0.9 run_init proj > "$SANDBOX/out" 2>&1
+echo CERT > "$(fs proj-proxy /etc/iron-proxy/ca.crt)"
+printf '127.0.0.1 localhost\n' | incus file push -p - proj/etc/hosts
+out="$(printf 'github_pat_FROM_INIT\nAda Lovelace\nada@example.com\n' | run_gh_auth proj 2>&1)" && rc=0 || rc=$?
+assert_eq "gh-auth with a proxy: succeeds" "0" "$rc"
+assert_eq "gh-auth with a proxy: the token is stored in the container's proxy" \
+  "github_pat_FROM_INIT" "$(cat "$(fs proj-proxy /etc/iron-proxy/tokens/proj--github)" 2>/dev/null; echo)"
+assert_eq "gh-auth with a proxy: GitHub is attached to it" "proj-proxy" "$(cfg proj user.incs.proxy)"
+assert_eq "gh-auth with a proxy: the container holds a placeholder" \
+  "match" "$([[ "$(cfg proj environment.GH_TOKEN)" =~ ^ghp_[0-9a-f]{36}$ ]] && echo match || echo "no match")"
+assert_not_contains "gh-auth with a proxy: the real token is not in ~/.zshenv" \
+  "github_pat_FROM_INIT" "$(cat "$(fs proj "$ZSHENV")" 2>/dev/null)"
+assert_not_contains "gh-auth with a proxy: the real token never appears in argv" \
+  "github_pat_FROM_INIT" "$(cat "$FAKE_INCUS_STATE/calls.log")"
+assert_not_contains "gh-auth with a proxy: the real token is not echoed" "github_pat_FROM_INIT" "$out"
+assert_contains "gh-auth with a proxy: GitHub hosts go to the proxy" \
+  "10.99.0.9 github.com api.github.com uploads.github.com # incs-proxy:github" "$(hosts_of proj)"
+assert_contains "gh-auth with a proxy: git name is set"  "Ada Lovelace"    "$(gitconfig_of proj)"
+assert_contains "gh-auth with a proxy: git email is set" "ada@example.com" "$(gitconfig_of proj)"
+assert_contains "gh-auth with a proxy: the prompt says where the token goes" "credential proxy" "$out"
+
+# --no-proxy keeps the old behavior, and says so.
+fresh_state
+run_init plain --no-proxy > "$SANDBOX/out" 2>&1
+out="$(printf 'github_pat_DIRECT\nAda Lovelace\nada@example.com\n' | run_gh_auth plain 1 2>&1)" && rc=0 || rc=$?
+assert_eq "gh-auth with --no-proxy: succeeds" "0" "$rc"
+assert_eq "gh-auth with --no-proxy: the token goes into the container" "github_pat_DIRECT" "$(cfg plain environment.GH_TOKEN)"
+assert_contains "gh-auth with --no-proxy: warns that the real token is in the container" \
+  "real token will be stored inside the container" "$out"
+assert_contains "gh-auth with --no-proxy: git email is set" "ada@example.com" "$(gitconfig_of plain)"
+
+# The dry run says GitHub will go to the proxy.
+fresh_state
+# Plugin prompts run before the dry run exits, so they need answers.
+out="$(printf 'github_pat_DRY\nAda\nada@example.com\n' | run_init preview --gh-token --dry-run 2>&1)" || true
+assert_contains "dry-run with --gh-token: GitHub goes to the proxy" "preview-proxy (github, from GitHub Auth)" "$out"
+
+# ===========================================================================
 echo "templates (incs -i --template)"
 # ===========================================================================
 # save_template lives in incus.init, which cannot be sourced without running.

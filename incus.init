@@ -814,7 +814,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
     fi
   done
   echo ""
-  echo "Proxy:       $( [[ "$SKIP_CREDENTIAL_PROXY" == "1" ]] && echo none || echo "$CONTAINER_NAME-proxy (empty)")"
+  if [[ "$SKIP_CREDENTIAL_PROXY" == "1" ]]; then
+    echo "Proxy:       none"
+  elif [[ "$(selected_get gh-auth)" == "1" ]]; then
+    echo "Proxy:       $CONTAINER_NAME-proxy (github, from GitHub Auth)"
+  else
+    echo "Proxy:       $CONTAINER_NAME-proxy (empty)"
+  fi
   echo "Template:    $( [[ "$SAVE_TEMPLATE" == "1" ]] && echo "incus-init/$CONTAINER_NAME" || echo no )"
   echo "========================================"
   exit 0
@@ -1175,7 +1181,12 @@ echo ""
 echo "========================================"
 echo "Container:   $CONTAINER_NAME"
 echo "Image:       $BASE_IMAGE"
-echo "Proxy:       $( [[ "$SKIP_CREDENTIAL_PROXY" == "1" ]] && echo none || echo "$CONTAINER_NAME-proxy (empty)")"
+if [[ "$SKIP_CREDENTIAL_PROXY" == "1" ]]; then
+  echo "Proxy:       none"
+else
+  _svcs="$(proxy_services "$CONTAINER_NAME" | sed -E 's/=[A-Za-z0-9_]+//g')"
+  echo "Proxy:       $CONTAINER_NAME-proxy (${_svcs:-empty})"
+fi
 echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
 if [[ "$IS_VM" == "1" ]]; then
   echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"

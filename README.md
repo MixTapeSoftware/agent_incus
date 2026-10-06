@@ -163,7 +163,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
 | [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
-| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
+| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials. The token goes to the container's credential proxy; with `--no-proxy` it goes into the container |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
 | [mermaid-ascii](https://github.com/AlexanderGrooff/mermaid-ascii) | Render mermaid diagrams as ASCII art |
@@ -426,6 +426,8 @@ incs proxy add my-project --env OPENAI_API_KEY --host api.openai.com --token
 
 `add` automatically uses the container's proxy. The real key stays there; the container receives a placeholder.
 
+The GitHub Auth plugin does the same at creation: `incs -i my-project --gh-token` asks for the token and stores it in `my-project-proxy`, not in the container. With `--no-proxy` there is no proxy to hold it, so the real token goes into the container, as it did before proxies existed.
+
 For **1Password**, configure the proxy with a service account token scoped to your keys' vault:
 
 ```bash
@@ -515,7 +517,7 @@ The proxy accepts connections from containers on one port, and that port speaks 
 - **It covers only keys sent in a request header to hosts you can name.** Wildcard hosts (`*.example.com`), keys passed in the URL, and APIs that sign each request instead of sending a key (AWS) are not supported.
 - **It is not per user.** `/etc/hosts` applies to the whole container, so root and system services also reach those hosts through the proxy. While the proxy is stopped, those hosts are unreachable from the container.
 - **It does not scrub responses.** An endpoint that echoes request headers back would reveal the real key. GitHub does not do this. Be careful which hosts you bind a key to.
-- **It does not cover Claude's own login or the 1Password CLI plugin.** Those still place real credentials in the container.
+- **It does not cover Claude's own login or the 1Password CLI plugin.** Those still place real credentials in the container. The 1Password plugin's token is for the `op` CLI inside the container; it is not the proxy's own 1Password token, which `incs proxy configure` keeps in the proxy.
 
 **Troubleshooting:**
 
