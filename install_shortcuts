@@ -17,6 +17,22 @@ error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 # Get the directory where this script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Chadmux host tmux config: ask (interactive only), yes, or no.
+CHADMUX="ask"
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --chadmux)    CHADMUX="yes"; shift ;;
+    --no-chadmux) CHADMUX="no"; shift ;;
+    -h|--help)
+      echo "Usage: $(basename "$0") [--chadmux|--no-chadmux]"
+      echo "  --chadmux     Install the Chadmux tmux config on this host without asking"
+      echo "  --no-chadmux  Skip the Chadmux question"
+      exit 0
+      ;;
+    *) error "Unknown option: $1" ;;
+  esac
+done
+
 # Files to link
 FILES=(
   "incs"
@@ -99,6 +115,35 @@ for i in "${!ALIAS_NAMES[@]}"; do
   ln -s "$LINK_DEST" "$ALIAS_TARGET"
   log "Alias: $alias_name -> $TARGET_FILE"
 done
+
+# Optional: Chadmux on the host. Off unless chosen; an existing host tmux
+# config is always left alone.
+CHADMUX_STATE="$("$SCRIPT_DIR/chadmux.host" status)"
+case "$CHADMUX_STATE" in
+  installed)
+    log "Chadmux is already installed on this host"
+    ;;
+  existing\ *)
+    [[ "$CHADMUX" != "no" ]] && \
+      log "Keeping your tmux config at ${CHADMUX_STATE#existing } (Chadmux not installed)"
+    ;;
+  missing\ *)
+    [[ "$CHADMUX" != "no" ]] && \
+      warn "Chadmux needs ${CHADMUX_STATE#missing } on this host; skipping"
+    ;;
+  absent)
+    if [[ "$CHADMUX" == "ask" && -t 0 ]]; then
+      echo ""
+      echo "Chadmux is Chad's tmux config. It labels each pane with the Incus"
+      echo "instance it is shelled into, for one pane per container on the host."
+      read -rp "Install Chadmux tmux config on this host? [y/N] " reply || reply=""
+      [[ "$reply" =~ ^[Yy]$ ]] && CHADMUX="yes"
+    fi
+    if [[ "$CHADMUX" == "yes" ]]; then
+      "$SCRIPT_DIR/chadmux.host" install || warn "Chadmux install failed; your scripts are still installed"
+    fi
+    ;;
+esac
 
 echo ""
 log "Done! Make sure ~/.local/bin is in your PATH"

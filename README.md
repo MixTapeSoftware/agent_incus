@@ -15,6 +15,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [Coding Agents](#coding-agents)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
+  - [Daily Flow with tmux](#daily-flow-with-tmux)
   - [Templates](#templates)
   - [Virtual Machines](#virtual-machines)
   - [Tailscale](#tailscale)
@@ -39,6 +40,8 @@ cd agent_incus
 ```
 
 This symlinks the helper scripts into `~/.local/bin`.
+
+It then offers to install [Chadmux](https://github.com/chadfennell/chadmux), Chad's tmux config, on your host (see [Daily Flow with tmux](#daily-flow-with-tmux)). The answer defaults to no. The question only appears when your host has no tmux config: an existing `~/.tmux.conf`, `~/.config/tmux`, or `$XDG_CONFIG_HOME/tmux` is never moved, replaced, or linked over. Pass `--chadmux` or `--no-chadmux` to decide without the prompt, and re-run `./install_shortcuts` to opt in later. Chadmux needs `git` and `tmux` on the host.
 
 ## Quick Start
 
@@ -67,7 +70,8 @@ incs my-project claude
 | `incus.network` | `incn` | Manage port proxy devices |
 | `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
 | `incs.new-plugin` | — | Scaffold a new plugin file from a template (also `incs new-plugin`) |
-| `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin` |
+| `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin`; optionally install Chadmux on the host |
+| `chadmux.host` | — | Install Chadmux on the host (called by `install_shortcuts`) |
 
 ### incs — Unified CLI
 
@@ -288,6 +292,48 @@ incs -i --from project-base --no-sudo project-agent-2
 ```
 
 The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
+
+### Daily Flow with tmux
+
+This is the full flow we use day to day: tmux runs on the host with [Chadmux](https://github.com/chadfennell/chadmux), and each pane shells into a container. Chadmux labels every pane (and its window) `[incus: <name>]` while it is attached to an instance, so you can always tell which container you are typing into. Install it with `./install_shortcuts` (see [Install](#install)).
+
+```bash
+tmux new -s project                     # One session per project, on the host
+
+incs -i --no-sudo project-agent --agent claude   # First time only
+incs -i --1pass --gh-token project-dev
+
+incs project-agent                      # Pane 1: the agent container
+claude                                  #   ...then start the agent inside it
+# prefix + %  (split), then:
+incs project-dev                        # Pane 2: the dev container (tests, git, servers)
+# prefix + "  (split), then:
+incs -n project-dev 4000                # Pane 3 on the host: proxy the dev server to localhost:4000
+incs status                             #   ...and check CPU, memory, and disk across instances
+```
+
+Leave tmux with prefix + `d`; containers keep running. Come back with `tmux attach -t project`, and stop everything at the end of the day with `incs -ka`.
+
+**Chadmux keys.** The prefix is **Ctrl-s**: press it, release, then press the key.
+
+| Keys | Action |
+|---|---|
+| prefix + `h` / `j` / `k` / `l` | Move to the pane left / below / above / right |
+| Ctrl-`h` / `j` / `k` / `l` | Move between panes without the prefix, including across Vim splits ([vim-tmux-navigator](https://github.com/christoomey/vim-tmux-navigator)) |
+| prefix + `%` / `"` | Split side by side / top and bottom |
+| prefix + `c` | New window |
+| prefix + `i` | Back to the last window |
+| prefix + `W` | Back to the last session |
+| prefix + `M` | Move the current pane to another session (prompts for the target) |
+| prefix + `s` | Pick a session from a list |
+| prefix + `[` | Copy mode with Vi keys: Space starts a selection, `y` copies to the system clipboard ([tmux-yank](https://github.com/tmux-plugins/tmux-yank)) |
+| prefix + `r` | Reload the Chadmux config |
+| prefix + `I` | Install TPM plugins (retry if the first install failed) |
+| prefix + `d` | Detach, leaving everything running |
+
+The status bar sits at the top ([Dracula](https://draculatheme.com/tmux)) and shows CPU and RAM. Mouse support is off. To update Chadmux, run `git -C ~/.config/tmux pull --ff-only`, then press prefix + `r`.
+
+On macOS, Chadmux's `default-shell` setting points at `/usr/bin/zsh`, which does not exist there. tmux reports the error and keeps your login shell, so everything else still works.
 
 ### Templates
 
