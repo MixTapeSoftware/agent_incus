@@ -160,10 +160,27 @@ case "$cmd" in
         ;;
       device)
         # incus config device override <name> <device> key=value
-        op="$1"; name="$2"; dev="$3"; kv="${4:-}"
+        # incus config device add <name> <device> <type> key=value...
+        # incus config device remove <name> <device>
+        op="$1"; name="$2"; dev="$3"; shift 3
         need_inst "$name"
-        [[ "$op" == "override" ]] || die "unsupported device op: $op"
-        printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+        case "$op" in
+          override)
+            kv="${1:-}"
+            printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+            ;;
+          add)
+            [[ -f "$(inst_dir "$name")/config/devices.$dev.type" ]] && die "Device already exists: $dev"
+            printf '%s' "$1" > "$(inst_dir "$name")/config/devices.$dev.type"; shift
+            for kv in "$@"; do
+              printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+            done
+            ;;
+          remove)
+            rm -f "$(inst_dir "$name")/config/devices.$dev."*
+            ;;
+          *) die "unsupported device op: $op" ;;
+        esac
         ;;
       *) die "unsupported config subcommand: $sub" ;;
     esac
@@ -310,6 +327,20 @@ case "$cmd" in
         IRON_PROXY_DIR="$root/etc/iron-proxy" PATH="$stub:$PATH" sh "$script" "${@:2}"
         ;;
       "systemctl is-active"*) echo active ;;
+      # File checks and archive moves, against the fake filesystem.
+      "test -d "*) [[ -d "$root${command_line#test -d }" ]] ;;
+      "test -f "*) [[ -f "$root${command_line#test -f }" ]] ;;
+      "rm -rf /"*) rm -rf "$root${command_line#rm -rf }" ;;
+      "tar -C "*)
+        # tar -C <dir> -cf - <name>   |   tar -C <dir> -xf -
+        set -- ${command_line#tar -C }
+        case "$2" in
+          -cf) tar -C "$root$1" -cf - "$4" ;;
+          -xf) stdin_file="$S/exec-stdin/$n"; [[ -f "$stdin_file" ]] || stdin_file=/dev/null
+               mkdir -p "$root$1"; tar -C "$root$1" -xf - < "$stdin_file" ;;
+          *)   die "fake_incus: unsupported tar: $command_line" ;;
+        esac
+        ;;
       *) : ;;
     esac
     ;;

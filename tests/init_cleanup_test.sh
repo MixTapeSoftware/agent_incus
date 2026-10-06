@@ -40,8 +40,9 @@ extract_fn() {
   echo 'warn() { echo "[!] $1"; }'
   echo 'error(){ echo "[ERROR] $1" >&2; exit 1; }'
   extract_fn revoke_build_sudo
+  extract_fn restore_tailscale_state
   extract_fn cleanup_on_exit
-  echo 'CONTAINER_NAME=box; HOST_USER=dev; BUILD_SUDO_GRANTED="${GRANTED:-1}"'
+  echo 'CONTAINER_NAME=box; HOST_USER=dev; BUILD_SUDO_GRANTED="${GRANTED:-1}"; TS_STATE_BACKUP=""'
   grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/incus.init" || true
   echo 'eval "$BODY"'
 } > "$SANDBOX/harness.sh"

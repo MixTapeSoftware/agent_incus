@@ -1,0 +1,131 @@
+#!/bin/bash
+# tests/template_scrub_test.sh
+# A template must not carry the Tailscale node identity of the container it
+# was built from. These tests run the real stash/restore functions from
+# incus.init against the fake `incus`, around a real `publish`.
+# Run: bash tests/template_scrub_test.sh
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+exec </dev/null
+
+PASS=0
+FAIL=0
+assert_eq() {
+  if [[ "$2" == "$3" ]]; then PASS=$((PASS+1)); echo "  ok  $1"
+  else FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "    expected: $2"; echo "    actual:   $3"; fi
+}
+assert_contains() {
+  if [[ "$3" == *"$2"* ]]; then PASS=$((PASS+1)); echo "  ok  $1"
+  else FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "    expected to contain: $2"; echo "    actual: $3"; fi
+}
+assert_not_contains() {
+  if [[ "$3" != *"$2"* ]]; then PASS=$((PASS+1)); echo "  ok  $1"
+  else FAIL=$((FAIL+1)); echo "  FAIL $1"; echo "    expected NOT to contain: $2"; fi
+}
+
+SANDBOX="$(mktemp -d)"
+trap 'rm -rf "$SANDBOX"' EXIT
+mkdir -p "$SANDBOX/bin" "$SANDBOX/run"
+cp "$SCRIPT_DIR/lib/fake_incus" "$SANDBOX/bin/incus"
+chmod +x "$SANDBOX/bin/incus"
+export PATH="$SANDBOX/bin:$PATH"
+# Where the backup lands.
+export XDG_RUNTIME_DIR="$SANDBOX/run"
+
+extract_fn() {
+  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/incus.init"
+}
+log()  { echo "[+] $1"; }
+warn() { echo "[!] $1"; }
+eval "$(extract_fn stash_tailscale_state)"
+eval "$(extract_fn restore_tailscale_state)"
+declare -F stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in incus.init"; exit 1; }
+
+CONTAINER_NAME=box
+TS_STATE_BACKUP=""
+root()  { echo "$FAKE_INCUS_STATE/instances/box/root"; }
+image() { echo "$FAKE_INCUS_STATE/images/incus-init/box/root"; }
+present() { [[ -e "$1" ]] && echo present || echo gone; }
+execs() { cat "$FAKE_INCUS_STATE/exec.log" 2>/dev/null || true; }
+backups() { ls "$XDG_RUNTIME_DIR" | grep -c '^incs-tailscale\.' || true; }
+# The functions set TS_STATE_BACKUP, so they run in this shell, not in $(...).
+stash()   { stash_tailscale_state   > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?; OUT="$(cat "$SANDBOX/out")"; }
+restore() { restore_tailscale_state > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?; OUT="$(cat "$SANDBOX/out")"; }
+
+fresh_box() {
+  export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
+  mkdir -p "$FAKE_INCUS_STATE"
+  unset FAKE_INCUS_FAIL_EXEC FAKE_INCUS_FAIL_CALL
+  rm -f "$XDG_RUNTIME_DIR"/incs-tailscale.*
+  TS_STATE_BACKUP=""
+  incus launch images:ubuntu/24.04 box
+  mkdir -p "$(root)/var/lib/tailscale/certs" "$(root)/etc"
+  echo "NODE-KEY" > "$(root)/var/lib/tailscale/tailscaled.state"
+  echo "TLS-KEY"  > "$(root)/var/lib/tailscale/certs/box.ts.net.key"
+  echo "keep"     > "$(root)/etc/hostname"
+}
+publish() { incus stop box; incus publish box --alias incus-init/box; incus start box; }
+
+# ===========================================================================
+echo "a container that joined a tailnet"
+# ===========================================================================
+fresh_box
+stash
+assert_eq "stash: succeeds" "0" "$RC"
+assert_eq "stash: the state directory is gone from the container" "gone" "$(present "$(root)/var/lib/tailscale")"
+assert_eq "stash: the rest of the filesystem is untouched" "present" "$(present "$(root)/etc/hostname")"
+assert_contains "stash: tailscaled was stopped first" "box :: systemctl stop tailscaled" "$(execs)"
+assert_eq "stash: one backup file" "1" "$(backups)"
+assert_eq "stash: the backup is private" "600" "$(stat -c %a "$TS_STATE_BACKUP")"
+assert_contains "stash: the backup holds the node key" "tailscale/tailscaled.state" "$(tar -tf "$TS_STATE_BACKUP")"
+assert_contains "stash: …and the serve certificates" "tailscale/certs/box.ts.net.key" "$(tar -tf "$TS_STATE_BACKUP")"
+assert_contains "stash: says why" "node identity" "$OUT"
+
+publish
+assert_eq "publish: the image has no Tailscale state" "gone" "$(present "$(image)/var/lib/tailscale")"
+assert_eq "publish: the image has everything else" "present" "$(present "$(image)/etc/hostname")"
+
+restore
+assert_eq "restore: succeeds" "0" "$RC"
+assert_eq "restore: the node key is back" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "restore: the certificates are back" "TLS-KEY" "$(cat "$(root)/var/lib/tailscale/certs/box.ts.net.key")"
+assert_eq "restore: the backup file is deleted" "0" "$(backups)"
+assert_eq "restore: nothing left to restore" "" "$TS_STATE_BACKUP"
+assert_eq "restore: tailscaled is stopped before and started after" \
+  "box :: systemctl stop tailscaled
+box :: systemctl start tailscaled" "$(execs | grep -E 'systemctl (stop|start) tailscaled' | tail -n 2)"
+restore
+assert_eq "restore again: a no-op success" "0" "$RC"
+
+# ===========================================================================
+echo "a container without Tailscale"
+# ===========================================================================
+fresh_box
+rm -rf "$(root)/var/lib/tailscale"
+stash
+assert_eq "stash: succeeds" "0" "$RC"
+assert_eq "stash: no backup" "0" "$(backups)"
+assert_eq "stash: says nothing" "" "$OUT"
+assert_not_contains "stash: does not touch tailscaled" "tailscaled" "$(execs)"
+restore
+assert_eq "restore: a no-op success" "0" "$RC"
+
+# ===========================================================================
+echo "the restore fails"
+# ===========================================================================
+fresh_box
+stash
+backup="$TS_STATE_BACKUP"
+FAKE_INCUS_FAIL_EXEC='^tar -C /var/lib -xf' restore
+assert_eq "restore cannot extract: fails" "1" "$RC"
+assert_eq "restore cannot extract: the backup is kept" "present" "$(present "$backup")"
+assert_eq "restore cannot extract: …and still remembered" "$backup" "$TS_STATE_BACKUP"
+assert_not_contains "restore cannot extract: tailscaled is not started on an empty state" \
+  "systemctl start tailscaled" "$(execs)"
+
+echo ""
+echo "passed: $PASS  failed: $FAIL"
+[[ $FAIL -eq 0 ]]
