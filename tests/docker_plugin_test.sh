@@ -44,6 +44,11 @@ wait_for_network()   { :; }
 source "$REPO_ROOT/plugins/10-docker.sh"
 CONTAINER_NAME=box HOST_USER=dev IS_VM=0 READY_TIMEOUT=1
 
+echo "defaults"
+assert_eq "docker is opt-in"           "0"        "$PLUGIN_DEFAULT"
+assert_eq "…with a flag to opt in"     "--docker" "$PLUGIN_CLI_FLAGS"
+assert_contains "the description says what the group means" "root inside" "$PLUGIN_DESC"
+
 fresh_box() {
   export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
   mkdir -p "$FAKE_INCUS_STATE"

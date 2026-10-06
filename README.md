@@ -169,7 +169,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
-| [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
+| [Docker](https://www.docker.com/) | Container runtime & compose. Off by default: the `docker` group is root inside the container (`--docker`) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials. The token goes to the container's credential proxy; with `--no-proxy` it goes into the container |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
@@ -180,7 +180,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
 | Tailscale + Supabase serve | Preset `tailscale serve` map for app + Supabase ports (443→3000, 4410→3010, 4431→3001, 5432→54321, 5433→54323, 5434→54324, 8443→8000); auto-selects Tailscale |
 
-Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`).
+Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`, `--docker`).
 
 ### Adding Custom Plugins
 
@@ -225,7 +225,9 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin, on by default, puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container itself as the boundary, and the shared workspace as the one opening in it (see [Git on a shared workspace](#git-on-a-shared-workspace)). Use `incs shell --with-sudo` when you need to install packages interactively:
+A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run.
+
+Root inside the container matters more than it looks. The workspace is mounted with `shift=true`, which maps the container's IDs onto the host's for that directory — your user to your user, and root to root. So a file that root inside the container writes into the workspace is owned by root on the host, and it can be made setuid. Don't grant root (Docker, `--with-sudo`) in a container that runs code you don't trust. Treat the container itself as the boundary, and the shared workspace as the one opening in it (see [Git on a shared workspace](#git-on-a-shared-workspace)). Use `incs shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
 graph TB
@@ -268,7 +270,7 @@ What it does not cover:
 
 ### Templates
 
-Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and Docker. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container with no secrets baked in, stored in the local Incus image store.
+Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and whichever plugins you picked. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container with no secrets baked in, stored in the local Incus image store.
 
 **Build once:**
 

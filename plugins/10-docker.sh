@@ -1,7 +1,11 @@
 PLUGIN_ID="docker"
 PLUGIN_NAME="Docker"
-PLUGIN_DESC="Container runtime & compose"
-PLUGIN_DEFAULT=1
+PLUGIN_DESC="Container runtime & compose (the docker group is root inside the container)"
+# Off by default: the docker group is root inside the container, and while
+# the workspace is mounted with shift=true, root inside is root over the
+# mounted checkout on the host. Opt in with --docker.
+PLUGIN_DEFAULT=0
+PLUGIN_CLI_FLAGS="--docker"
 PLUGIN_RUN_ON_LAUNCH=1
 
 plugin_is_installed() {
