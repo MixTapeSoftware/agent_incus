@@ -1242,7 +1242,7 @@ for cmd in sudo curl; do
   chmod +x "$SANDBOX/bin/$cmd"
 done
 run_init() {
-  bash "$INIT_FIXTURE/incus.init" --no-tui --ack-env --no-mount --path "$SANDBOX/workspace" "$@"
+  bash "$INIT_FIXTURE/incus.init" --no-tui --ack-env --path "$SANDBOX/workspace" "$@"
 }
 
 fresh_state
@@ -1436,7 +1436,7 @@ run_save_template() {
     warn() { :; }
     wait_for_container() { :; }
     wait_for_network()   { :; }
-    CONTAINER_NAME="$container" HOST_USER="$USER_NAME" MOUNT_PATH="/workspace" READY_TIMEOUT=1 TS_STATE_BACKUP=""
+    CONTAINER_NAME="$container" HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1 TS_STATE_BACKUP=""
     eval "$save_template_src"
     save_template
   )
@@ -1481,7 +1481,7 @@ out="$( (
   error() { echo "[ERROR] $1" >&2; exit 1; }
   log()  { :; }; warn() { :; }; wait_for_container() { :; }; wait_for_network() { :; }
   set -euo pipefail
-  CONTAINER_NAME=base HOST_USER="$USER_NAME" MOUNT_PATH="/workspace" READY_TIMEOUT=1
+  CONTAINER_NAME=base HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1
   eval "$save_template_src"
   save_template
 ) 2>&1)" && rc=0 || rc=$?

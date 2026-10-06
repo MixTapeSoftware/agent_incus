@@ -345,9 +345,12 @@ case "$cmd" in
       "test -d "*) [[ -d "$root${command_line#test -d }" ]] ;;
       "test -f "*) [[ -f "$root${command_line#test -f }" ]] ;;
       "rm -rf /"*) rm -rf "$root${command_line#rm -rf }" ;;
-      "tar -C "*)
-        # tar -C <dir> -cf - <name>   |   tar -C <dir> -xf -
-        set -- ${command_line#tar -C }
+      "ls -A /"*)  ls -A "$root${command_line#ls -A }" ;;
+      "mkdir -p /"*) mkdir -p "$root${command_line#mkdir -p }" ;;
+      "tar -C "*|"tar --no-same-owner -C "*)
+        # tar [--no-same-owner] -C <dir> -cf - <name>   |   ... -C <dir> -xf -
+        command_line="${command_line#tar }"; command_line="${command_line#--no-same-owner }"
+        set -- ${command_line#-C }
         case "$2" in
           -cf) tar -C "$root$1" -cf - "$4" ;;
           -xf) stdin_file="$S/exec-stdin/$n"; [[ -f "$stdin_file" ]] || stdin_file=/dev/null

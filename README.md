@@ -14,7 +14,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [What incus.init does](#what-incusinit-does)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
-  - [Git on a shared workspace](#git-on-a-shared-workspace)
+  - [Getting work out](#getting-work-out)
   - [Templates](#templates)
   - [Virtual Machines](#virtual-machines)
   - [Tailscale](#tailscale)
@@ -43,7 +43,7 @@ This symlinks the helper scripts into `~/.local/bin`.
 ## Quick Start
 
 ```bash
-# Create a container with the current directory mounted as /workspace
+# Create a container with a copy of the current directory in /workspace
 incs -i my-project
 
 # Open a shell
@@ -106,17 +106,14 @@ The individual scripts and aliases (`inci`, `incn`) still work directly.
 Usage: incus.init [OPTIONS] <container-name>
 
 Options:
-  -p, --path PATH           Host directory to mount (default: current directory)
-  -m, --mount-path PATH     Container mount point (default: /workspace)
+  -p, --path PATH           Host directory to copy in (default: current directory)
+  -w, --workspace PATH      Where the copy goes in the container (default: /workspace)
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
-  -t, --template            Save container as a reusable local template (implies --no-mount)
+  -t, --template            Save container as a reusable local template (empty workspace)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
-  --no-mount                Clone repo into container instead of mounting host directory
-  --git-rw                  Let the container write .git/config and .git/hooks
-                            (default: read-only, so it cannot plant commands the host's git runs)
   --vm                      Provision a KVM virtual machine instead of a container
-  --no-copy                 VM only: start with an empty (sealed) workspace
+  --no-copy                 Start with an empty workspace instead of copying the host directory
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
@@ -133,7 +130,7 @@ Options:
 2. Creates an empty credential proxy named `<container>-proxy` (skip with `--no-proxy`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
-5. Mounts your host directory into the container with `shift=true` (requires Linux 5.12+), with `.git/config`, `.git/config.worktree` and `.git/hooks` read-only on top (see [Git on a shared workspace](#git-on-a-shared-workspace))
+5. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional plugins (see below)
 
@@ -225,16 +222,17 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-A recommended setup uses two containers sharing the same workspace. Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run.
+Each container gets its own copy of the directory you create it from, `.git` and uncommitted work included. Nothing on the host is mounted into it, so the container can do what it likes to its copy and the host only sees work that leaves through git (see [Getting work out](#getting-work-out)).
 
-Root inside the container matters more than it looks. The workspace is mounted with `shift=true`, which maps the container's IDs onto the host's for that directory — your user to your user, and root to root. So a file that root inside the container writes into the workspace is owned by root on the host, and it can be made setuid. Don't grant root (Docker, `--with-sudo`) in a container that runs code you don't trust. Treat the container itself as the boundary, and the shared workspace as the one opening in it (see [Git on a shared workspace](#git-on-a-shared-workspace)). Use `incs shell --with-sudo` when you need to install packages interactively:
+Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container as the boundary. Use `incs shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
-graph TB
-    W["/workspace (app files)"]
-    H["Host Machine"] --> W
-    A["Agent Container"] --> W
-    D["Dev Container"] --> W
+graph LR
+    H["Host checkout"] -- "copied at incs -i" --> A["Agent container"]
+    H -- "copied at incs -i" --> D["Dev container"]
+    A -- "git push" --> R["Git remote"]
+    D -- "git push" --> R
+    R -- "git fetch" --> H
 ```
 
 ```bash
@@ -253,20 +251,20 @@ incs -i --template project-base
 incs -i --from project-base project-agent-2
 ```
 
-The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
+Each container works on its own copy. Work moves between containers, and back to the host, through git.
 
-### Git on a shared workspace
+### Getting work out
 
-The mounted workspace is the one place where the container and the host touch, and git is the tool most likely to carry something across it. Git runs the commands named in `.git/config` (`core.fsmonitor`, `core.hooksPath`, `core.pager`, `diff.external`, …) and the scripts in `.git/hooks` during everyday `git status` and `git commit`, without asking. Both live inside the mounted tree, written as your user, so git's ownership check does not notice who wrote them. An editor with git integration runs `git status` every few seconds.
+Commit inside the container and push a branch. Git there reaches GitHub through the container's credential proxy: pass `--gh-token` when you create it, or add a token later with `incs proxy add <container> --token`. Then fetch the branch on the host and read it before you run anything:
 
-So `incs -i` mounts `.git/config`, `.git/config.worktree` and `.git/hooks` read-only on top of the workspace, and the same files for every submodule under `.git/modules`. If `config.worktree` or `hooks` doesn't exist yet, it is created empty on the host first, so the container can't create one. Inside the container, `git commit`, `branch`, `checkout`, `fetch`, `pull` and `push` work as before. Anything that writes the repository's own config does not: `git remote add`, `git config` without `--global`, `git push -u`, `git lfs install`. Do those from the host. The container's git is set to `push.default=current` and `branch.autoSetupMerge=false`, so pushing and checking out branches never needs to write config; `git pull` wants the remote and branch spelled out (`git pull origin main`).
+```bash
+git fetch origin
+git diff main..origin/<branch>
+```
 
-Pass `--git-rw` to turn this off for a container you trust.
+A fetch brings commits, never the container's git config or hooks. The commits can still change anything in the tree, including `package.json` scripts, `Makefile`s, `.envrc`, `.vscode/tasks.json` and hook managers like husky, so read the diff before you run it.
 
-What it does not cover:
-
-- **Hooks kept in the working tree.** husky, lefthook and a `core.hooksPath` that points into the repo run scripts the container can edit. So can `package.json` scripts, `Makefile`s, `.vscode/tasks.json` and anything else the host executes from the tree. Read the diff before you run it.
-- **Git on the host, with `--no-mount` or `--vm`.** There the host never runs git on files the container wrote, until you pull its branch; the same advice applies.
+The copy lives only in the container. Deleting the container (`incs -d`) deletes any work you haven't pushed.
 
 ### Templates
 
@@ -278,7 +276,7 @@ Provisioning a container from scratch installs packages, build tools, mise, Oh M
 incs -i --template my-base
 ```
 
-This provisions the container (without mounting host files) and saves it locally as `incus-init/my-base`. Before publishing it removes:
+This provisions the container (with an empty workspace) and saves it locally as `incus-init/my-base`. Before publishing it removes:
 
 - `GH_TOKEN` and `OP_SERVICE_ACCOUNT_TOKEN` exports from `~/.zshenv`
 - credential-proxy lines in `~/.zshenv` and `/etc/hosts`
@@ -296,7 +294,7 @@ incs -i --from my-base my-project
 incs -i --from my-base --1pass --gh-token my-dev
 ```
 
-When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected plugins run.
+When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only the workspace copy, user creation (if needed), and selected plugins run.
 
 **Manage templates:**
 
@@ -314,14 +312,12 @@ identical; only the workspace model and resources differ.
 
 ```bash
 incs -i --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
-incs -i --vm --no-copy my-vm                # VM with an empty, sealed /workspace
+incs -i --vm --no-copy my-vm                # VM with an empty /workspace
 incs -i --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
 ```
 
-**Workspace:** VMs never bind-mount the host. By default the working tree is
-**copied in** (including `.git`), owned by you and fully writable — no idmap
-juggling, because a VM runs its own kernel. Pass `--no-copy` for a sealed VM
-that starts with an empty workspace and never touches host files. Resource
+**Workspace:** the same as a container: your working tree is copied in
+(including `.git`), and `--no-copy` starts empty. Resource
 defaults are `20GiB` disk / `4GiB` memory / `4` vCPUs (override with
 `--vm-disk`/`--vm-memory`/`--vm-cpus`).
 
