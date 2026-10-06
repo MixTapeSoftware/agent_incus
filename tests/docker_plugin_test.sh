@@ -126,6 +126,15 @@ removed_at="$(calls | grep -n "^file delete box$MASK_UNIT" | cut -d: -f1 | head 
 restart_at="$(calls | grep -n "^restart box" | cut -d: -f1 | head -n 1)"
 assert_eq "old mask: removed before the restart" "yes" "$([[ -n "$removed_at" && -n "$restart_at" && "$removed_at" -lt "$restart_at" ]] && echo yes || echo no)"
 
+# The mask is there but cannot be deleted: do not restart with it.
+fresh_box
+mkdir -p "$(root)/etc/systemd/system"
+echo "[Unit]" > "$(root)$MASK_UNIT"
+FAKE_INCUS_FAIL_CALL='^file delete' install
+assert_eq "mask delete fails: the plugin fails" "1" "$RC"
+assert_contains "mask delete fails: says why" "Could not remove the AppArmor mask unit" "$OUT"
+assert_not_contains "mask delete fails: no restart" "restart box" "$(calls)"
+
 # The check itself fails: do not restart with a mask that may be there.
 fresh_box
 FAKE_INCUS_FAIL_EXEC='mask-apparmor' install

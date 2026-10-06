@@ -202,6 +202,20 @@ assert_eq "restore, still running: fails" "1" "$RC"
 assert_eq "restore, still running: the backup is kept" "present" "$(present "$backup")"
 assert_eq "restore, still running: nothing extracted over the live state" "gone" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
 
+# ===========================================================================
+echo "the host copy cannot be deleted"
+# ===========================================================================
+fresh_box
+stash
+backup="$TS_STATE_BACKUP"
+chmod 500 "$XDG_RUNTIME_DIR"
+restore
+chmod 700 "$XDG_RUNTIME_DIR"
+assert_eq "undeletable backup: restore reports failure" "1" "$RC"
+assert_eq "undeletable backup: the node key is back in the container" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "undeletable backup: the path is still remembered" "$backup" "$TS_STATE_BACKUP"
+assert_contains "undeletable backup: tailscaled is started anyway" "box :: systemctl start tailscaled" "$(execs)"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

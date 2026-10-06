@@ -550,11 +550,14 @@ restore_tailscale_state() {
   ts="$(incus exec "$CONTAINER_NAME" -- systemctl is-active tailscaled 2>/dev/null </dev/null)" || true
   [[ "$ts" == "inactive" || "$ts" == "failed" ]] || return 1
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -xf - < "$TS_STATE_BACKUP" || return 1
-  # The state is back in place, so the host copy of the node key can go.
-  rm -f "$TS_STATE_BACKUP"
-  TS_STATE_BACKUP=""
+  # The state is back in place, so the host copy of the node key can go. This
+  # runs under || (errexit off), so a failed delete is checked here: keep the
+  # path so the exit trap reports the file, and return failure.
+  local kept=0
+  if rm -f "$TS_STATE_BACKUP"; then TS_STATE_BACKUP=""; else kept=1; fi
   incus exec "$CONTAINER_NAME" -- systemctl start tailscaled </dev/null || \
     warn "Tailscale state is restored in $CONTAINER_NAME, but tailscaled did not start. Start it: incus exec $CONTAINER_NAME -- systemctl start tailscaled"
+  return "$kept"
 }
 
 # ---------------------------------------------------------------------------

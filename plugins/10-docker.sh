@@ -103,7 +103,11 @@ _docker_remove_apparmor_mask() {
   log "Removing the AppArmor mask an older build left in this image..."
   incus exec "$CONTAINER_NAME" -- systemctl disable mask-apparmor.service >/dev/null 2>&1 || true
   incus exec "$CONTAINER_NAME" -- umount /sys/module/apparmor/parameters/enabled >/dev/null 2>&1 || true
-  incus file delete "$CONTAINER_NAME/etc/systemd/system/mask-apparmor.service"
+  # Called under || (errexit off): a delete that fails must stop the restart.
+  incus file delete "$CONTAINER_NAME/etc/systemd/system/mask-apparmor.service" || {
+    warn "Could not remove the AppArmor mask unit from $CONTAINER_NAME; not configuring Docker"
+    return 1
+  }
   incus exec "$CONTAINER_NAME" -- systemctl daemon-reload >/dev/null 2>&1 || true
 }
 
