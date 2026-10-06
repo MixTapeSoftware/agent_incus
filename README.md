@@ -4,11 +4,14 @@ A set of shell scripts that automate the creation of [Incus](https://linuxcontai
 
 Why shell scripts? They introduce no dependencies, are ergonomic enough for simple systems administration tasks, and transparently convey their purpose.
 
+**No host files are mounted into a container. Not as an option, not as a default you can turn off.** Your directory is copied in once, and work comes back out through git. See [No Host Mounts](#no-host-mounts).
+
 ## Contents
 
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [No Host Mounts](#no-host-mounts)
 - [Scripts](#scripts)
 - [incus.init Options](#incusinit-options)
   - [What incus.init does](#what-incusinit-does)
@@ -52,6 +55,27 @@ incs my-project
 # Run a command (e.g. Claude Code)
 incs my-project claude
 ```
+
+## No Host Mounts
+
+A container never sees a live host directory. `incs -i` copies your directory into `/workspace` once, `.git` and uncommitted work included, and that copy is the container's from then on. Nothing it writes lands on your host. Work comes back out the way it would from any other machine: through git, as commits you fetch and read (see [Getting work out](#getting-work-out)).
+
+**Why.** Your host runs what's in a checkout, usually without asking:
+
+- git runs whatever `.git/config` names (`core.fsmonitor`, `core.hooksPath`, `core.pager`) and the scripts in `.git/hooks`, on every `git status`, including the ones your editor runs every few seconds
+- `npm install` runs `package.json` scripts, direnv loads `.envrc`, and your editor reads `.vscode/tasks.json`
+- mise reads `mise.toml`, and hook managers like husky and lefthook read their configs
+
+A writable mount hands all of that to whatever runs in the container: an agent, a dependency, a prompt injection. Earlier versions mounted the workspace and tried to fence off the dangerous parts: `.git/config` and hooks read-only, then config.worktree, then submodules. A guard like that is never finished, because the next thing your host executes from the tree is one you didn't list. And with `shift=true`, root inside the container was root over your checkout, able to leave setuid files on the host. So the mount is gone, along with every flag that kept it alive.
+
+**What you give up**, and how this repo expects you to work instead:
+
+- **Editing host files from a host editor.** Edit inside the container. The Chadception plugin (Chad's [NvChad](https://nvchad.com/) config, see [Optional Plugins](#optional-plugins)) sets up Neovim there.
+- **Live sync.** A container doesn't see host edits made after it was created, and the host doesn't see the container's edits until you fetch them. Commit and push often.
+- **One checkout shared by several containers.** Each container gets its own copy, and git moves work between them.
+- **A safety net.** The copy lives only in the container, so `incs -d` deletes any work you haven't pushed.
+
+There is no flag to bring the mount back, and there won't be one.
 
 ## Scripts
 
@@ -161,6 +185,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | Plugin | Description |
 |---|---|
 | [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
+| Chadception | Chad's [NvChad](https://nvchad.com/) Neovim config, for editing inside the container |
 | Chadmux | Chad's tmux config + TPM plugins |
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
@@ -222,7 +247,7 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-Each container gets its own copy of the directory you create it from, `.git` and uncommitted work included. Nothing on the host is mounted into it, so the container can do what it likes to its copy and the host only sees work that leaves through git (see [Getting work out](#getting-work-out)).
+Each container gets its own copy of the directory you create it from, and the host only sees work that leaves through git (see [No Host Mounts](#no-host-mounts) and [Getting work out](#getting-work-out)).
 
 Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container as the boundary. Use `incs shell --with-sudo` when you need to install packages interactively:
 
