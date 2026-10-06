@@ -57,6 +57,7 @@ PLUGIN_DESC="A plugin"
 PLUGIN_NEEDS_PROMPT=1
 PLUGIN_RUN_ON_LAUNCH=1
 PLUGIN_REQUIRES="tailscale docker"
+PLUGIN_AGENT_COMMAND="agent-a"
 plugin_prompt() { echo "A_PROMPT_FIRED"; }
 plugin_is_installed() { return 0; }
 plugin_install() { echo "A_INSTALL"; }
@@ -77,6 +78,7 @@ PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
 _reset_plugin_state
 source "$fixture/plug_a.sh"
 assert_eq "A: PLUGIN_NEEDS_PROMPT set"   "1" "${PLUGIN_NEEDS_PROMPT:-0}"
+assert_eq "A: PLUGIN_AGENT_COMMAND set" "agent-a" "${PLUGIN_AGENT_COMMAND:-}"
 assert_eq "A: PLUGIN_REQUIRES set"       "tailscale docker" "${PLUGIN_REQUIRES:-}"
 assert_eq "A: PLUGIN_RUN_ON_LAUNCH set"  "1" "${PLUGIN_RUN_ON_LAUNCH:-0}"
 assert_eq "A: plugin_prompt defined"     "plugin_prompt" "$(declare -F plugin_prompt 2>/dev/null || echo "")"
@@ -87,6 +89,7 @@ source "$fixture/plug_b.sh"
 assert_eq "B: PLUGIN_ID overwritten"      "b" "$PLUGIN_ID"
 assert_eq "B: PLUGIN_NEEDS_PROMPT cleared"   "0" "${PLUGIN_NEEDS_PROMPT:-0}"
 assert_eq "B: PLUGIN_RUN_ON_LAUNCH cleared"  "0" "${PLUGIN_RUN_ON_LAUNCH:-0}"
+assert_eq "B: PLUGIN_AGENT_COMMAND cleared" "" "${PLUGIN_AGENT_COMMAND:-}"
 assert_eq "B: PLUGIN_REQUIRES cleared"       "" "${PLUGIN_REQUIRES:-}"
 assert_eq "B: plugin_prompt unset"        "" "$(declare -F plugin_prompt 2>/dev/null || echo "")"
 assert_eq "B: plugin_on_launch unset"     "" "$(declare -F plugin_on_launch 2>/dev/null || echo "")"
@@ -109,18 +112,28 @@ eval "$hook_src"
 warn() { :; }
 
 FAILED_PLUGIN_NAMES=()
+FAILED_PLUGIN_IDS=()
 marker="$fixture/hook_kept_going"
 boom() { false; touch "$marker"; }
 PLUGIN_NAME="Boom"
+PLUGIN_ID="boom"
 _run_plugin_hook boom
 assert_eq "hook: plugin stops at its first error"  "absent" "$([[ -f "$marker" ]] && echo present || echo absent)"
 assert_eq "hook: failure recorded"                 "Boom" "${FAILED_PLUGIN_NAMES[0]:-}"
+assert_eq "hook: failure tracked by ID"            "boom" "${FAILED_PLUGIN_IDS[0]:-}"
 
 fine() { :; }
 PLUGIN_NAME="Fine"
+PLUGIN_ID="fine"
 _run_plugin_hook fine
 assert_eq "hook: success not recorded"             "1" "${#FAILED_PLUGIN_NAMES[@]}"
 assert_eq "hook: script still alive after failure" "alive" "alive"
+
+eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/incus.init")"
+assert_eq "hook: failed ID is recognized" "failed" "$(_plugin_failed boom && echo failed || echo ok)"
+PLUGIN_ID="same-label" PLUGIN_NAME="Boom"
+_run_plugin_hook fine
+assert_eq "hook: successful plugin with same label is not failed" "ok" "$(_plugin_failed same-label && echo failed || echo ok)"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"
