@@ -1492,6 +1492,31 @@ assert_eq "template, /etc/hosts unreadable: no image is published" \
 assert_contains "template, /etc/hosts unreadable: the container keeps its placeholder" \
   "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
 
+# The Tailscale stash refuses (tailscaled will not stop): nothing else in the
+# builder may have been scrubbed by then.
+fresh_state
+make_proxy work
+make_agent base
+incs proxy add base work >/dev/null 2>&1
+ph="$(cfg base environment.GH_TOKEN)"
+mkdir -p "$(fs base /var/lib/tailscale)" "$FAKE_INCUS_STATE/still-active"
+echo NODE-KEY > "$(fs base /var/lib/tailscale/tailscaled.state)"
+touch "$FAKE_INCUS_STATE/still-active/tailscaled"
+out="$( (
+  error() { echo "[ERROR] $1" >&2; exit 1; }
+  log()  { :; }; warn() { :; }; wait_for_container() { :; }; wait_for_network() { :; }
+  set -euo pipefail
+  CONTAINER_NAME=base HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1 TS_STATE_BACKUP=""
+  eval "$save_template_src"
+  save_template
+) 2>&1)" && rc=0 || rc=$?
+assert_eq "template, stash refuses: save fails" "1" "$rc"
+assert_contains "template, stash refuses: says why" "Could not stop tailscaled" "$out"
+assert_contains "template, stash refuses: the builder keeps its placeholder" \
+  "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
+assert_contains "template, stash refuses: …and its /etc/hosts lines" \
+  "# incs-proxy:github" "$(hosts_of base)"
+
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -185,6 +185,17 @@ assert_eq "stash, state unknown: stops the build" "1" "$RC"
 assert_contains "stash, state unknown: says so" "(state: unknown)" "$OUT"
 assert_eq "stash, state unknown: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
 assert_eq "stash, state unknown: no backup" "0" "$(backups)"
+assert_contains "stash, state unknown: tailscaled is started again" "box :: systemctl start tailscaled" "$(execs)"
+
+# The archive fails: nothing may point the exit trap at a partial backup.
+fresh_box
+FAKE_INCUS_FAIL_EXEC='^tar -C /var/lib -cf' stash_sub
+assert_eq "archive fails: stops the build" "1" "$RC"
+assert_contains "archive fails: says why" "Could not archive the Tailscale state" "$OUT"
+assert_eq "archive fails: no backup is left" "0" "$(backups)"
+assert_eq "archive fails: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_contains "archive fails: tailscaled is started again" "box :: systemctl start tailscaled" "$(execs)"
+
 
 fresh_box
 mkdir -p "$FAKE_INCUS_STATE/still-active"; touch "$FAKE_INCUS_STATE/still-active/tailscaled"

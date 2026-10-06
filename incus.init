@@ -520,12 +520,21 @@ stash_tailscale_state() {
   # A tailscaled still running could write the state back before publish. Only
   # an explicit inactive/failed counts: a query that fails proves nothing.
   incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null </dev/null || true
-  local ts
+  local ts backup=""
   ts="$(incus exec "$CONTAINER_NAME" -- systemctl is-active tailscaled 2>/dev/null </dev/null)" || true
-  [[ "$ts" == "inactive" || "$ts" == "failed" ]] || \
+  if [[ "$ts" != "inactive" && "$ts" != "failed" ]]; then
+    incus exec "$CONTAINER_NAME" -- systemctl start tailscaled 2>/dev/null </dev/null || true
     error "Could not stop tailscaled in $CONTAINER_NAME (state: ${ts:-unknown}). No template saved: it could write the node key back."
-  TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")"
-  incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$TS_STATE_BACKUP"
+  fi
+  # The exit trap restores from TS_STATE_BACKUP, so it is set only once the
+  # archive is complete: half an archive must never go back over the state.
+  if ! backup="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")" || \
+     ! incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$backup" </dev/null; then
+    [[ -n "$backup" ]] && rm -f "$backup"
+    incus exec "$CONTAINER_NAME" -- systemctl start tailscaled 2>/dev/null </dev/null || true
+    error "Could not archive the Tailscale state in $CONTAINER_NAME. No template saved."
+  fi
+  TS_STATE_BACKUP="$backup"
   incus exec "$CONTAINER_NAME" -- rm -rf /var/lib/tailscale
 }
 
@@ -604,6 +613,10 @@ save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
 
+  # First, before anything else is scrubbed: it is the step that can refuse to
+  # save, and once it has run, the exit trap puts the state back on failure.
+  stash_tailscale_state
+
   # Read /etc/hosts before changing anything: its proxy lines must not reach
   # the image, so a template is not saved if they cannot be found.
   local hosts_file saved_hosts
@@ -640,8 +653,6 @@ save_template() {
     log "Emptying workspace so the template stays a clean base..."
     incus exec "$CONTAINER_NAME" -- rm -rf "$CONTAINER_WORKSPACE"
   fi
-
-  stash_tailscale_state
 
   log "Stopping container for snapshot..."
   incus stop "$CONTAINER_NAME"
