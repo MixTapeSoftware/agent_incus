@@ -57,6 +57,7 @@ PLUGIN_DESC="A plugin"
 PLUGIN_NEEDS_PROMPT=1
 PLUGIN_RUN_ON_LAUNCH=1
 PLUGIN_REQUIRES="tailscale docker"
+PLUGIN_AGENT_COMMAND="agent-a"
 plugin_prompt() { echo "A_PROMPT_FIRED"; }
 plugin_is_installed() { return 0; }
 plugin_install() { echo "A_INSTALL"; }
@@ -77,6 +78,7 @@ PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
 _reset_plugin_state
 source "$fixture/plug_a.sh"
 assert_eq "A: PLUGIN_NEEDS_PROMPT set"   "1" "${PLUGIN_NEEDS_PROMPT:-0}"
+assert_eq "A: PLUGIN_AGENT_COMMAND set" "agent-a" "${PLUGIN_AGENT_COMMAND:-}"
 assert_eq "A: PLUGIN_REQUIRES set"       "tailscale docker" "${PLUGIN_REQUIRES:-}"
 assert_eq "A: PLUGIN_RUN_ON_LAUNCH set"  "1" "${PLUGIN_RUN_ON_LAUNCH:-0}"
 assert_eq "A: plugin_prompt defined"     "plugin_prompt" "$(declare -F plugin_prompt 2>/dev/null || echo "")"
@@ -87,6 +89,7 @@ source "$fixture/plug_b.sh"
 assert_eq "B: PLUGIN_ID overwritten"      "b" "$PLUGIN_ID"
 assert_eq "B: PLUGIN_NEEDS_PROMPT cleared"   "0" "${PLUGIN_NEEDS_PROMPT:-0}"
 assert_eq "B: PLUGIN_RUN_ON_LAUNCH cleared"  "0" "${PLUGIN_RUN_ON_LAUNCH:-0}"
+assert_eq "B: PLUGIN_AGENT_COMMAND cleared" "" "${PLUGIN_AGENT_COMMAND:-}"
 assert_eq "B: PLUGIN_REQUIRES cleared"       "" "${PLUGIN_REQUIRES:-}"
 assert_eq "B: plugin_prompt unset"        "" "$(declare -F plugin_prompt 2>/dev/null || echo "")"
 assert_eq "B: plugin_on_launch unset"     "" "$(declare -F plugin_on_launch 2>/dev/null || echo "")"

@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-CONTAINER="${1:-${CLAUDE_CONTAINER:-}}"
+CONTAINER="${1:-${INCS_CONTAINER:-${CLAUDE_CONTAINER:-}}}"
 if [[ -z "$CONTAINER" ]]; then
   echo "Usage: $(basename "$0") <container> [command...]"
   exit 1

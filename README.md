@@ -1,6 +1,6 @@
 # AgentIncus
 
-A set of shell scripts that automate the creation of [Incus](https://linuxcontainers.org/incus/) containers for AI agents and secure development. See COI's [Why Incus](https://github.com/mensfeld/code-on-incus?tab=readme-ov-file#why-incus-over-docker) for why Incus over Docker.
+A set of shell scripts that automate the creation of [Incus](https://linuxcontainers.org/incus/) containers and VMs for coding agents, including Claude Code, Codex, and Grok Build. See COI's [Why Incus](https://github.com/mensfeld/code-on-incus?tab=readme-ov-file#why-incus-over-docker) for why Incus over Docker.
 
 Why shell scripts? They introduce no dependencies, are ergonomic enough for simple systems administration tasks, and transparently convey their purpose.
 
@@ -12,6 +12,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 - [Scripts](#scripts)
 - [incus.init Options](#incusinit-options)
   - [What incus.init does](#what-incusinit-does)
+  - [Coding Agents](#coding-agents)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
   - [Templates](#templates)
@@ -41,14 +42,18 @@ This symlinks the helper scripts into `~/.local/bin`.
 ## Quick Start
 
 ```bash
-# Create a container with the current directory mounted as /workspace
-incs -i my-project
+# Choose an agent; all three share the same instance setup
+incs -i my-project --agent claude
+# Or: incs -i my-project --agent codex
+# Or: incs -i my-project --agent grok
 
 # Open a shell
 incs my-project
 
-# Run a command (e.g. Claude Code)
+# Start the selected agent
 incs my-project claude
+# Or: incs my-project codex
+# Or: incs my-project grok
 ```
 
 ## Scripts
@@ -102,6 +107,7 @@ Options:
   -t, --template            Save container as a reusable local template (implies --no-mount)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
   --no-mount                Clone repo into container instead of mounting host directory
+  --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
   --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 VM only: start with an empty (sealed) workspace
@@ -136,6 +142,41 @@ Every container is provisioned with the following packages before any optional p
 | Utilities | gpg, ca-certificates, psmisc, fontconfig, fzf, bat |
 | Tools | [mise](https://mise.jdx.dev/) (runtime version manager), [Oh My Zsh](https://ohmyz.sh/) (with zsh-autosuggestions), [GitHub CLI](https://cli.github.com/) |
 
+### Coding Agents
+
+Select agents in the plugin picker or pass `--agent NAME`. Repeat the flag to
+install more than one in the same instance:
+
+```bash
+incs -i project --agent claude --agent codex --agent grok
+incs -i project-agent --no-sudo --agent codex
+incs -i --from project-base project-grok --agent grok
+```
+
+| Agent | Selection | Command inside the instance |
+|---|---|---|
+| Claude Code | `--agent claude` or `--claude` | `claude` |
+| Codex | `--agent codex` or `--codex` | `codex` |
+| [Grok Build](https://docs.x.ai/build/overview) | `--agent grok`, `--grok`, or `--grokbot` | `grok` |
+
+Here, the `grokbot` alias selects xAI's local **Grok Build** coding CLI. xAI's
+cloud **Grok Bot** service is a separate product and is not installed in Incus.
+`--agent grokbot` is accepted too. No coding agent is selected by default.
+
+All agent installers work with `--no-sudo`: system dependencies are provisioned
+from the host, and agent executables are installed for the instance user. The
+completion summary prints launch commands for each selected agent that installed
+successfully. Sign in inside the instance using the agent's own login flow; for
+headless Grok login, run `incs project-grok 'grok login --device-auth'`.
+
+For shell scripts, set `INCS_CONTAINER` to a default instance for `incus.shell`.
+Explicit instance arguments take precedence. `CLAUDE_CONTAINER` remains a
+fallback for existing scripts.
+
+This repository's shared instructions are in `AGENTS.md`. Its OpenSpec skills
+live in `.agents/skills`, with `.claude/skills` and `.grok/skills` symlinks for
+native discovery. `CLAUDE.md` imports the same shared instructions.
+
 ### Optional Plugins
 
 The TUI lets you pick from optional plugins during container creation. Plugins are standalone scripts that the TUI discovers automatically from two locations:
@@ -154,13 +195,14 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
+| [Grok Build](https://docs.x.ai/build/overview) | xAI coding agent |
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
 | [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
-| [Matt Pocock Skills](https://github.com/mattpocock/skills) | Engineering and productivity skills for Claude Code and Codex (enabled by default) |
+| [Matt Pocock Skills](https://github.com/mattpocock/skills) | Engineering and productivity skills for Claude Code, Codex, and Grok (enabled by default) |
 | [mermaid-ascii](https://github.com/AlexanderGrooff/mermaid-ascii) | Render mermaid diagrams as ASCII art |
 | [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
@@ -169,7 +211,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`).
 
-Matt Pocock Skills installs the full collection globally for the container user, so it is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
+Matt Pocock Skills installs the full collection globally for the instance user. Codex and Grok discover the shared `~/.agents/skills` directory, and Claude Code receives its own discovery links, so the same collection is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
 
 ### Adding Custom Plugins
 
@@ -201,6 +243,7 @@ plugin_install() {
 ```
 
 Optional extras:
+- `PLUGIN_AGENT_COMMAND="my-agent"` — identifies a coding agent; enables `--agent my-agent` and launch guidance
 - `PLUGIN_CLI_FLAGS="--my-tool"` — adds a CLI flag to pre-select without the TUI
 - `PLUGIN_NEEDS_PROMPT=1` + `plugin_prompt()` — collect user input before install
 - `PLUGIN_RUN_ON_LAUNCH=1` + `plugin_on_launch()` — re-run setup when launching from a template (for symlinks, config that doesn't survive snapshots)
