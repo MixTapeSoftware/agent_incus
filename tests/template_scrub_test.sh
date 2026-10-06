@@ -178,11 +178,18 @@ assert_not_contains "no tailscaled: does not point at a deleted backup" "incs-ta
 # ===========================================================================
 echo "tailscaled will not stop"
 # ===========================================================================
+# systemctl cannot be asked: that proves nothing, so the build stops.
+fresh_box
+FAKE_INCUS_FAIL_EXEC='^systemctl is-active tailscaled' stash_sub
+assert_eq "stash, state unknown: stops the build" "1" "$RC"
+assert_contains "stash, state unknown: says so" "(state: unknown)" "$OUT"
+assert_eq "stash, state unknown: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+
 fresh_box
 mkdir -p "$FAKE_INCUS_STATE/still-active"; touch "$FAKE_INCUS_STATE/still-active/tailscaled"
 stash_sub
 assert_eq "stash, still running: stops the build" "1" "$RC"
-assert_contains "stash, still running: says why" "Could not stop tailscaled" "$OUT"
+assert_contains "stash, still running: says why" "Could not stop tailscaled in box (state: active)" "$OUT"
 assert_eq "stash, still running: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
 assert_eq "stash, still running: no backup" "0" "$(backups)"
 

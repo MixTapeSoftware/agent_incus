@@ -33,7 +33,6 @@ Default image is Ubuntu 24.04. Shows an interactive TUI to select plugins.
 
 Options:
   -p, --path PATH           Host directory to copy in (default: current directory)
-  -w, --workspace PATH      Where the copy goes in the container (default: /workspace)
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
   -t, --template            Save container as a reusable local template (empty workspace)
@@ -518,10 +517,13 @@ stash_tailscale_state() {
     *)   error "Could not check $CONTAINER_NAME for Tailscale state. No template saved: it might carry the node key." ;;
   esac
   log "Removing the Tailscale node identity from the image..."
-  # A tailscaled still running could write the state back before publish.
+  # A tailscaled still running could write the state back before publish. Only
+  # an explicit inactive/failed counts: a query that fails proves nothing.
   incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null </dev/null || true
-  [[ "$(incus exec "$CONTAINER_NAME" -- sh -c 'systemctl is-active --quiet tailscaled && echo running || echo stopped' </dev/null)" == "stopped" ]] || \
-    error "Could not stop tailscaled in $CONTAINER_NAME. No template saved: it could write the node key back."
+  local ts
+  ts="$(incus exec "$CONTAINER_NAME" -- systemctl is-active tailscaled 2>/dev/null </dev/null)" || true
+  [[ "$ts" == "inactive" || "$ts" == "failed" ]] || \
+    error "Could not stop tailscaled in $CONTAINER_NAME (state: ${ts:-unknown}). No template saved: it could write the node key back."
   TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")"
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$TS_STATE_BACKUP"
   incus exec "$CONTAINER_NAME" -- rm -rf /var/lib/tailscale
@@ -544,7 +546,9 @@ restore_tailscale_state() {
   # tailscaled came back up at boot with a fresh, logged-out state; replace it.
   # If it keeps running it can overwrite the restored state, so it must stop.
   incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null </dev/null || true
-  [[ "$(incus exec "$CONTAINER_NAME" -- sh -c 'systemctl is-active --quiet tailscaled && echo running || echo stopped' </dev/null)" == "stopped" ]] || return 1
+  local ts
+  ts="$(incus exec "$CONTAINER_NAME" -- systemctl is-active tailscaled 2>/dev/null </dev/null)" || true
+  [[ "$ts" == "inactive" || "$ts" == "failed" ]] || return 1
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -xf - < "$TS_STATE_BACKUP" || return 1
   # The state is back in place, so the host copy of the node key can go.
   rm -f "$TS_STATE_BACKUP"
@@ -667,7 +671,6 @@ TOKENS"
 while [[ $# -gt 0 ]]; do
   case "$1" in
     -p|--path)       [[ $# -lt 2 ]] && error "$1 requires an argument"; WORKSPACE_PATH="$2"; shift 2 ;;
-    -w|--workspace)  [[ $# -lt 2 ]] && error "$1 requires an argument"; CONTAINER_WORKSPACE="$2"; shift 2 ;;
     -f|--from)       [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="incus-init/$2"; shift 2 ;;
     -i|--image)      [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="$2"; shift 2 ;;
     -t|--template) SAVE_TEMPLATE=1; shift ;;

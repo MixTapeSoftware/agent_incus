@@ -62,7 +62,7 @@ A container never sees a live host directory. `incs -i` copies your directory in
 
 **Why.** Your host runs what's in a checkout, usually without asking:
 
-- git runs whatever `.git/config` names (`core.fsmonitor`, `core.hooksPath`, `core.pager`) and the scripts in `.git/hooks`, on every `git status`, including the ones your editor runs every few seconds
+- git runs commands that `.git/config` names: `core.fsmonitor` on every `git status`, including the ones your editor runs every few seconds; `core.pager` when you read a log or a diff; and the hooks in `.git/hooks` (or wherever `core.hooksPath` points) when you commit, check out, merge or push
 - `npm install` runs `package.json` scripts, direnv loads `.envrc`, and your editor reads `.vscode/tasks.json`
 - mise reads `mise.toml`, and hook managers like husky and lefthook read their configs
 
@@ -131,7 +131,6 @@ Usage: incus.init [OPTIONS] <container-name>
 
 Options:
   -p, --path PATH           Host directory to copy in (default: current directory)
-  -w, --workspace PATH      Where the copy goes in the container (default: /workspace)
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
   -t, --template            Save container as a reusable local template (empty workspace)

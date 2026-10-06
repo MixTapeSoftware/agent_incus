@@ -83,11 +83,6 @@ assert_contains "copy: says what it copies" "Copying $HOST into /workspace" "$OU
 assert_not_contains "copy: nothing is mounted" "config device add" "$(calls)"
 assert_contains "copy: git trusts the workspace" "safe.directory '/workspace'" "$(execs)"
 
-# A different path inside the container.
-fresh_box
-CONTAINER_WORKSPACE=/src copy
-assert_eq "--workspace: copies to that path" "edited" "$(cat "$(root)/src/README" 2>/dev/null)"
-
 # ===========================================================================
 echo "starting empty"
 # ===========================================================================
@@ -100,7 +95,9 @@ assert_not_contains "--no-copy: copies nothing" "Copying" "$OUT"
 
 fresh_box
 SAVE_TEMPLATE=1 copy
-assert_eq "template build: the workspace is empty" "" "$(ls -A "$(root)/workspace")"
+assert_eq "template build: succeeds" "0" "$RC"
+assert_eq "template build: the workspace exists" "yes" "$([[ -d "$(root)/workspace" ]] && echo yes || echo no)"
+assert_eq "template build: and is empty" "" "$(ls -A "$(root)/workspace")"
 
 # ===========================================================================
 echo "a workspace that already has files"
@@ -139,12 +136,11 @@ echo "the CLI"
 # ===========================================================================
 help="$(bash "$REPO_ROOT/incus.init" --help 2>&1 || true)"
 assert_contains "help: --path copies" "Host directory to copy in" "$help"
-assert_contains "help: --workspace" "-w, --workspace PATH" "$help"
 assert_contains "help: --no-copy is not VM-only" "Start with an empty workspace" "$help"
-for gone in "--no-mount" "--git-rw" "--mount-path" "mount"; do
+for gone in "--no-mount" "--git-rw" "--mount-path" "--workspace" "mount"; do
   assert_not_contains "help: no $gone" "$gone" "$help"
 done
-for flag in --no-mount --git-rw --mount-path; do
+for flag in --no-mount --git-rw --mount-path --workspace; do
   out="$(bash "$REPO_ROOT/incus.init" "$flag" x box 2>&1)" && rc=0 || rc=$?
   assert_eq "$flag: rejected" "1" "$rc"
   assert_contains "$flag: as an unknown option" "Unknown option: $flag" "$out"

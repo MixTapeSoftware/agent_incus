@@ -15,7 +15,7 @@
 #   instances/<name>/root/etc/group   answers `getent group <name>`
 #   instances/<name>/root/etc/id-G    answers `id -G <user>` (absent: exit 1)
 #   instances/<name>/root/usr/bin/<tool>  answers `sh -c 'command -v <tool>'`
-#   still-active/<unit>            the unit stays running after `systemctl stop`
+#   still-active/tailscaled        tailscaled stays active after `systemctl stop`
 #   instances/<name>/profiles      profiles passed with -p at init/launch, one per line
 #   images/<alias>/root/...        filesystem captured by `publish`
 #   profiles/<name>/<key>          one file per profile config key
@@ -329,17 +329,16 @@ case "$cmd" in
         [[ -f "$script" ]] || die "iron-rebuild: command not found"
         IRON_PROXY_DIR="$root/etc/iron-proxy" PATH="$stub:$PATH" sh "$script" "${@:2}"
         ;;
+      # tailscaled stops on `systemctl stop` unless a test keeps it running.
+      "systemctl is-active tailscaled")
+        if [[ -f "$S/still-active/tailscaled" ]]; then echo active; else echo inactive; exit 3; fi
+        ;;
       "systemctl is-active"*) echo active ;;
       # File checks and archive moves, against the fake filesystem.
       "sh -c test -"[df]" "*" && echo yes || echo no")
         set -- ${command_line#sh -c test }
         probe_path="${2//\'/}"
         if [[ ( "$1" == -d && -d "$root$probe_path" ) || ( "$1" == -f && -f "$root$probe_path" ) ]]; then echo yes; else echo no; fi
-        ;;
-      # A unit keeps running after `systemctl stop` only if a test says so.
-      "sh -c systemctl is-active --quiet "*" && echo running || echo stopped")
-        unit="${command_line#sh -c systemctl is-active --quiet }"; unit="${unit%% *}"
-        if [[ -f "$S/still-active/$unit" ]]; then echo running; else echo stopped; fi
         ;;
       # A tool is installed when the fixture put it on a bin path.
       "sh -c command -v "*)
