@@ -74,8 +74,9 @@ assert_eq "hooks: mounted at the container path"  "/workspace/.git/hooks" "$(dev
 assert_eq "hooks: read-only"                      "true"                "$(dev git-ro-2 readonly)"
 assert_eq "config.worktree: created empty on the host, so the container cannot plant one" \
   "empty" "$([[ -f "$W/.git/config.worktree" && ! -s "$W/.git/config.worktree" ]] && echo empty || echo no)"
-assert_eq "config.worktree: mounted read-only at the container path" \
-  "/workspace/.git/config.worktree true" "$(dev git-ro-3 path) $(dev git-ro-3 readonly)"
+assert_eq "config.worktree: source is the host file"       "$W/.git/config.worktree"      "$(dev git-ro-3 source)"
+assert_eq "config.worktree: mounted at the container path" "/workspace/.git/config.worktree" "$(dev git-ro-3 path)"
+assert_eq "config.worktree: read-only"                     "true"                         "$(dev git-ro-3 readonly)"
 assert_contains "says what it did" "read-only in the container (3 mounts" "$out"
 assert_contains "names the way out" "--git-rw" "$out"
 
