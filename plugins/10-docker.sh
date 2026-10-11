@@ -36,8 +36,21 @@ plugin_install() {
   #               AppArmor profile for one that allows mount/pivot_root and
   #               gives the container its own AppArmor namespace, so dockerd
   #               loads docker-default inside it as usual
-  #   - mknod:    lets it create a limited set of device nodes in /dev/
-  #   - setxattr: lets it set a limited set of security labels on files
+  #   - mknod:    Docker stores images as overlayfs layers. When a layer
+  #               deletes a file, overlayfs records it as a "whiteout": a 0:0
+  #               character device at the deleted path. 0:0 points at no
+  #               driver, so it's a safe, unambiguous marker. Creating it
+  #               needs mknod, which the kernel blocks in unprivileged
+  #               containers; Incus intercepts the call and creates the node
+  #               itself, but only for a short allowlist of harmless devices
+  #               (whiteouts, /dev/null and the like). Hardware nodes stay
+  #               blocked.
+  #   - setxattr: overlayfs also tags directories with trusted.overlay.*
+  #               attributes (e.g. "opaque"), which unprivileged containers
+  #               can't set; Incus intercepts and sets a limited set of them
+  #
+  # Without mknod/setxattr, pulling or building any image whose layers delete
+  # files fails.
   #
   # A normal Incus container can't do any of this. Enabling these means a process
   # that escapes Docker inside the container has more capabilities than it would
