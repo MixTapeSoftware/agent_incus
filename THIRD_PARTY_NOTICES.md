@@ -8,8 +8,7 @@ under the MIT License. Their notices follow.
 Source: https://github.com/mattpocock/skills at commit
 `6fd947921b935b7e1e69293a200400f0fdd5c15f`.
 
-Skills: `code-review`, `domain-modeling`, `grill-with-docs`, `grilling`,
-`wait-what`.
+Skills: `domain-modeling`, `grill-with-docs`, `grilling`, `wait-what`.
 
 ```text
 MIT License
