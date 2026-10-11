@@ -6,15 +6,23 @@ Watch an existing PR and review each new head commit once for the requested revi
 
 Use the additional instructions as the review brief. Preserve their full text in continuation state and apply them on every review. A focus such as "security" prioritizes that area; an explicit limit such as "only review authentication" restricts the review to that scope. With no instructions, review correctness, regressions, security, and relevant test coverage. Instructions refine what to inspect; they do not switch reviewer into fixer mode.
 
-For a security-focused review, read `.agents/security/guidance.md` and apply the relevant project checks. Follow other explicitly requested review guidance when available. Report missing guidance or access instead of silently claiming that scope was covered.
+Whatever the brief, use the repository's skills as review guidance: when an available skill covers the brief's area (for example a security skill for a security review), load it and apply its checks. Report missing guidance or access instead of silently claiming that scope was covered.
 
-Set `scope_id` to the lowercase hexadecimal SHA-256 digest of the exact instruction text encoded as UTF-8, without adding a newline; use `general` when instructions are absent. Track completed reviews by `(repository, PR number, head SHA, scope_id)`. A review with different instructions does not satisfy the current brief. If the user changes the brief during the loop, carry the new text and scope ID forward and review the current head for that scope, even if its SHA is unchanged.
+### Skill-based scopes
+
+With `--skills`, split the list on commas and trim each area. Each area is its own scope, with the area text as its brief. For each area, choose the available skill whose name or description best covers it; the match need not be exact (`ui polish` can match a skill named `ui-review` or one described as UI and UX polish). Load that skill and review the head as it directs, within the area. When no available skill reasonably covers an area, do not review it from general knowledge: report it to the user as an uncovered area so the repository can add a skill for it, and continue with the other areas.
+
+Review each area in its own sub-agent so the areas do not shape one another's findings, and submit a separate `COMMENT` review per area. Name the area and the matched skill in each review summary.
+
+Set `scope_id` to the lowercase hexadecimal SHA-256 digest of the exact instruction text (for a `--skills` area, the trimmed area text) encoded as UTF-8, without adding a newline; use `general` when instructions are absent. Track completed reviews by `(repository, PR number, head SHA, scope_id)`. A review with different instructions does not satisfy the current brief. If the user changes the brief during the loop, carry the new text and scope ID forward and review the current head for that scope, even if its SHA is unchanged.
 
 Carry these fields in every wakeup:
 
 - Mode `reviewer`, canonical PR URL, repository, and PR number.
 - Original deadline and polling interval.
-- Full review instructions, `scope_id`, and the GitHub login used to post reviews.
+- Full review instructions and `scope_id`, or each `--skills` area with its matched skill and `scope_id`.
+- The GitHub login used to post reviews.
+- Any `--skills` areas with no matching skill.
 - Completed review keys and their submitted review links; last observed head SHA.
 - Iteration count, findings posted, and any pending review or publication failure.
 
