@@ -138,7 +138,7 @@ out="$(INCS_CONTAINER='' CLAUDE_CONTAINER=legacy bash "$REPO_ROOT/incus.shell")"
 assert_contains 'legacy default still works' 'instance=legacy' "$out"
 
 for agent_dir in .agents .claude .grok; do
-  [[ -f "$REPO_ROOT/$agent_dir/skills/openspec-apply-change/SKILL.md" ]] || {
+  [[ -f "$REPO_ROOT/$agent_dir/skills/botfight/SKILL.md" ]] || {
     echo "FAIL: skills unavailable to $agent_dir"; exit 1;
   }
   PASS=$((PASS+1))

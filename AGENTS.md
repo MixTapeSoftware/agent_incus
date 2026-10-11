@@ -10,5 +10,5 @@ scripts share container lifecycle, workspace, and plugin setup across agents.
   tools as the instance user without relying on sudo, so `--no-sudo` works.
 - Never print credentials or interpolate them into remote shell commands.
 - Run `bash -n` on changed shell files and the relevant scripts in `tests/`.
-- Shared OpenSpec skills live in `.agents/skills/`; `.claude/skills` and
+- Shared skills live in `.agents/skills/`; `.claude/skills` and
   `.grok/skills` link there for each agent's native discovery.
