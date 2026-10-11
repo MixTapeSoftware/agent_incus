@@ -40,9 +40,9 @@ SOFTWARE.
 Source: https://github.com/obra/superpowers at commit
 `bb92a77741419a4ab5f06e711a283343f1ada0c3`.
 
-Skills: `brainstorming`, `diagnosing-superpowers`, `systematic-debugging`,
-`test-driven-development`, `using-git-worktrees`, `using-superpowers`,
-`verification-before-completion`, `writing-skills`.
+Skills: `brainstorming`, `diagnosing-superpowers`, `test-driven-development`,
+`using-git-worktrees`, `using-superpowers`, `verification-before-completion`,
+`writing-skills`.
 
 ```text
 MIT License
