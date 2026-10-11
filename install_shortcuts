@@ -24,7 +24,6 @@ FILES=(
   "incus.init"
   "incus.network"
   "incus.proxy"
-  "incus.macos.setup"
   "incs.new-plugin"
 )
 

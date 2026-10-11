@@ -36,9 +36,6 @@ Options:
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
   -t, --template            Save container as a reusable local template (empty workspace)
-  --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
-  --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
-  --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 Start with an empty workspace instead of copying the host directory
   --vm-disk SIZE            VM root disk size (default: 20GiB)
@@ -723,9 +720,6 @@ while [[ $# -gt 0 ]]; do
     -f|--from)       [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="incus-init/$2"; shift 2 ;;
     -i|--image)      [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="$2"; shift 2 ;;
     -t|--template) SAVE_TEMPLATE=1; shift ;;
-    --colima-cpus)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_CPUS="$2"; shift 2 ;;
-    --colima-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_MEMORY="$2"; shift 2 ;;
-    --colima-disk)   [[ $# -lt 2 ]] && error "$1 requires an argument"; COLIMA_DISK="$2"; shift 2 ;;
     --vm)            IS_VM=1; shift ;;
     --no-copy)       NO_COPY=1; shift ;;
     --vm-disk)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_DISK="$2"; VM_OPT_SET=1; shift 2 ;;
@@ -751,9 +745,10 @@ while [[ $# -gt 0 ]]; do
 done
 
 # ---------------------------------------------------------------------------
-# macOS pre-flight (noop on Linux)
+# Linux only: Incus runs on this host, and a template build holds the
+# Tailscale node key in a tmpfs runtime directory, which macOS does not have.
 # ---------------------------------------------------------------------------
-source "$SCRIPT_DIR/incus.macos.setup"
+[[ "$(uname -s)" == "Linux" ]] || error "incus.init runs on Linux only (this host is $(uname -s))."
 source "$SCRIPT_DIR/incus.envscan"
 # read_secret / read_value, for plugin prompts that take pasted values.
 source "$SCRIPT_DIR/incus.prompt"

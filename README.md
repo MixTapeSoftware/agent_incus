@@ -29,8 +29,7 @@ In order to head off a variety of attack vectors, nothing on the host is mounted
 
 ## Prerequisites
 
-- **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
-- **macOS**: [Homebrew](https://brew.sh/) installed — `incus.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
+- **Linux** (macOS is not supported): [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
 - `~/.local/bin` in your `PATH`
 
 ## Install
@@ -86,7 +85,6 @@ There is no flag to bring the mount back, and there won't be one.
 | `incus.shell` | — | Open a login shell (or run a command) in a container |
 | `incus.network` | `incn` | Manage port proxy devices |
 | `incus.proxy` | — | Credential proxies: keep real tokens out of containers (`incs proxy`) |
-| `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
 | `incs.new-plugin` | — | Scaffold a new plugin file from a template (also `incs new-plugin`) |
 | `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin` |
 
@@ -140,9 +138,6 @@ Options:
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
-  --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
-  --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
-  --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
   --no-proxy                Do not create a credential proxy for this container
   --dry-run                 Show what would be done without doing it
 ```
@@ -361,8 +356,7 @@ incs -i --vm --from my-vm-base my-vm         # must include --vm
 Omitting `--vm` on the launch (or adding it to a container template) fails early
 with a clear image-type message rather than a cryptic Incus error.
 
-> Requires a host that can run VMs (KVM / `/dev/kvm`). On macOS this is the
-> Colima VM that `incus.init` bootstraps.
+> Requires a host that can run VMs (KVM / `/dev/kvm`).
 
 
 ### Tailscale
@@ -601,7 +595,7 @@ incs -n project-dev -l
 incs -n project-dev -r 4000
 ```
 
-Or use the container/VM IP directly — find it with `incus list` (Linux) or `colima list` (macOS). On macOS, the Colima VM IP (e.g. `192.168.64.6`) is a private address only accessible from your Mac.
+Or use the container/VM IP directly — find it with `incus list`.
 
 To reach the app from other devices over HTTPS, see [Tailscale](#tailscale).
 

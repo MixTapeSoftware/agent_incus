@@ -152,10 +152,10 @@ echo "the CLI"
 help="$(bash "$REPO_ROOT/incus.init" --help 2>&1 || true)"
 assert_contains "help: --path copies" "Host directory to copy in" "$help"
 assert_contains "help: --no-copy is not VM-only" "Start with an empty workspace" "$help"
-for gone in "--no-mount" "--git-rw" "--mount-path" "--workspace" "mount"; do
+for gone in "--no-mount" "--git-rw" "--mount-path" "--workspace" "mount" "colima" "macOS"; do
   assert_not_contains "help: no $gone" "$gone" "$help"
 done
-for flag in --no-mount --git-rw --mount-path -m --workspace -w; do
+for flag in --no-mount --git-rw --mount-path -m --workspace -w --colima-cpus --colima-memory --colima-disk; do
   out="$(bash "$REPO_ROOT/incus.init" "$flag" x box 2>&1)" && rc=0 || rc=$?
   assert_eq "$flag: rejected" "1" "$rc"
   assert_contains "$flag: as an unknown option" "Unknown option: $flag" "$out"
@@ -169,6 +169,16 @@ assert_eq "--no-copy with a missing --path: dry run succeeds" "0" "$rc"
 assert_contains "--no-copy with a missing --path: empty workspace" "Workspace:   empty /workspace (--no-copy)" "$out"
 out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --dry-run --path "$SANDBOX/missing" fresh 2>&1)" && rc=0 || rc=$?
 assert_eq "a missing --path is still an error when copying" "1" "$rc"
+
+# Linux only: anywhere else it stops before touching Incus.
+printf '#!/bin/sh\necho Darwin\n' > "$SANDBOX/bin/uname"; chmod +x "$SANDBOX/bin/uname"
+fresh_box
+before="$(calls)"
+out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --no-copy fresh 2>&1)" && rc=0 || rc=$?
+rm -f "$SANDBOX/bin/uname"
+assert_eq "not Linux: stops" "1" "$rc"
+assert_contains "not Linux: says why" "runs on Linux only (this host is Darwin)" "$out"
+assert_eq "not Linux: never calls Incus" "$before" "$(calls)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

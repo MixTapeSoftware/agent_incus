@@ -1227,7 +1227,7 @@ echo "default proxy lifecycle (incs -i)"
 # actual init exit trap without pretending the fake can provision an OS.
 INIT_FIXTURE="$SANDBOX/init"
 mkdir -p "$INIT_FIXTURE/plugins" "$SANDBOX/workspace"
-cp "$REPO_ROOT"/incus.{proxy,prompt,profile,macos.setup,envscan} "$INIT_FIXTURE/"
+cp "$REPO_ROOT"/incus.{proxy,prompt,profile,envscan} "$INIT_FIXTURE/"
 cp "$REPO_ROOT"/plugins/*.sh "$INIT_FIXTURE/plugins/"
 awk '/^# Provision \(skipped/ {exit} {print}' "$REPO_ROOT/incus.init" > "$INIT_FIXTURE/incus.init"
 printf 'trap - EXIT INT TERM HUP\n' >> "$INIT_FIXTURE/incus.init"
