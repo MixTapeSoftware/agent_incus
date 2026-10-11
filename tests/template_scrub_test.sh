@@ -118,6 +118,21 @@ assert_eq "stash: says nothing" "" "$OUT"
 assert_not_contains "stash: does not touch tailscaled" "tailscaled" "$(execs)"
 restore
 assert_eq "restore: a no-op success" "0" "$RC"
+XDG_RUNTIME_DIR="" stash
+assert_eq "stash, no XDG_RUNTIME_DIR: still succeeds with nothing to stash" "0" "$RC"
+
+# ===========================================================================
+echo "no private place for the backup"
+# ===========================================================================
+# The key must not fall back to /tmp, which may be on disk.
+for dir in "" "$SANDBOX/missing"; do
+  fresh_box
+  XDG_RUNTIME_DIR="$dir" stash_sub
+  assert_eq "XDG_RUNTIME_DIR='$dir': stops the build" "1" "$RC"
+  assert_contains "XDG_RUNTIME_DIR='$dir': says why" "XDG_RUNTIME_DIR is not set or not writable" "$OUT"
+  assert_eq "XDG_RUNTIME_DIR='$dir': the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+  assert_not_contains "XDG_RUNTIME_DIR='$dir': tailscaled is not touched" "tailscaled" "$(execs)"
+done
 
 # ===========================================================================
 echo "the restore fails"

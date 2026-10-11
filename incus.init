@@ -142,8 +142,12 @@ cleanup_on_exit() {
     # Before the prompt: the container may be kept, or the prompt never answered.
     revoke_build_sudo || \
       warn "Could not revoke build-time sudo in '$CONTAINER_NAME'. Delete it: incus delete --force $CONTAINER_NAME"
-    # A template build that failed after moving the Tailscale state out. A
-    # failure is reported below, with the case where Incus cannot be reached.
+    # save_template moves the Tailscale state (node key) out of the container
+    # into a private host file, so the image doesn't carry it. If the build
+    # failed after that, put it back so this container stays the same tailnet
+    # node, and delete the host copy. If that fails, the file is left in place
+    # and the warning at the end of this trap prints its path, the same as
+    # when Incus can't be reached at all.
     restore_tailscale_state || true
     if [[ $rc -ne 0 ]]; then
       echo ""
@@ -516,6 +520,10 @@ stash_tailscale_state() {
     yes) ;;
     *)   error "Could not check $CONTAINER_NAME for Tailscale state. No template saved: it might carry the node key." ;;
   esac
+  # The backup holds the node key. XDG_RUNTIME_DIR is memory-only and private
+  # to the user; /tmp may be on disk and outlive a reboot, so it is not used.
+  [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -w "$XDG_RUNTIME_DIR" ]] || \
+    error "XDG_RUNTIME_DIR is not set or not writable, so there is nowhere private to hold the Tailscale node key while the image is published. No template saved. Run from a login session (not sudo or cron), or set XDG_RUNTIME_DIR."
   log "Removing the Tailscale node identity from the image..."
   # A tailscaled still running could write the state back before publish. Only
   # an explicit inactive/failed counts: a query that fails proves nothing.
@@ -528,7 +536,7 @@ stash_tailscale_state() {
   fi
   # The exit trap restores from TS_STATE_BACKUP, so it is set only once the
   # archive is complete: half an archive must never go back over the state.
-  if ! backup="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")" || \
+  if ! backup="$(mktemp "$XDG_RUNTIME_DIR/incs-tailscale.XXXXXX")" || \
      ! incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$backup" </dev/null; then
     if [[ -n "$backup" ]] && ! rm -f "$backup"; then
       warn "A partial Tailscale archive is left in $backup (it may hold the node key): delete it."
