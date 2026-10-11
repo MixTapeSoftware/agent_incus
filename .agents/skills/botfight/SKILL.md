@@ -14,7 +14,7 @@ Both modes read review threads through GraphQL and post reviews and replies with
 ## Invocation and loop state
 
 - With no mode argument, use `fixer`. `/botfight` and `/botfight fixer` are equivalent.
-- Both modes default to checking every 10 minutes for 2 hours. Accept optional interval and duration arguments (for example, `/botfight fixer 5m 1h`). Existing `/botfight 5m 1h` invocations still work.
+- Both modes default to checking every 5 minutes for 1.5 hours. Accept optional interval and duration arguments (for example, `/botfight fixer 10m 2h`). Existing `/botfight 10m 2h` invocations still work.
 - Reviewer accepts an optional PR number or URL and additional free-text review instructions: `/botfight reviewer [<PR-number-or-URL>] [<interval> <duration>] [<instructions>]`. For example, `/botfight reviewer 42 5m 1h focus on security and tenant isolation`. With no target, use the current branch's PR; with no instructions, perform a general code review. Instruction text starts at the first token that is neither a PR number or URL nor an interval-and-duration pair, and everything after a `--` is instruction text whatever it looks like; preserve the full instruction text.
 - `--set <name>` expands to the briefs listed under that name in [references/reviewer-sets.md](references/reviewer-sets.md) (for example `/botfight reviewer --set standard 42`). Each brief runs as its own reviewer with its own `scope_id`; it does not combine them into one review. Free-text instructions and `--set` are alternatives.
 - Continuations carry the explicit mode: `fixer until <ISO-8601 deadline> every <interval>` or `reviewer <PR-URL> until <ISO-8601 deadline> every <interval>`, plus that mode's state. Legacy continuations without a mode remain `fixer`.
