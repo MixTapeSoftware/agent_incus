@@ -507,6 +507,18 @@ _run_plugin_installs() {
   done
 }
 
+# A directory only this user can reach, held in memory: a file left there by a
+# failed build is never on disk and is gone at the next reboot.
+private_runtime_dir() {
+  local dir="$1"
+  [[ -n "$dir" && -d "$dir" && ! -L "$dir" && -w "$dir" ]] || return 1
+  [[ "$(stat -c '%u %a' "$dir" 2>/dev/null)" == "$(id -u) 700" ]] || return 1
+  case "$(stat -f -c %T "$dir" 2>/dev/null)" in
+    tmpfs|ramfs) return 0 ;;
+    *)           return 1 ;;
+  esac
+}
+
 # Tailscale keeps the node key, and the certificates `tailscale serve` obtained
 # for the node, under /var/lib/tailscale. Baked into a template, every launch
 # would come up as this machine with its tailnet access. So the directory is
@@ -522,8 +534,9 @@ stash_tailscale_state() {
   esac
   # The backup holds the node key. XDG_RUNTIME_DIR is memory-only and private
   # to the user; /tmp may be on disk and outlive a reboot, so it is not used.
-  [[ -n "${XDG_RUNTIME_DIR:-}" && -d "$XDG_RUNTIME_DIR" && -w "$XDG_RUNTIME_DIR" ]] || \
-    error "XDG_RUNTIME_DIR is not set or not writable, so there is nowhere private to hold the Tailscale node key while the image is published. No template saved. Run from a login session (not sudo or cron), or set XDG_RUNTIME_DIR."
+  # The variable can be set to anything, so the directory itself is checked.
+  private_runtime_dir "${XDG_RUNTIME_DIR:-}" || \
+    error "XDG_RUNTIME_DIR is not a private, memory-backed directory (owned by you, mode 700, on tmpfs), so there is nowhere safe to hold the Tailscale node key while the image is published. No template saved. Run from a login session (not sudo or cron)."
   log "Removing the Tailscale node identity from the image..."
   # A tailscaled still running could write the state back before publish. Only
   # an explicit inactive/failed counts: a query that fails proves nothing.

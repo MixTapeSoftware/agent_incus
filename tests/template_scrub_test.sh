@@ -27,13 +27,15 @@ assert_not_contains() {
 }
 
 SANDBOX="$(mktemp -d)"
-trap 'rm -rf "$SANDBOX"' EXIT
-mkdir -p "$SANDBOX/bin" "$SANDBOX/run"
+# Where the backup lands: private (mktemp -d makes it 0700) and in memory, as
+# incus.init requires of XDG_RUNTIME_DIR.
+RUNDIR="$(mktemp -d /dev/shm/incs-test.XXXXXX)"
+trap 'rm -rf "$SANDBOX" "$RUNDIR"' EXIT
+mkdir -p "$SANDBOX/bin"
 cp "$SCRIPT_DIR/lib/fake_incus" "$SANDBOX/bin/incus"
 chmod +x "$SANDBOX/bin/incus"
 export PATH="$SANDBOX/bin:$PATH"
-# Where the backup lands.
-export XDG_RUNTIME_DIR="$SANDBOX/run"
+export XDG_RUNTIME_DIR="$RUNDIR"
 
 extract_fn() {
   awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/incus.init"
@@ -42,9 +44,10 @@ log()  { echo "[+] $1"; }
 warn() { echo "[!] $1"; }
 error() { echo "[ERROR] $1" >&2; exit 1; }
 READY_TIMEOUT=2
+eval "$(extract_fn private_runtime_dir)"
 eval "$(extract_fn stash_tailscale_state)"
 eval "$(extract_fn restore_tailscale_state)"
-declare -F stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in incus.init"; exit 1; }
+declare -F private_runtime_dir stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in incus.init"; exit 1; }
 
 CONTAINER_NAME=box
 TS_STATE_BACKUP=""
@@ -124,15 +127,25 @@ assert_eq "stash, no XDG_RUNTIME_DIR: still succeeds with nothing to stash" "0" 
 # ===========================================================================
 echo "no private place for the backup"
 # ===========================================================================
-# The key must not fall back to /tmp, which may be on disk.
-for dir in "" "$SANDBOX/missing"; do
+# The key must not fall back to /tmp, which may be on disk, nor go wherever
+# XDG_RUNTIME_DIR happens to point: the directory must be 0700 and in memory.
+open_dir="$(mktemp -d /dev/shm/incs-test.XXXXXX)"; chmod 755 "$open_dir"
+link_dir="$SANDBOX/link"; ln -s "$RUNDIR" "$link_dir"
+bad_dirs=("" "$SANDBOX/missing" "$open_dir" "$link_dir")
+# A 0700 directory on disk, where the sandbox is not itself on tmpfs.
+if [[ "$(stat -f -c %T "$SANDBOX")" != tmpfs ]]; then
+  mkdir -m 700 "$SANDBOX/disk"; bad_dirs+=("$SANDBOX/disk")
+fi
+for dir in "${bad_dirs[@]}"; do
   fresh_box
   XDG_RUNTIME_DIR="$dir" stash_sub
   assert_eq "XDG_RUNTIME_DIR='$dir': stops the build" "1" "$RC"
-  assert_contains "XDG_RUNTIME_DIR='$dir': says why" "XDG_RUNTIME_DIR is not set or not writable" "$OUT"
+  assert_contains "XDG_RUNTIME_DIR='$dir': says why" "XDG_RUNTIME_DIR is not a private, memory-backed directory" "$OUT"
   assert_eq "XDG_RUNTIME_DIR='$dir': the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
   assert_not_contains "XDG_RUNTIME_DIR='$dir': tailscaled is not touched" "tailscaled" "$(execs)"
+  [[ -z "$dir" || ! -d "$dir" ]] || assert_eq "XDG_RUNTIME_DIR='$dir': no backup there" "" "$(ls -A "$dir")"
 done
+rm -rf "$open_dir"
 
 # ===========================================================================
 echo "the restore fails"
