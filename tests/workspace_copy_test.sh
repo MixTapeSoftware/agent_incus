@@ -109,6 +109,21 @@ assert_eq "from a template: succeeds" "0" "$RC"
 assert_contains "from a template: re-owns it" "box :: chown -R dev:dev /workspace" "$(execs)"
 assert_eq "from a template: does not copy over it" "no" "$([[ -e "$(root)/workspace/README" ]] && echo yes || echo no)"
 
+# An older template carries files; --no-copy still means an empty workspace.
+fresh_box
+mkdir -p "$(root)/workspace"; echo old > "$(root)/workspace/leftover"
+FROM_BASE_IMAGE=1 NO_COPY=1 copy
+assert_eq "from a template, --no-copy: succeeds" "0" "$RC"
+assert_eq "from a template, --no-copy: the workspace exists" "yes" "$([[ -d "$(root)/workspace" ]] && echo yes || echo no)"
+assert_eq "from a template, --no-copy: and is empty" "" "$(ls -A "$(root)/workspace")"
+assert_contains "from a template, --no-copy: handed to the user" "box :: chown -R dev:dev /workspace" "$(execs)"
+
+fresh_box
+mkdir -p "$(root)/workspace"; echo old > "$(root)/workspace/leftover"
+FAKE_INCUS_FAIL_EXEC='^rm -rf /workspace' FROM_BASE_IMAGE=1 NO_COPY=1 copy
+assert_eq "from a template, --no-copy, cannot empty: stops" "1" "$RC"
+assert_contains "from a template, --no-copy, cannot empty: says why" "Could not empty /workspace" "$OUT"
+
 fresh_box
 mkdir -p "$(root)/workspace"; echo old > "$(root)/workspace/leftover"
 copy

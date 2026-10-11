@@ -614,8 +614,19 @@ copy_workspace() {
   if [[ -n "$existing" ]]; then
     [[ "$FROM_BASE_IMAGE" == "1" ]] || \
       error "$CONTAINER_WORKSPACE is not empty inside the container: $BASE_IMAGE already has files there."
-    log "Reusing workspace from template; re-owning to $HOST_USER..."
-  else
+    if [[ "$NO_COPY" == "1" ]]; then
+      # --no-copy promises an empty workspace, whatever the template carried.
+      [[ -n "$CONTAINER_WORKSPACE" && "$CONTAINER_WORKSPACE" != "/" ]] || \
+        error "Refusing to empty '$CONTAINER_WORKSPACE' for --no-copy"
+      log "Emptying the workspace the template carried (--no-copy)..."
+      incus exec "$CONTAINER_NAME" -- rm -rf "$CONTAINER_WORKSPACE" </dev/null || \
+        error "Could not empty $CONTAINER_WORKSPACE in $CONTAINER_NAME"
+      existing=""
+    else
+      log "Reusing workspace from template; re-owning to $HOST_USER..."
+    fi
+  fi
+  if [[ -z "$existing" ]]; then
     incus exec "$CONTAINER_NAME" -- mkdir -p "$CONTAINER_WORKSPACE" </dev/null
     # The working tree as it is on disk, .git and uncommitted work included.
     # Extracted as the container's root (--no-same-owner), then handed to the
