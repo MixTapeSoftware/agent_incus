@@ -181,7 +181,7 @@ For shell scripts, set `INCS_CONTAINER` to a default instance for `incus.shell`.
 Explicit instance arguments take precedence. `CLAUDE_CONTAINER` remains a
 fallback for existing scripts.
 
-This repository's shared instructions are in `AGENTS.md`. Its OpenSpec skills
+This repository's shared instructions are in `AGENTS.md`. Its shared skills
 live in `.agents/skills`, with `.claude/skills` and `.grok/skills` symlinks for
 native discovery. `CLAUDE.md` imports the same shared instructions.
 
