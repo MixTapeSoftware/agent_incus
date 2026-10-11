@@ -695,9 +695,8 @@ save_template() {
   incus start "$CONTAINER_NAME"
   wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 
-  restore_tailscale_state || error "Could not restore the Tailscale state in $CONTAINER_NAME from $TS_STATE_BACKUP"
-
-  # Restore saved tokens to the running container
+  # Restore saved tokens to the running container. Before the Tailscale state:
+  # its restore can fail and exit, and the exit trap only retries Tailscale.
   if [[ -n "$saved_tokens" ]]; then
     incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cat >> ~/.zshenv <<'TOKENS'
 $saved_tokens
@@ -707,6 +706,8 @@ TOKENS"
     { incus file pull -q "$CONTAINER_NAME/etc/hosts" -; printf '%s\n' "$saved_hosts"; } \
       | incus file push -q --uid 0 --gid 0 --mode 0644 - "$CONTAINER_NAME/etc/hosts"
   fi
+
+  restore_tailscale_state || error "Could not restore the Tailscale state in $CONTAINER_NAME from $TS_STATE_BACKUP"
 
   wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
   log "Saved template: $alias"

@@ -1423,10 +1423,14 @@ echo "templates (incs -i --template)"
 # Pull the function out, with the Tailscale stash/restore it calls, and run it
 # against the fake.
 save_template_src="$(awk '
-  /^(save_template|stash_tailscale_state|restore_tailscale_state)\(\)/ {capture=1}
+  /^(save_template|private_runtime_dir|stash_tailscale_state|restore_tailscale_state)\(\)/ {capture=1}
   capture {print}
   capture && /^}/ {capture=0}
 ' "$REPO_ROOT/incus.init")"
+# The stash holds the node key only in a private, memory-backed directory.
+TS_RUNDIR="$(mktemp -d /dev/shm/incs-test.XXXXXX)"
+trap 'rm -rf "$SANDBOX" "$TS_RUNDIR"' EXIT
+export XDG_RUNTIME_DIR="$TS_RUNDIR"
 
 run_save_template() {
   local container="$1"
@@ -1516,6 +1520,33 @@ assert_contains "template, stash refuses: the builder keeps its placeholder" \
   "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
 assert_contains "template, stash refuses: …and its /etc/hosts lines" \
   "# incs-proxy:github" "$(hosts_of base)"
+
+# The Tailscale restore fails after publishing: the builder still gets its
+# placeholder and /etc/hosts lines back, since the exit trap only retries
+# Tailscale.
+fresh_state
+make_proxy work
+make_agent base
+incs proxy add base work >/dev/null 2>&1
+ph="$(cfg base environment.GH_TOKEN)"
+mkdir -p "$(fs base /var/lib/tailscale)"
+echo NODE-KEY > "$(fs base /var/lib/tailscale/tailscaled.state)"
+out="$( (
+  error() { echo "[ERROR] $1" >&2; exit 1; }
+  log()  { :; }; warn() { :; }; wait_for_container() { :; }; wait_for_network() { :; }
+  set -euo pipefail
+  export FAKE_INCUS_FAIL_EXEC='^tar -C /var/lib -xf'
+  CONTAINER_NAME=base HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1 TS_STATE_BACKUP=""
+  eval "$save_template_src"
+  save_template
+) 2>&1)" && rc=0 || rc=$?
+assert_eq "template, Tailscale restore fails: save fails" "1" "$rc"
+assert_contains "template, Tailscale restore fails: says why" "Could not restore the Tailscale state" "$out"
+assert_contains "template, Tailscale restore fails: the builder gets its placeholder back" \
+  "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
+assert_contains "template, Tailscale restore fails: …and its /etc/hosts lines" \
+  "# incs-proxy:github" "$(hosts_of base)"
+rm -f "$TS_RUNDIR"/incs-tailscale.*
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"
