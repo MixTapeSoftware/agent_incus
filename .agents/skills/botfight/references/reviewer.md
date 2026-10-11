@@ -46,6 +46,6 @@ This submitted review is the durable completion record, including for zero-findi
 
 ## Coordination and exit
 
-Reviewer does not change PR titles, run the `pr` fixer workflow, or clean up another loop's state. An existing `🤖⚔️ [botfight]` (or older `🤖 [botfight]`) title belongs to the fixer and remains untouched. Reviewer may run alongside a fixer, but does not start one automatically.
+Reviewer does not change PR titles, run the fixer workflow, or clean up another loop's state. An existing `🤖⚔️ [botfight]` (or older `🤖 [botfight]`) title belongs to the fixer and remains untouched. Reviewer may run alongside a fixer, but does not start one automatically.
 
 On every exit, cancel only this reviewer's pending wakeups and report why it ended, review scope, iterations, heads reviewed and review links, inline findings posted, pending/unposted findings or failures, and human items needing the user. Distinguish a completed review with no findings from a review that could not be completed. Leave submitted findings open for the fixer to address.
