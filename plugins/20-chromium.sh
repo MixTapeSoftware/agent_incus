@@ -22,7 +22,7 @@ plugin_install() {
     # so provision node via mise (user-level) instead of relying on the system
     # node or on the workspace's tool versions being installed yet. Browser
     # shared libs come from _chromium_ensure_deps, so no --with-deps (which
-    # would need sudo and break under --no-sudo).
+    # would need sudo as the instance user).
     incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'PWEOF'
       set -e
       mise use -g node@22

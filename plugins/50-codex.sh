@@ -11,7 +11,7 @@ plugin_is_installed() {
 
 plugin_install() {
   log "Installing Codex..."
-  # Provision system dependencies as root through the host, so --no-sudo works.
+  # Provision system dependencies as root through the host, so the user never needs sudo.
   incus exec "$CONTAINER_NAME" -- bash -s <<'DEPS'
     set -euo pipefail
     apt-get update

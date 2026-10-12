@@ -112,7 +112,7 @@ _P_NAME=('Claude Code' Codex 'Grok Build')
 eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/incus.init")"
 FAILED_PLUGIN_IDS=(codex)
 FAILED_PLUGIN_NAMES=(Codex)
-CONTAINER_NAME=audit MOUNT_PATH='/work tree'
+CONTAINER_NAME=audit CONTAINER_WORKSPACE='/work tree'
 out="$(print_agent_launches)"
 assert_contains 'launch Claude' 'Start Claude Code:' "$out"
 assert_contains 'launch Grok' 'Start Grok Build:' "$out"

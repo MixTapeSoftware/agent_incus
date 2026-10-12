@@ -13,7 +13,8 @@
       "WebSearch",
       "SlashCommand(*)",
       "Skill(*)",
-      "WebFetch(*)"
+      "WebFetch(*)",
+      "Monitor"
     ],
     "defaultMode": "acceptEdits"
   }

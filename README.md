@@ -15,6 +15,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [Coding Agents](#coding-agents)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
+  - [Getting work out](#getting-work-out)
   - [Daily Flow with tmux](#daily-flow-with-tmux)
   - [Templates](#templates)
   - [Virtual Machines](#virtual-machines)
@@ -46,6 +47,7 @@ It then offers to install [Chadmux](https://github.com/chadfennell/chadmux), Cha
 ## Quick Start
 
 ```bash
+# Create a container with a copy of the current directory in /workspace.
 # Choose an agent; all three share the same instance setup
 incs -i my-project --agent claude
 # Or: incs -i my-project --agent codex
@@ -81,6 +83,7 @@ incs my-project claude
 incs my-project                        # Shell into container (default)
 incs -s my-project                     # Shell (explicit)
 incs -s my-project mix test            # Run a command in container
+incs -s my-project "mix test | tail"   # One quoted string runs as a shell line
 incs -i my-project                     # Create a new container
 incs -i my-project --from base-dev     # Create from template
 incs -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
@@ -93,6 +96,7 @@ incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
 incs status                            # Live view of all instances; space starts/stops one
 incs status --once                     # Print the status table once
+incs -d my-project                     # Delete a container
 incs cron install                      # Install 7pm daily update cron
 incs cron install 3                    # Install 3am daily update cron
 incs cron status                       # Show current cron schedule
@@ -119,17 +123,15 @@ Start and stop run in the background, and the result appears below the table. Wh
 Usage: incus.init [OPTIONS] <container-name>
 
 Options:
-  -p, --path PATH           Host directory to mount (default: current directory)
-  -m, --mount-path PATH     Container mount point (default: /workspace)
+  -p, --path PATH           Host directory to copy in (default: current directory)
+  -w, --workspace PATH      Where the copy goes in the container (default: /workspace)
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
-  -t, --template            Save container as a reusable local template (implies --no-mount)
+  -t, --template            Save container as a reusable local template (empty workspace)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
-  --no-mount                Clone repo into container instead of mounting host directory
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
-  --no-sudo                 Do not grant sudo to the container user (for AI agents)
   --vm                      Provision a KVM virtual machine instead of a container
-  --no-copy                 VM only: start with an empty (sealed) workspace
+  --no-copy                 Start with an empty workspace instead of copying the host directory
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
@@ -141,12 +143,12 @@ Options:
 
 ### What incus.init does
 
-1. Launches an Ubuntu 24.04 container (override with `--image`)
-3. Installs build tools, dev libraries, Python, and Node.js
-4. Creates a user matching your host UID/GID with passwordless sudo
-5. Mounts your host directory into the container (tries `shift=true`, falls back to `raw.idmap`)
-6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
-7. Presents an interactive TUI to select optional plugins (see below)
+1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits
+2. Installs build tools, dev libraries, Python, and Node.js
+3. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
+4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
+5. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
+6. Presents an interactive TUI to select optional plugins (see below)
 
 ### Default Packages
 
@@ -168,7 +170,7 @@ install more than one in the same instance:
 
 ```bash
 incs -i project --agent claude --agent codex --agent grok
-incs -i project-agent --no-sudo --agent codex
+incs -i project-agent --agent codex
 incs -i --from project-base project-grok --agent grok
 ```
 
@@ -182,8 +184,8 @@ Here, the `grokbot` alias selects xAI's local **Grok Build** coding CLI. xAI's
 cloud **Grok Bot** service is a separate product and is not installed in Incus.
 `--agent grokbot` is accepted too. No coding agent is selected by default.
 
-All agent installers work with `--no-sudo`: system dependencies are provisioned
-from the host, and agent executables are installed for the instance user. The
+Agent installers never rely on sudo inside the instance: system dependencies
+are provisioned from the host, and agent executables are installed for the instance user. The
 completion summary prints launch commands for each selected agent that installed
 successfully. Sign in inside the instance using the agent's own login flow; for
 headless Grok login, run `incs project-grok 'grok login --device-auth'`.
@@ -216,7 +218,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Codex](https://github.com/openai/codex) | OpenAI coding agent |
 | [Grok Build](https://docs.x.ai/build/overview) | xAI coding agent |
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
-| [Docker](https://www.docker.com/) | Container runtime & compose (enabled by default) |
+| [Docker](https://www.docker.com/) | Container runtime & compose. Off by default: the `docker` group is root inside the container (`--docker`) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
@@ -228,7 +230,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
 | Tailscale + Supabase serve | Preset `tailscale serve` map for app + Supabase ports (443→3000, 4410→3010, 4431→3001, 5432→54321, 5433→54323, 5434→54324, 8443→8000); auto-selects Tailscale |
 
-Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`).
+Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`, `--docker`).
 
 Chadmux clones the `main` branch into `~/.config/tmux` and links `~/.tmux.conf` to the repo's config. To get newer config changes inside a container, run `git -C ~/.config/tmux pull --ff-only`, then reload with prefix + r.
 
@@ -280,29 +282,48 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-A recommended setup uses two containers sharing the same workspace. The agent container runs with `--no-sudo` so AI tools cannot escalate privileges, while the dev container has full access and credentials:
+Each container gets its own copy of the directory you create it from, `.git` and uncommitted work included. Nothing on the host is mounted into it, so the container can do what it likes to its copy and the host only sees work that leaves through git (see [Getting work out](#getting-work-out)).
+
+Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container as the boundary. Use `incs shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
-graph TB
-    W["/workspace (app files)"]
-    H["Host Machine"] --> W
-    A["Agent Container"] --> W
-    D["Dev Container"] --> W
+graph LR
+    H["Host checkout"] -- "copied at incs -i" --> A["Agent container"]
+    H -- "copied at incs -i" --> D["Dev container"]
+    A -- "git push" --> R["Git remote"]
+    D -- "git push" --> R
+    R -- "git fetch" --> H
 ```
 
 ```bash
-# Agent container — no sudo, no credentials
-incs -i --no-sudo project-agent
+# Agent container — no credentials
+incs -i project-agent
 
 # Dev container — with credentials
 incs -i --1pass --gh-token project-dev
 
+# Shell in with temporary sudo to install something
+incs shell --with-sudo project-dev
+
 # Save as reusable template, then spin up new containers instantly
 incs -i --template project-base
-incs -i --from project-base --no-sudo project-agent-2
+incs -i --from project-base project-agent-2
 ```
 
-The host, agent, and dev containers all read and write the same `/workspace` directory. Your editor, the AI agent, and your dev tools all see the same files.
+Each container works on its own copy. Work moves between containers, and back to the host, through git.
+
+### Getting work out
+
+Commit inside the container and push a branch. For git there to reach GitHub, pass `--gh-token` when you create the container. Then fetch the branch on the host and read it before you run anything:
+
+```bash
+git fetch origin
+git diff main..origin/<branch>
+```
+
+A fetch brings commits, never the container's git config or hooks. The commits can still change anything in the tree, including `package.json` scripts, `Makefile`s, `.envrc`, `.vscode/tasks.json` and hook managers like husky, so read the diff before you run it.
+
+The copy lives only in the container. Deleting the container (`incs -d`) deletes any work you haven't pushed.
 
 ### Daily Flow with tmux
 
@@ -311,7 +332,7 @@ This is the full flow we use day to day: tmux runs on the host with [Chadmux](ht
 ```bash
 tmux new -s project                     # One session per project, on the host
 
-incs -i --no-sudo project-agent --agent claude   # First time only
+incs -i project-agent --agent claude   # First time only
 incs -i --1pass --gh-token project-dev
 
 incs project-agent                      # Pane 1: the agent container
@@ -348,7 +369,7 @@ On macOS, Chadmux's `default-shell` setting points at `/usr/bin/zsh`, which does
 
 ### Templates
 
-Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and Docker. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container with no secrets baked in, stored in the local Incus image store.
+Provisioning a container from scratch installs packages, build tools, mise, Oh My Zsh, and whichever plugins you picked. This takes a few minutes. You can skip that on subsequent containers by saving a **template** — a snapshot of a fully provisioned container, stored in the local Incus image store.
 
 **Build once:**
 
@@ -356,7 +377,12 @@ Provisioning a container from scratch installs packages, build tools, mise, Oh M
 incs -i --template my-base
 ```
 
-This provisions the container (without mounting host files), scrubs any tokens, and saves it locally as `incus-init/my-base`. The original container keeps running with its tokens intact.
+This provisions the container (with an empty workspace) and saves it locally as `incus-init/my-base`. Before publishing it removes:
+
+- `GH_TOKEN` and `OP_SERVICE_ACCOUNT_TOKEN` exports from `~/.zshenv`
+- the Tailscale node identity and serve certificates (`/var/lib/tailscale`)
+
+Anything else stays in the image, including logins made during the build (for example Claude Code's credentials under `~/.claude`, `gh auth login`, or cloud CLI configs). Log out of those, or remove their files, before saving a template. The original container keeps running with its tokens and tailnet membership intact.
 
 **Reuse instantly:**
 
@@ -368,7 +394,7 @@ incs -i --from my-base my-project
 incs -i --from my-base --1pass --gh-token my-dev
 ```
 
-When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only workspace mounting, user creation (if needed), and selected plugins run.
+When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only the workspace copy, user creation (if needed), and selected plugins run.
 
 **Manage templates:**
 
@@ -386,21 +412,19 @@ identical; only the workspace model and resources differ.
 
 ```bash
 incs -i --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
-incs -i --vm --no-copy my-vm                # VM with an empty, sealed /workspace
+incs -i --vm --no-copy my-vm                # VM with an empty /workspace
 incs -i --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
 ```
 
-**Workspace:** VMs never bind-mount the host. By default the working tree is
-**copied in** (including `.git`), owned by you and fully writable — no idmap
-juggling, because a VM runs its own kernel. Pass `--no-copy` for a sealed VM
-that starts with an empty workspace and never touches host files. Resource
+**Workspace:** the same as a container: your working tree is copied in
+(including `.git`), and `--no-copy` starts empty. Resource
 defaults are `20GiB` disk / `4GiB` memory / `4` vCPUs (override with
 `--vm-disk`/`--vm-memory`/`--vm-cpus`).
 
 **Plugins are VM-aware:** Docker installs natively inside a VM (no
-`security.nesting`/AppArmor workarounds — those config keys are container-only
-and would be rejected by Incus), and Tailscale uses the VM's native
-`/dev/net/tun` instead of a device passthrough.
+`security.nesting` or syscall interception — those config keys are
+container-only and would be rejected by Incus), and Tailscale uses the VM's
+native `/dev/net/tun` instead of a device passthrough.
 
 **Templates work the same** — with one rule: `--vm` must be on **both** the
 build and the launch, because a published VM image can only launch as a VM.
@@ -436,12 +460,12 @@ During creation you're asked for two things:
 - **An auth key.** Create one at [login.tailscale.com/admin/settings/keys](https://login.tailscale.com/admin/settings/keys). Use a *tagged* key (for example `tag:incus-dev`) so the container joins as a machine with only the access your ACLs give that tag, not as you with all of your access. Leave it blank to join later by hand.
 - **A dev port to serve.** Optional. If you enter `3000`, the plugin runs `tailscale serve` so that `https://project-dev.<tailnet>.ts.net/` goes to port 3000 inside the container. Leave it blank if you'd rather set this up yourself.
 
-When it finishes, the plugin prints the machine's HTTPS URL. Open that URL from any device on your tailnet and you're looking at the app running in the container.
+If you gave an auth key, the plugin prints the machine's HTTPS URL when it finishes. The URL reaches your app once a `tailscale serve` mapping points at it: the dev port you entered, the Supabase preset, or a mapping you add later (see below). Open it from any device on your tailnet and you're looking at the app running in the container. If you join later by hand, `tailscale status` inside the container shows the machine's name.
 
 If you skipped the auth key, join later with:
 
 ```bash
-incs -s project-dev "sudo tailscale up --operator=$USER"
+incs shell --with-sudo project-dev "sudo tailscale up --operator=$USER"
 ```
 
 To add or change served ports after the fact, run `tailscale serve` inside the container (no sudo needed, since your user is the Tailscale operator):
@@ -474,7 +498,7 @@ Since Tailscale runs inside the container, your dev server can bind to `localhos
 
 So Supabase Studio is at `https://project-dev.<tailnet>.ts.net:5433/`, and so on.
 
-**Templates.** The Tailscale plugin re-runs when you launch from a template, so each new container joins as its own machine. Serve mappings are stored by Tailscale and survive restarts. The Supabase preset re-applies on every launch too, so a template built with it keeps working.
+**Templates.** The Tailscale plugin re-runs when you launch from a template, so each new container joins as its own machine. The template itself holds no node key: `--template` moves `/var/lib/tailscale` (the node key and any `tailscale serve` certificates) out of the container while the image is published, then puts it back. Serve mappings are stored by Tailscale and survive restarts. The Supabase preset re-applies on every launch too, so a template built with it keeps working.
 
 **Option 2: Tailscale on the host.** If the host machine is already on your tailnet and you don't want the container joining separately, proxy the port to the host with `incs -n` and let the host's Tailscale serve it:
 
@@ -539,7 +563,7 @@ npm run dev -- --host 0.0.0.0
 
 ### Updating Containers
 
-Containers don't have sudo by default, so package updates run from the host via `incus exec`:
+Containers don't have sudo by default (use `incs shell --with-sudo` for one-off installs), so package updates run from the host via `incus exec`:
 
 ```bash
 # Update a single container
