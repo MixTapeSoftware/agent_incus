@@ -379,6 +379,12 @@ status_tui_restore() {
   if [[ -n "$STATUS_TMP" ]]; then rm -rf "$STATUS_TMP"; fi
 }
 
+# Usage: msg=$(status_note "$msg" <line>). Keeps the last three lines so
+# results from jobs that finish close together all stay visible.
+status_note() {
+  printf '%s\n%s\n' "$1" "$2" | sed '/^$/d' | tail -n 3
+}
+
 status_interactive() {
   local color=true host json="[]" listed sample='{"t":0,"cpu":{}}' prev at=null
   local names=() states=() count=0 sel=0 sel_name="" hl i
@@ -407,10 +413,11 @@ status_interactive() {
           continue
         fi
         if [[ "$(cat "$p_log.rc")" == 0 ]]; then
-          if [[ "$p_verb" == stop ]]; then msg="Stopped $p_name"; else msg="Started $p_name"; fi
+          if [[ "$p_verb" == stop ]]; then line="Stopped $p_name"; else line="Started $p_name"; fi
+          msg=$(status_note "$msg" "$line")
         else
           err=$(head -n 1 "$p_log")
-          msg="Failed to $p_verb $p_name: ${err#Error: }"
+          msg=$(status_note "$msg" "Failed to $p_verb $p_name: ${err#Error: }")
         fi
         fetch=true
       done <<<"$pending"
@@ -436,7 +443,7 @@ status_interactive() {
           if [[ "${names[$i]}" == "$sel_name" ]]; then sel=$i; fi
         done
       else
-        msg="Failed to list instances"
+        msg=$(status_note "$msg" "Failed to list instances")
       fi
       last=$SECONDS
       fetch=false
@@ -453,7 +460,8 @@ status_interactive() {
     out=$'\033[H'
     while IFS= read -r line; do out+="$line"$'\033[K\n'; done <<<"$table"
     out+=$'\033[K\n'"↑/↓ or j/k select · space start/stop · q quit"$'\033[K\n'
-    out+="$msg"$'\033[K\n\033[J'
+    while IFS= read -r line; do out+="$line"$'\033[K\n'; done <<<"$msg"
+    out+=$'\033[J'
     printf '%s' "$out"
 
     key=""
@@ -476,7 +484,7 @@ status_interactive() {
         ((count > 0)) || continue
         name=${names[$sel]}
         if [[ "$pending" == *$'\t'"$name"$'\t'* ]]; then
-          msg="$name is busy"
+          msg=$(status_note "$msg" "$name is busy")
           continue
         fi
         if [[ "${states[$sel]}" == Running ]]; then verb=stop; else verb=start; fi
@@ -490,7 +498,8 @@ status_interactive() {
           mv "$log_file.tmp" "$log_file.rc"
         ) &
         pending+="$verb"$'\t'"$name"$'\t'"$log_file"$'\n'
-        if [[ $verb == stop ]]; then msg="Stopping $name…"; else msg="Starting $name…"; fi
+        if [[ $verb == stop ]]; then line="Stopping $name…"; else line="Starting $name…"; fi
+        msg=$(status_note "$msg" "$line")
         ;;
     esac
     if ((count > 0)); then sel_name=${names[$sel]}; fi

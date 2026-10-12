@@ -152,6 +152,21 @@ if script -qec true /dev/null >/dev/null 2>&1; then
   assert_eq "finished jobs are reported" "yes" "$done_msg"
   if [[ "$out" == *$'\033[?1049l'* ]]; then restored=yes; else restored=no; fi
   assert_eq "q leaves the alternate screen" "yes" "$restored"
+  # The last frame still shows both results, not only the latest one.
+  frame=${out##*$'\033[H'}
+  if [[ "$frame" == *"Stopped beta"* && "$frame" == *"Started gamma"* ]]; then both=yes; else both=no; fi
+  assert_eq "earlier results stay visible" "yes" "$both"
+
+  # --once on a terminal prints the table and never opens the live view.
+  rm -f "$stub/count"
+  out=$(STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/incs' status --once" /dev/null </dev/null &
+    pid=$!
+    ( sleep 10; kill "$pid" ) >/dev/null 2>&1 &
+    watchdog=$!
+    wait "$pid" || true
+    kill "$watchdog" 2>/dev/null || true) || true
+  if [[ "$out" == *"Agent Incus instances:"* && "$out" != *$'\033[?1049h'* ]]; then once=yes; else once=no; fi
+  assert_eq "--once on a terminal prints the table only" "yes" "$once"
 else
   echo "  skip (needs util-linux script)"
 fi
