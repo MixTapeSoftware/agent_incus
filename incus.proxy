@@ -58,10 +58,12 @@ declare -F error >/dev/null || error() { echo -e "\033[0;31m[ERROR]\033[0m $1" >
 
 # Where the proxy will not connect, whatever host a request names: the
 # iron-proxy defaults (cloud metadata, loopback) plus private, shared and
-# link-local ranges. A proxy forwards to public APIs only; it is never a path
-# into the host, the Incus bridge or the LAN. Setting the list replaces the
-# defaults, so they are repeated here.
-PROXY_UPSTREAM_DENY_CIDRS="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 ::1/128 fc00::/7 fe80::/10"
+# link-local ranges, and the special-use ranges no public API is on. A proxy
+# forwards to public APIs only; it is never a path into the host, the Incus
+# bridge or the LAN. Setting the list replaces the defaults, so they are
+# repeated here. 198.18.0.0/15 stays open: fake-IP DNS on the host answers
+# with it for public names.
+PROXY_UPSTREAM_DENY_CIDRS="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.168.0.0/16 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4 ::/128 ::1/128 100::/64 2001:db8::/32 fc00::/7 fe80::/10 fec0::/10 ff00::/8"
 
 # Everything but the transforms, which iron-rebuild writes: an allowlist of
 # every attached service's hosts, then the secrets.
@@ -681,6 +683,25 @@ proxy_ensure_running() {
   proxy_wait_ready "$name" || error "Timed out waiting for $name"
 }
 
+# The config a proxy runs when nothing is attached: it forwards nowhere.
+proxy_closed_config() {
+  proxy_base_config
+  printf '%s\n' "transforms:" "  - name: allowlist" "    config:" "      domains: []" \
+    "  - name: secrets" "    config:" "      secrets:"
+}
+
+# Start a proxy that is about to be rebuilt. A stopped proxy made by an older
+# incs would boot on its old proxy.yaml, which forwards anywhere, and serve it
+# until the rebuild. It boots on one that forwards nowhere instead.
+proxy_ensure_running_closed() {
+  local proxy="$1"
+  if [[ "$(incus list "^$proxy\$" --format csv --columns s 2>/dev/null)" != "RUNNING" &&
+        "$(incus file pull -q "$proxy$PROXY_DIR/base.yaml" - 2>/dev/null)" != "$(proxy_base_config)" ]]; then
+    proxy_closed_config | proxy_push "$proxy" "$PROXY_DIR/proxy.yaml" 0600
+  fi
+  proxy_ensure_running "$proxy"
+}
+
 # Run a step in a subshell; its exit status lands in PROXY_TRY_RC.
 # Call it as a plain command, never as an `if` or `&&` condition: bash ignores
 # errexit for everything run inside a condition, even in a subshell that sets
@@ -860,7 +881,7 @@ proxy_attach() {
   local ip
   ip="$(incus config get "$proxy" user.incs.proxy-ip 2>/dev/null)"
 
-  proxy_ensure_running "$proxy"
+  proxy_ensure_running_closed "$proxy"
   proxy_ensure_running "$container"
 
   # Check everything that can be checked before changing anything.
@@ -1016,7 +1037,7 @@ proxy_detach_proxy_side() {
   local proxy="$1"
   shift
   [[ $# -gt 0 ]] || return 0
-  proxy_ensure_running "$proxy"
+  proxy_ensure_running_closed "$proxy"
   proxy_sync_rebuild_script "$proxy"
   incus exec "$proxy" -- iron-rebuild drop "$@" </dev/null
 }
@@ -1415,9 +1436,11 @@ proxy_cmd_refresh() {
   [[ $# -gt 0 ]] || error "$usage"
   if [[ "$1" == "--all" ]]; then
     [[ $# -eq 1 ]] || error "$usage"
+    local list
+    list="$(proxy_names)" || error "Could not list proxies"
     while IFS= read -r name; do
       [[ -n "$name" ]] && names+=("$name")
-    done < <(proxy_names)
+    done <<< "$list"
     if [[ ${#names[@]} -eq 0 ]]; then
       echo "No proxies."
       return 0
@@ -1432,7 +1455,7 @@ proxy_cmd_refresh() {
   done
   for name in "${names[@]}"; do
     log "Refreshing proxy '$name'..."
-    proxy_ensure_running "$name"
+    proxy_ensure_running_closed "$name"
     proxy_sync_rebuild_script "$name"
     proxy_sync_base_config "$name" ""
     incus exec "$name" -- iron-rebuild </dev/null || \

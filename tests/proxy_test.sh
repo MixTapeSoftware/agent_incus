@@ -1685,6 +1685,33 @@ assert_eq "refresh of a container that is not a proxy: refused" "1" "$rc"
 assert_contains "refresh of a container: says why" "'proj' is not a proxy" "$out"
 out="$(incs proxy refresh 2>&1)" && rc=0 || rc=$?
 assert_eq "refresh with nothing named: refused" "1" "$rc"
+out="$(FAKE_INCUS_FAIL_CALL='^list user\.incs\.role=proxy' incs proxy refresh --all 2>&1)" && rc=0 || rc=$?
+assert_eq "refresh --all when Incus cannot list: fails" "1" "$rc"
+assert_contains "refresh --all when Incus cannot list: says why" "Could not list proxies" "$out"
+assert_not_contains "refresh --all when Incus cannot list: does not claim there are none" "No proxies." "$out"
+
+# A stopped older proxy boots on a config that forwards nowhere, not its old
+# one, so nothing is forwarded anywhere before the rebuild.
+printf 'proxy:\n  https_listen: "0.0.0.0:443"\ntransforms:\n  - name: secrets\n    config:\n      secrets:\n' \
+  > "$(fs work /etc/iron-proxy/base.yaml)"
+printf 'OLD-FORWARDS-ANYWHERE\n' > "$(fs work /etc/iron-proxy/proxy.yaml)"
+incus stop work
+out="$(FAKE_INCUS_FAIL_CALL='^start work$' incs proxy refresh work 2>&1)" && rc=0 || rc=$?
+built="$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_eq "refresh of a stopped older proxy that fails to start: fails" "1" "$rc"
+assert_not_contains "refresh of a stopped older proxy: the old config is not booted" "OLD-FORWARDS-ANYWHERE" "$built"
+assert_contains "refresh of a stopped older proxy: it boots forwarding nowhere" "      domains: []" "$built"
+assert_contains "refresh of a stopped older proxy: …behind the deny list" '    - "240.0.0.0/4"' "$built"
+out="$(incs proxy refresh work 2>&1)" && rc=0 || rc=$?
+assert_eq "refresh of a stopped older proxy: succeeds" "0" "$rc"
+assert_contains "refresh of a stopped older proxy: its attachments come back" \
+  "work allows: api.github.com github.com uploads.github.com" "$out"
+# A current proxy keeps the config it was built with.
+incus stop work
+before="$(wc -l < "$FAKE_INCUS_STATE/calls.log")"
+incs proxy refresh work >/dev/null 2>&1
+assert_eq "refresh of a stopped current proxy: pushes no stand-in config" "0" \
+  "$(tail -n +"$((before + 1))" "$FAKE_INCUS_STATE/calls.log" | grep -c 'work/etc/iron-proxy/proxy\.yaml$')"
 
 # ===========================================================================
 echo "proxy info"
