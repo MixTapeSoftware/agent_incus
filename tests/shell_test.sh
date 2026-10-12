@@ -107,6 +107,19 @@ shell box touch "a b" 'c;d' >/dev/null 2>&1
 assert_eq "several arguments: each quoted so its boundaries survive" \
   "setpriv --reuid=$HOST_UID_NOW --regid=$USER_GID --groups=$USER_GID,$DOCKER_GID --inh-caps=-all -- zsh -lic touch a\\ b c\\;d" \
   "$(launched)"
+# A credential proxy has no user shell: refuse before starting or entering it.
+fresh_box; with_user_groups
+incus config set box user.incs.role=proxy
+incus config set box user.incs.proxy-owner=foo
+out="$(shell box 2>&1)" && rc=0 || rc=$?
+assert_eq "proxy: refused" "1" "$rc"
+assert_contains "proxy: says why" "box is a credential proxy" "$out"
+assert_contains "proxy: points to the container it serves" "incs foo" "$out"
+assert_not_contains "proxy: never entered" "setpriv" "$(cat "$FAKE_INCUS_STATE/calls.log")"
+incus config unset box user.incs.proxy-owner
+out="$(shell box 2>&1)" && rc=0 || rc=$?
+assert_eq "proxy without an owner: refused" "1" "$rc"
+assert_not_contains "proxy without an owner: no empty pointer" "Open the container it serves" "$out"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

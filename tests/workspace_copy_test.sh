@@ -102,7 +102,9 @@ assert_not_contains "--no-copy: copies nothing" "Copying" "$OUT"
 
 fresh_box
 SAVE_TEMPLATE=1 copy
-assert_eq "template build: the workspace is empty" "" "$(ls -A "$(root)/workspace")"
+assert_eq "template build: succeeds" "0" "$RC"
+assert_eq "template build: the workspace exists" "yes" "$([[ -d "$(root)/workspace" ]] && echo yes || echo no)"
+assert_eq "template build: and is empty" "" "$(ls -A "$(root)/workspace")"
 
 # ===========================================================================
 echo "a workspace that already has files"
@@ -114,11 +116,42 @@ assert_eq "from a template: succeeds" "0" "$RC"
 assert_contains "from a template: re-owns it" "box :: chown -R dev:dev /workspace" "$(execs)"
 assert_eq "from a template: does not copy over it" "no" "$([[ -e "$(root)/workspace/README" ]] && echo yes || echo no)"
 
+# An older template carries files; --no-copy still means an empty workspace.
+fresh_box
+mkdir -p "$(root)/workspace"; echo old > "$(root)/workspace/leftover"
+FROM_BASE_IMAGE=1 NO_COPY=1 copy
+assert_eq "from a template, --no-copy: succeeds" "0" "$RC"
+assert_eq "from a template, --no-copy: the workspace exists" "yes" "$([[ -d "$(root)/workspace" ]] && echo yes || echo no)"
+assert_eq "from a template, --no-copy: and is empty" "" "$(ls -A "$(root)/workspace")"
+assert_contains "from a template, --no-copy: handed to the user" "box :: chown -R dev:dev /workspace" "$(execs)"
+
+fresh_box
+mkdir -p "$(root)/workspace"; echo old > "$(root)/workspace/leftover"
+FAKE_INCUS_FAIL_EXEC='^rm -rf /workspace' FROM_BASE_IMAGE=1 NO_COPY=1 copy
+assert_eq "from a template, --no-copy, cannot empty: stops" "1" "$RC"
+assert_contains "from a template, --no-copy, cannot empty: says why" "Could not empty /workspace" "$OUT"
+
 fresh_box
 mkdir -p "$(root)/workspace"; echo old > "$(root)/workspace/leftover"
 copy
 assert_eq "not from a template: stops" "1" "$RC"
 assert_contains "not from a template: says why" "is not empty inside the container" "$OUT"
+
+# ===========================================================================
+echo "Incus cannot be asked"
+# ===========================================================================
+fresh_box
+FAKE_INCUS_FAIL_EXEC='test -d' copy
+assert_eq "probe fails: stops" "1" "$RC"
+assert_contains "probe fails: says why" "Could not check /workspace" "$OUT"
+assert_eq "probe fails: copies nothing" "no" "$([[ -e "$(root)/workspace/README" ]] && echo yes || echo no)"
+
+fresh_box
+mkdir -p "$(root)/workspace"; echo old > "$(root)/workspace/leftover"
+FAKE_INCUS_FAIL_EXEC='^ls -A' copy
+assert_eq "listing fails: stops" "1" "$RC"
+assert_contains "listing fails: says why" "Could not list /workspace" "$OUT"
+assert_eq "listing fails: copies nothing over the files" "no" "$([[ -e "$(root)/workspace/README" ]] && echo yes || echo no)"
 
 # ===========================================================================
 echo "the CLI"
@@ -140,6 +173,29 @@ for ws in src /; do
   assert_eq "--workspace $ws: rejected" "1" "$rc"
   assert_contains "--workspace $ws: says it must be absolute" "--workspace must be an absolute path" "$out"
 done
+
+# --no-copy never touches the host path, so a missing one is fine.
+for cmd in sudo curl; do printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/$cmd"; chmod +x "$SANDBOX/bin/$cmd"; done
+fresh_box
+out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --dry-run --no-copy --path "$SANDBOX/missing" fresh 2>&1)" && rc=0 || rc=$?
+assert_eq "--no-copy with a missing --path: dry run succeeds" "0" "$rc"
+assert_contains "--no-copy with a missing --path: empty workspace" "Workspace:   empty /workspace (--no-copy)" "$out"
+out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --dry-run --path "$SANDBOX/missing" fresh 2>&1)" && rc=0 || rc=$?
+assert_eq "a missing --path is still an error when copying" "1" "$rc"
+
+# A linked worktree's .git points at the host repository; the copy would be
+# broken, so it is refused before anything is created.
+git -C "$HOST" worktree add -q "$SANDBOX/linked" 2>/dev/null
+fresh_box
+out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --dry-run --path "$SANDBOX/linked" fresh 2>&1)" && rc=0 || rc=$?
+assert_eq "linked worktree: refused" "1" "$rc"
+assert_contains "linked worktree: says why" "is a linked git worktree" "$out"
+assert_contains "linked worktree: points to another container" "incs -i <name>" "$out"
+assert_not_contains "linked worktree: stops before the plan" "Workspace:" "$out"
+out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --dry-run --path "$HOST" fresh 2>&1)" && rc=0 || rc=$?
+assert_eq "main checkout: still accepted" "0" "$rc"
+out="$(bash "$REPO_ROOT/incus.init" --no-tui --no-proxy --dry-run --no-copy --path "$SANDBOX/linked" fresh 2>&1)" && rc=0 || rc=$?
+assert_eq "linked worktree with --no-copy: nothing is copied, so accepted" "0" "$rc"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

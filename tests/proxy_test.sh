@@ -203,7 +203,7 @@ make_agent_with_real_token() {
 fresh_state
 FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
 make_agent_with_real_token proj
-out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_eq "add: succeeds" "0" "$rc"
 
 ph="$(cfg proj environment.GH_TOKEN)"
@@ -260,7 +260,7 @@ make_agent proj
 printf 'github.com:\n    oauth_token: gho_REAL\n    user: ada\n' \
   | incus file push -p - "proj/home/$USER_NAME/.config/gh/hosts.yml"
 printf 'https://ada:ghp_REAL@github.com\n' | incus file push -p - "proj/home/$USER_NAME/.git-credentials"
-out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_contains "warns about a token stored by gh auth login" ".config/gh/hosts.yml" "$out"
 assert_contains "warns about git's plain-text credential store" ".git-credentials" "$out"
 assert_eq "does not delete the user's files" \
@@ -269,12 +269,12 @@ assert_eq "does not delete the user's files" \
 fresh_state
 make_proxy work
 make_agent proj
-out="$(incs proxy add proj work 2>&1)"
+out="$(incs proxy add --service github proj work 2>&1)"
 assert_not_contains "no warning when no other credentials exist" "hosts.yml" "$out"
 
 # Re-adding rotates the placeholder and leaves no duplicates behind.
 ph="$(cfg proj environment.GH_TOKEN)"
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 ph2="$(cfg proj environment.GH_TOKEN)"
 zshenv="$(cat "$(fs proj "$ZSHENV")")"
 assert_eq "re-add: placeholder rotates" "rotated" "$([[ -n "$ph2" && "$ph2" != "$ph" ]] && echo rotated || echo same)"
@@ -288,7 +288,7 @@ assert_not_contains "re-add: old placeholder no longer honored" \
 
 # Two containers on one proxy.
 make_agent other
-incs proxy add other work >/dev/null 2>&1
+incs proxy add --service github other work >/dev/null 2>&1
 ph_other="$(cfg other environment.GH_TOKEN)"
 built="$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
 assert_eq "two containers get different placeholders" \
@@ -301,24 +301,24 @@ fresh_state
 printf 'tok\n' | incs proxy new acme --vault acme-agents >/dev/null 2>&1
 echo CERT > "$(fs acme /etc/iron-proxy/ca.crt)"
 make_agent a1; make_agent a2
-incs proxy add a1 acme >/dev/null 2>&1
-incs proxy add a2 acme --ref "op://Shared Vault/My Item/token" >/dev/null 2>&1
+incs proxy add --service github a1 acme >/dev/null 2>&1
+incs proxy add --service github a2 acme --ref "op://Shared Vault/My Item/token" >/dev/null 2>&1
 assert_contains "default ref uses the proxy's vault" \
   'secret_ref: "op://acme-agents/a1/credential"' "$(cat "$(fs acme /etc/iron-proxy/entries/a1--github.yaml)")"
 assert_contains "--ref overrides the reference (spaces allowed)" \
   'secret_ref: "op://Shared Vault/My Item/token"' "$(cat "$(fs acme /etc/iron-proxy/entries/a2--github.yaml)")"
 
-out="$(incs proxy add a1 acme --ref 'op://v/i/f"
+out="$(incs proxy add --service github a1 acme --ref 'op://v/i/f"
   injected: true' 2>&1)" && rc=0 || rc=$?
 assert_eq "--ref that could break out of the YAML string is rejected" "1" "$rc"
-out="$(incs proxy add a1 acme --ref 'https://example.com/x' 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github a1 acme --ref 'https://example.com/x' 2>&1)" && rc=0 || rc=$?
 assert_eq "--ref must be an op:// reference" "1" "$rc"
 
 # --token: real token is stored in the proxy, never in the agent container.
 fresh_state
 make_proxy work
 make_agent proj
-out="$(printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token 2>&1)" && rc=0 || rc=$?
+out="$(printf 'github_pat_TYPED_in\n' | incs proxy add --service github proj work --token 2>&1)" && rc=0 || rc=$?
 assert_eq "--token: succeeds" "0" "$rc"
 entry="$(cat "$(fs work /etc/iron-proxy/entries/proj--github.yaml)" 2>/dev/null || true)"
 assert_eq "--token: stored in the proxy exactly, no trailing newline" \
@@ -331,23 +331,26 @@ assert_not_contains "--token: never appears in argv" "github_pat_TYPED_in" "$(ca
 assert_not_contains "--token: not echoed"            "github_pat_TYPED_in" "$out"
 assert_eq "--token: nothing in the agent container holds the real token" \
   "" "$(grep -rl 'github_pat_TYPED_in' "$FAKE_INCUS_STATE/instances/proj" 2>/dev/null || true)"
+assert_contains "--token: says the container gets only a placeholder" \
+  "proj gets \$GH_TOKEN set to a placeholder, not the key" "$out"
+assert_contains "--token: names the hosts the key may reach" "api.github.com" "$out"
 
 fresh_state
 make_proxy work
 make_agent proj
-printf '\033[200~github_pat_PASTED\033[201~\n' | incs proxy add proj work --token >/dev/null 2>&1
+printf '\033[200~github_pat_PASTED\033[201~\n' | incs proxy add --service github proj work --token >/dev/null 2>&1
 assert_eq "--token pasted with terminal escapes is stored clean" \
   "github_pat_PASTED" "$(cat "$(fs work /etc/iron-proxy/tokens/proj--github)" 2>/dev/null; echo)"
 
-out="$(incs proxy add proj work --ref "$(printf 'op://v/i/f\033[I')" 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj work --ref "$(printf 'op://v/i/f\033[I')" 2>&1)" && rc=0 || rc=$?
 assert_eq "--ref containing a control character is refused" "1" "$rc"
 
 # Switching a container from a stored token to 1Password removes the token.
 fresh_state
 make_proxy work
 make_agent proj
-printf 'github_pat_STORED\n' | incs proxy add proj work --token >/dev/null 2>&1
-incs proxy add proj work >/dev/null 2>&1
+printf 'github_pat_STORED\n' | incs proxy add --service github proj work --token >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 assert_contains "switching to 1Password: entry now reads the vault" \
   "type: 1password" "$(cat "$(fs work /etc/iron-proxy/entries/proj--github.yaml)")"
 assert_eq "switching to 1Password: the stored token is deleted" \
@@ -356,7 +359,7 @@ assert_eq "switching to 1Password: the stored token is deleted" \
 fresh_state
 make_proxy work
 make_agent proj
-out="$(printf 'github_pat_with a_space\n' | incs proxy add proj work --token 2>&1)" && rc=0 || rc=$?
+out="$(printf 'github_pat_with a_space\n' | incs proxy add --service github proj work --token 2>&1)" && rc=0 || rc=$?
 assert_eq "--token containing whitespace is refused" "1" "$rc"
 assert_eq "--token containing whitespace stores nothing" \
   "gone" "$([[ -e "$(fs work /etc/iron-proxy/tokens/proj--github)" ]] && echo present || echo gone)"
@@ -367,20 +370,20 @@ make_proxy work
 make_proxy other
 make_agent proj
 incus launch images:ubuntu/24.04 plainbox
-out="$(incs proxy add nope work 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github nope work 2>&1)" && rc=0 || rc=$?
 assert_eq "unknown container is refused" "1" "$rc"
-out="$(incs proxy add proj nope 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj nope 2>&1)" && rc=0 || rc=$?
 assert_eq "unknown proxy is refused" "1" "$rc"
-out="$(incs proxy add proj plainbox 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj plainbox 2>&1)" && rc=0 || rc=$?
 assert_eq "a target that is not a proxy is refused" "1" "$rc"
 assert_contains "…with a message saying so" "not a proxy" "$out"
-out="$(incs proxy add other work 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github other work 2>&1)" && rc=0 || rc=$?
 assert_eq "attaching a proxy to a proxy is refused" "1" "$rc"
 assert_eq "refused attach leaves no entry behind" \
   "" "$(ls "$(fs work /etc/iron-proxy/entries)" 2>/dev/null || true)"
 
-incs proxy add proj work >/dev/null 2>&1
-out="$(incs proxy add proj other 2>&1)" && rc=0 || rc=$?
+incs proxy add --service github proj work >/dev/null 2>&1
+out="$(incs proxy add --service github proj other 2>&1)" && rc=0 || rc=$?
 assert_eq "switching proxies without detaching is refused" "1" "$rc"
 assert_contains "…and points at proxy rm" "incs proxy rm proj" "$out"
 assert_eq "…and the original attachment is untouched" "work" "$(cfg proj user.incs.proxy)"
@@ -389,7 +392,7 @@ assert_eq "…and the original attachment is untouched" "work" "$(cfg proj user.
 fresh_state
 make_proxy work
 make_agent proj
-out="$(FAKE_INCUS_FAIL_EXEC='^getent passwd' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(FAKE_INCUS_FAIL_EXEC='^getent passwd' incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_eq "container without the user: refused" "1" "$rc"
 assert_eq "container without the user: proxy is left untouched" \
   "" "$(ls "$(fs work /etc/iron-proxy/entries)" 2>/dev/null || true)"
@@ -398,7 +401,7 @@ assert_eq "container without the user: proxy is left untouched" \
 fresh_state
 make_proxy work
 make_agent proj
-out="$(FAKE_INCUS_FAIL_EXEC='^update-ca-certificates' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(FAKE_INCUS_FAIL_EXEC='^update-ca-certificates' incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_eq "failure partway: exits non-zero" "1" "$([[ $rc -ne 0 ]] && echo 1 || echo 0)"
 out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "failure partway: proxy rm can still clean up" "0" "$rc"
@@ -410,7 +413,7 @@ fresh_state
 make_proxy work
 make_agent proj
 printf 'export EDITOR=nvim\nexport SECRET_SAUCE=1\n' | incus file push -p - "proj$ZSHENV"
-out="$(FAKE_INCUS_FAIL_CALL='^file pull .*\.zshenv' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(FAKE_INCUS_FAIL_CALL='^file pull .*\.zshenv' incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_contains "~/.zshenv survives a failed read: user's first line kept"  "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
 assert_contains "~/.zshenv survives a failed read: user's second line kept" "export SECRET_SAUCE=1" "$(cat "$(fs proj "$ZSHENV")")"
 
@@ -422,7 +425,7 @@ make_agent proj
 printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
 chmod 000 "$(fs proj "$ZSHENV")"
 if ! cat "$(fs proj "$ZSHENV")" >/dev/null 2>&1; then
-  out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+  out="$(incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
   chmod 600 "$(fs proj "$ZSHENV")"
   assert_eq "unreadable ~/.zshenv: attach fails rather than overwriting" "1" "$([[ $rc -ne 0 ]] && echo 1 || echo 0)"
   assert_eq "unreadable ~/.zshenv: the user's lines are untouched" "export EDITOR=nvim" "$(cat "$(fs proj "$ZSHENV")")"
@@ -436,7 +439,7 @@ fresh_state
 make_proxy work
 make_agent proj
 incus stop proj; incus stop work
-out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_eq "stopped container and proxy: attach still succeeds" "0" "$rc"
 assert_eq "stopped proxy is started" "RUNNING" "$(incus list '^work$' --format csv --columns s)"
 
@@ -447,9 +450,9 @@ fresh_state
 FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
 make_agent proj
 printf 'export OPENAI_API_KEY=sk-REAL-key-from-before\nexport EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 gh_ph="$(cfg proj environment.GH_TOKEN)"
-out="$(incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service openai-api-key proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
 assert_eq "add --env/--host: succeeds" "0" "$rc"
 
 ph="$(cfg proj environment.OPENAI_API_KEY)"
@@ -487,7 +490,7 @@ assert_not_contains "placeholder is not printed" "$ph" "$out"
 assert_contains "list shows every service" "proj(github,openai-api-key)" "$(incs proxy list 2>&1)"
 
 # Re-adding one service rotates only that service.
-incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
+incs proxy add --service openai-api-key proj work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
 ph2="$(cfg proj environment.OPENAI_API_KEY)"
 assert_eq "re-add: that placeholder rotates" "rotated" "$([[ -n "$ph2" && "$ph2" != "$ph" ]] && echo rotated || echo same)"
 assert_eq "re-add: GitHub's placeholder does not" "$gh_ph" "$(cfg proj environment.GH_TOKEN)"
@@ -524,20 +527,32 @@ refused() {
   assert_eq "refused: $label" "1" "$rc"
   [[ -z "$needle" ]] || assert_contains "refused: $label (says why)" "$needle" "$out"
 }
-refused "--env without --host"               "--host is required"  --env SOME_KEY
-refused "--host without --env"               "--env is required"   --host api.example.com
-refused "a wildcard host"                    "Wildcard"            --env SOME_KEY --host '*.example.com'
-refused "a host with a path"                 "Invalid host"        --env SOME_KEY --host 'api.example.com/v1'
-refused "a host with a space"                "Invalid host"        --env SOME_KEY --host 'api example.com'
-refused "a variable name with a hyphen"      "Invalid environment" --env SOME-KEY --host api.example.com
-refused "a prefix with a space"              "Invalid placeholder" --env SOME_KEY --host api.example.com --prefix 'sk ant'
+refused "no service named"                   "Name the service"
+refused "--env without --host"               "--host is required"  --service some-key --env SOME_KEY
+refused "--host without --env"               "--env is required"   --service some-key --host api.example.com
+refused "a wildcard host"                    "Wildcard"            --service some-key --env SOME_KEY --host '*.example.com'
+refused "a host with a path"                 "Invalid host"        --env SOME_KEY --service some-key --host 'api.example.com/v1'
+refused "a host with a space"                "Invalid host"        --env SOME_KEY --service some-key --host 'api example.com'
+refused "a variable name with a hyphen"      "Invalid environment" --service some-key --env SOME-KEY --host api.example.com
+refused "a prefix with a space"              "Invalid placeholder" --service some-key --env SOME_KEY --host api.example.com --prefix 'sk ant'
 refused "a service name with a slash"        "Invalid service"     --service 'a/b' --env SOME_KEY --host api.example.com
 refused "github with --env"                  "built in"            --service github --env SOME_KEY --host api.example.com
-refused "a new service name with nothing else" "needs --env"       --service mystery
+refused "a new service name with nothing else" "--env is required" --service mystery
 refused "a variable another service already uses" "already belongs" --service other --env OPENAI_API_KEY --host api.example.com
-refused "a variable incs itself sets"         "set by incs itself"  --env SSL_CERT_FILE --host api.example.com
+refused "a URL instead of a host"            "use --host api.example.com" --service some-key --env SOME_KEY --host 'https://api.example.com/v1'
+refused "a variable incs itself sets"         "set by incs itself"  --service some-key --env SSL_CERT_FILE --host api.example.com
 assert_eq "refused attaches change nothing" "$before" "$(cfg proj user.incs.proxy-services)"
 assert_not_contains "refused attaches add no /etc/hosts line" "example.com" "$(hosts_of proj)"
+
+# With --token, a refusal comes before the prompt: nobody pastes a key into
+# an attach that was always going to fail.
+for args in "--service bar --env FOO_BAR --host https://example.com" \
+            "--service github nope" "--service bar --env OPENAI_API_KEY --host api.example.com"; do
+  # shellcheck disable=SC2086
+  out="$(printf 'sk-NEVER-asked\n' | incs proxy add proj $args --token 2>&1)" && rc=0 || rc=$?
+  assert_eq "refused before the prompt ($args)" "1" "$rc"
+  assert_not_contains "refused before the prompt ($args): no placeholder notice" "set to a placeholder" "$out"
+done
 
 # A container attached before services existed: tagged, no list, proxy
 # variables in ~/.zshenv.
@@ -548,16 +563,16 @@ incus config set proj user.incs.proxy=work
 incus config set proj environment.GH_TOKEN=ghp_old
 printf 'export EDITOR=nvim\nexport GH_TOKEN=ghp_old # incs-proxy\nexport HTTPS_PROXY=http://10.99.0.7:8888 # incs-proxy\n' \
   | incus file push -p - "proj$ZSHENV"
-out="$(incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service openai-api-key proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
 assert_eq "older attachment: another service is refused until GitHub is re-attached" "1" "$rc"
 assert_contains "older attachment: …with the command to run" "incs proxy add proj work" "$out"
-out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 zshenv="$(cat "$(fs proj "$ZSHENV")")"
 assert_eq "older attachment: re-attaching GitHub succeeds" "0" "$rc"
 assert_not_contains "older attachment: the proxy variables are removed" "HTTPS_PROXY" "$zshenv"
 assert_eq "older attachment: one GH_TOKEN line remains" "1" "$(grep -c '^export GH_TOKEN=' <<<"$zshenv")"
 assert_contains "older attachment: the user's lines are kept" "export EDITOR=nvim" "$zshenv"
-out="$(incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service openai-api-key proj work --env OPENAI_API_KEY --host api.openai.com 2>&1)" && rc=0 || rc=$?
 assert_eq "older attachment: other services can then be added" "0" "$rc"
 
 # ===========================================================================
@@ -720,8 +735,8 @@ fresh_state
 make_proxy work
 make_agent proj; make_agent keep
 printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
-printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
-incs proxy add keep work >/dev/null 2>&1
+printf 'github_pat_TYPED_in\n' | incs proxy add --service github proj work --token >/dev/null 2>&1
+incs proxy add --service github keep work >/dev/null 2>&1
 ph="$(cfg proj environment.GH_TOKEN)"
 out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "rm: succeeds" "0" "$rc"
@@ -742,7 +757,7 @@ assert_eq "rm: tag is cleared" "" "$(cfg proj user.incs.proxy)"
 
 out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "rm: a container with no proxy is refused" "1" "$rc"
-incs proxy add keep work >/dev/null 2>&1
+incs proxy add --service github keep work >/dev/null 2>&1
 out="$(incs proxy rm keep proj 2>&1)" && rc=0 || rc=$?
 assert_eq "rm: a second container name is refused" "1" "$rc"
 assert_eq "rm: …and nothing is detached" "work" "$(cfg keep user.incs.proxy)"
@@ -753,7 +768,7 @@ assert_eq "rm: unknown container is refused" "1" "$rc"
 fresh_state
 make_proxy work
 make_agent proj
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 incus delete --force work
 out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "rm with the proxy gone: succeeds" "0" "$rc"
@@ -762,11 +777,32 @@ assert_eq "rm with the proxy gone: placeholder is removed" "" "$(cfg proj enviro
 assert_not_contains "rm with the proxy gone: proxy settings are removed" \
   "HTTPS_PROXY" "$(cat "$(fs proj "$ZSHENV")")"
 
+# Incus cannot say whether the proxy exists (daemon down, transient error).
+# That is not the proxy being gone: the placeholder may still be honored, so
+# rm must fail and keep the container's record of it, or nothing could find
+# and revoke the entry later.
+fresh_state
+make_proxy work
+make_agent proj
+printf 'github_pat_TYPED_in\n' | incs proxy add --service github proj work --token >/dev/null 2>&1
+ph="$(cfg proj environment.GH_TOKEN)"
+out="$(FAKE_INCUS_FAIL_CALL='^list \^work\$ ' incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm, Incus unreachable: fails" "1" "$rc"
+assert_contains     "rm, Incus unreachable: says the container is still attached" "still attached" "$out"
+assert_not_contains "rm, Incus unreachable: does not report a detach" "Detached" "$out"
+assert_eq "rm, Incus unreachable: tag is kept, so rm can be run again" "work" "$(cfg proj user.incs.proxy)"
+assert_eq "rm, Incus unreachable: container side is left as it was" "$ph" "$(cfg proj environment.GH_TOKEN)"
+assert_contains "rm, Incus unreachable: the proxy still has the entry" "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
+assert_eq "rm once Incus answers: succeeds" "0" "$rc"
+assert_not_contains "rm once Incus answers: placeholder is revoked" "$ph" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_eq "rm once Incus answers: tag is cleared" "" "$(cfg proj user.incs.proxy)"
+
 # The proxy cannot revoke (broken, disk error): rm must not claim it did.
 fresh_state
 make_proxy work
 make_agent proj
-printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
+printf 'github_pat_TYPED_in\n' | incs proxy add --service github proj work --token >/dev/null 2>&1
 ph="$(cfg proj environment.GH_TOKEN)"
 out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild drop' incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "rm, proxy cannot revoke: fails" "1" "$rc"
@@ -784,7 +820,7 @@ assert_eq "rm run again: tag is cleared" "" "$(cfg proj user.incs.proxy)"
 fresh_state
 make_proxy work
 make_agent proj
-printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
+printf 'github_pat_TYPED_in\n' | incs proxy add --service github proj work --token >/dev/null 2>&1
 ph="$(cfg proj environment.GH_TOKEN)"
 token_path="$(fs work /etc/iron-proxy/tokens/proj--github)"
 rm -f "$token_path" && mkdir "$token_path"
@@ -826,13 +862,13 @@ printf 'proxy:\n  tunnel_listen: "0.0.0.0:8888"\ntransforms:\n  - name: secrets\
 # Two more containers on it: one attached the old way, one not attached.
 make_agent oldway; make_agent bystander
 incus config set oldway user.incs.proxy=work
-out="$(incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 ph="$(cfg proj environment.GH_TOKEN)"
 assert_eq "older proxy: add succeeds" "0" "$rc"
 assert_contains "older proxy: says which containers must be re-attached" "re-attached: oldway" "$out"
 assert_not_contains "older proxy: …and not the one being attached" "re-attached: proj" "$out"
 assert_not_contains "older proxy: …nor unattached containers" "bystander" "$out"
-out2="$(incs proxy add proj work 2>&1)"
+out2="$(incs proxy add --service github proj work 2>&1)"
 assert_not_contains "older proxy: the notice is given once" "re-attached" "$out2"
 ph="$(cfg proj environment.GH_TOKEN)"   # the second add rotated it
 assert_not_contains "older proxy: add closes the tunnel port" \
@@ -851,11 +887,11 @@ old_tunnel_base() {
 }
 old_tunnel_base | incus file push - work/etc/iron-proxy/base.yaml
 old_tunnel_base | incus file push - work/etc/iron-proxy/proxy.yaml
-out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild commit' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild commit' incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_eq "older proxy, attach fails partway: exits non-zero" "1" "$rc"
 assert_not_contains "older proxy, attach fails partway: the running config has no tunnel port" \
   "tunnel_listen" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
-out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild$' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild$' incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_eq "older proxy already migrated: no extra restart is needed" "0" "$rc"
 
 # The proxy cannot be restarted on its new config: say the port may be open.
@@ -863,7 +899,7 @@ fresh_state
 make_proxy work
 make_agent proj
 old_tunnel_base | incus file push - work/etc/iron-proxy/base.yaml
-out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild$' incs proxy add proj work 2>&1)" && rc=0 || rc=$?
+out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild$' incs proxy add --service github proj work 2>&1)" && rc=0 || rc=$?
 assert_eq "older proxy that cannot restart: attach fails" "1" "$rc"
 assert_contains "older proxy that cannot restart: says the old port may still be open" \
   "old port may still be open" "$out"
@@ -871,7 +907,7 @@ assert_contains "older proxy that cannot restart: says the old port may still be
 fresh_state
 make_proxy work
 make_agent proj
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 ph="$(cfg proj environment.GH_TOKEN)"
 old_helper | incus file push - work/usr/local/bin/iron-rebuild
 old_tunnel_base | incus file push - work/etc/iron-proxy/base.yaml
@@ -888,7 +924,7 @@ fresh_state
 FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
 make_agent proj
 printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 printf 'sk-REAL\n' | incs proxy add proj work --service openai --env OPENAI_API_KEY --host api.openai.com --token >/dev/null 2>&1
 gh_ph="$(cfg proj environment.GH_TOKEN)"
 ph="$(cfg proj environment.OPENAI_API_KEY)"
@@ -928,8 +964,8 @@ fresh_state
 make_proxy work
 make_agent proj
 printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
-incs proxy add proj work >/dev/null 2>&1
-incs proxy add proj work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
+incs proxy add --service openai-api-key proj work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
 out="$(incs proxy rm proj 2>&1)" && rc=0 || rc=$?
 assert_eq "rm with several services: succeeds" "0" "$rc"
 assert_eq "rm with several services: the proxy honors none of them" \
@@ -946,7 +982,7 @@ assert_eq "rm with several services: tag is cleared" "" "$(cfg proj user.incs.pr
 fresh_state
 make_proxy work
 make_agent proj
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 ph="$(cfg proj environment.GH_TOKEN)"
 incus config unset proj user.incs.proxy-services
 printf 'export EDITOR=nvim\nexport GH_TOKEN=%s # incs-proxy\nexport HTTPS_PROXY=http://10.99.0.7:8888 # incs-proxy\n' "$ph" \
@@ -967,8 +1003,8 @@ assert_contains "list: says so when there are none" "No proxies" "$out"
 FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
 make_proxy idle
 make_agent proj; make_agent other; make_agent loner
-incs proxy add proj work >/dev/null 2>&1
-incs proxy add other work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
+incs proxy add --service github other work >/dev/null 2>&1
 out="$(incs proxy list 2>&1)"
 work_line="$(grep -E '^work\b' <<<"$out" || true)"
 idle_line="$(grep -E '^idle\b' <<<"$out" || true)"
@@ -988,7 +1024,7 @@ fresh_state
 make_proxy work
 make_agent proj
 printf 'export EDITOR=nvim\n' | incus file push -p - "proj$ZSHENV"
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 
 make_proxy other
 out="$(incs proxy delete work --force other 2>&1)" && rc=0 || rc=$?
@@ -1011,7 +1047,7 @@ assert_eq "delete --force: container no longer points at a dead proxy" \
 fresh_state
 make_proxy work
 make_agent proj
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 out="$(FAKE_INCUS_FAIL_EXEC='^update-ca-certificates' incs proxy delete work --force 2>&1)" && rc=0 || rc=$?
 assert_eq "delete --force, cleanup fails partway: proxy is still deleted" "" "$(incus list '^work$' --format csv --columns n)"
 assert_contains "delete --force, cleanup fails partway: says so" "incs proxy rm proj" "$out"
@@ -1034,8 +1070,8 @@ echo "incs -d (container delete hook)"
 fresh_state
 make_proxy work
 make_agent proj; make_agent keep; make_agent plain
-printf 'github_pat_TYPED_in\n' | incs proxy add proj work --token >/dev/null 2>&1
-incs proxy add keep work >/dev/null 2>&1
+printf 'github_pat_TYPED_in\n' | incs proxy add --service github proj work --token >/dev/null 2>&1
+incs proxy add --service github keep work >/dev/null 2>&1
 ph="$(cfg proj environment.GH_TOKEN)"
 
 out="$(incs -d proj 2>&1)" && rc=0 || rc=$?
@@ -1047,7 +1083,7 @@ assert_eq "incs -d: its stored token is deleted from the proxy" \
 assert_contains "incs -d: other containers keep their entries" "op://agent-tokens/keep/credential" "$built"
 
 make_agent survivor
-printf 'github_pat_KEEP\n' | incs proxy add survivor work --token >/dev/null 2>&1
+printf 'github_pat_KEEP\n' | incs proxy add --service github survivor work --token >/dev/null 2>&1
 out="$(FAKE_INCUS_FAIL_CALL='^delete --force survivor$' incs -d survivor 2>&1)" && rc=0 || rc=$?
 assert_eq "incs -d, delete fails: reports failure" "1" "$([[ $rc -ne 0 ]] && echo 1 || echo 0)"
 assert_eq "incs -d, delete fails: container keeps its proxy" "work" "$(cfg survivor user.incs.proxy)"
@@ -1067,9 +1103,24 @@ assert_eq "incs -d: the proxy survives" "work" "$(incus list '^work$' --format c
 # The proxy cannot be updated (e.g. it is broken): the delete must still happen.
 out="$(FAKE_INCUS_FAIL_EXEC='^iron-rebuild' incs -d keep 2>&1)" && rc=0 || rc=$?
 assert_eq "incs -d: proxy update failure does not block the delete" "" "$(incus list '^keep$' --format csv --columns n)"
+
 assert_contains "incs -d: …but is reported" "proxy" "$out"
 assert_contains "incs -d: …with the command that revokes the placeholder" \
   "iron-rebuild drop keep--github" "$out"
+
+# Incus cannot say whether the shared proxy still exists. The delete still
+# happens, but the hook must not pass that off as a revocation.
+make_agent flaky
+printf 'github_pat_FLAKY\n' | incs proxy add --service github flaky work --token >/dev/null 2>&1
+out="$(FAKE_INCUS_FAIL_CALL='^list \^work\$ ' incs -d flaky 2>&1)" && rc=0 || rc=$?
+assert_eq "incs -d, Incus cannot check the proxy: container is still deleted" "" "$(incus list '^flaky$' --format csv --columns n)"
+assert_contains "incs -d, Incus cannot check the proxy: warns the placeholder may still work" "may still work" "$out"
+assert_contains "incs -d, Incus cannot check the proxy: names the revoke command" "iron-rebuild drop flaky--github" "$out"
+assert_not_contains "incs -d, Incus cannot check the proxy: does not claim removal" "Removed flaky from proxy" "$out"
+assert_eq "incs -d, Incus cannot check the proxy: the entry is kept for the manual revoke" \
+  "present" "$([[ -f "$(fs work /etc/iron-proxy/entries/flaky--github.yaml)" ]] && echo present || echo gone)"
+assert_eq "incs -d, Incus cannot check the proxy: …and its token" \
+  "github_pat_FLAKY" "$(cat "$(fs work /etc/iron-proxy/tokens/flaky--github)" 2>/dev/null; echo)"
 
 # ===========================================================================
 echo "concurrent changes to one proxy"
@@ -1078,7 +1129,7 @@ if command -v flock >/dev/null 2>&1; then
   fresh_state
   make_proxy work
   make_agent proj
-  incs proxy add proj work >/dev/null 2>&1
+  incs proxy add --service github proj work >/dev/null 2>&1
   lockdir="$(fs work /etc/iron-proxy)"
   # Another attach or detach is mid-rebuild and holds the lock.
   flock "$lockdir/.rebuild.lock" -c 'sleep 2' &
@@ -1099,13 +1150,13 @@ fi
 fresh_state
 make_proxy work
 make_agent proj; make_agent other
-incs proxy add proj work >/dev/null 2>&1
+incs proxy add --service github proj work >/dev/null 2>&1
 printf '        - source:\n            type: HALF-WRITTEN' \
   | incus file push -p - work/etc/iron-proxy/entries/other--github.yaml.new
 incus exec work -- iron-rebuild
 assert_not_contains "a half-uploaded entry is not published by someone else's rebuild" \
   "HALF-WRITTEN" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
-incs proxy add other work >/dev/null 2>&1
+incs proxy add --service github other work >/dev/null 2>&1
 built="$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
 assert_contains     "the finished upload is published" "op://agent-tokens/other/credential" "$built"
 assert_not_contains "…and replaces the cut-off one"    "HALF-WRITTEN" "$built"
@@ -1175,13 +1226,13 @@ make_agent proj
 assert_eq "new: records that 1Password is configured"     "true"  "$(cfg with1p user.incs.proxy-1password)"
 assert_eq "new: records that 1Password is not configured" "false" "$(cfg bare user.incs.proxy-1password)"
 
-out="$(incs proxy add proj bare 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj bare 2>&1)" && rc=0 || rc=$?
 assert_eq "add without --token is refused when the proxy cannot read a vault" "1" "$rc"
 assert_contains "…and says to use --token" "--token" "$out"
 assert_eq "…and leaves the container unattached" "" "$(cfg proj user.incs.proxy)"
-out="$(incs proxy add proj bare --ref op://v/i/f 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github proj bare --ref op://v/i/f 2>&1)" && rc=0 || rc=$?
 assert_eq "--ref is refused when the proxy cannot read a vault" "1" "$rc"
-out="$(printf 'github_pat_x\n' | incs proxy add proj bare --token 2>&1)" && rc=0 || rc=$?
+out="$(printf 'github_pat_x\n' | incs proxy add --service github proj bare --token 2>&1)" && rc=0 || rc=$?
 assert_eq "--token works on such a proxy" "0" "$rc"
 
 # ===========================================================================
@@ -1237,6 +1288,19 @@ assert_contains "dry-run describes the default proxy" "preview-proxy (empty)" "$
 assert_eq "dry-run creates nothing" "" "$(incus list --format csv --columns n)"
 out="$(run_init preview --dry-run --no-proxy 2>&1)"
 assert_contains "dry-run shows opt-out" "Proxy:       none" "$out"
+# A template build gets no proxy unless asked for one.
+out="$(run_init base --dry-run --template 2>&1)"
+assert_contains "template build: no proxy by default" "Proxy:       none" "$out"
+out="$(run_init base --dry-run --template --proxy 2>&1)"
+assert_contains "template build: --proxy opts back in" "base-proxy (empty)" "$out"
+out="$(run_init base --dry-run --proxy --template 2>&1)"
+assert_contains "template build: --proxy works in either order" "base-proxy (empty)" "$out"
+out="$(run_init base --dry-run --template --no-proxy 2>&1)"
+assert_contains "template build: --no-proxy is still accepted" "Proxy:       none" "$out"
+out="$(incs -t base --no-tui --dry-run 2>&1)" && rc=0 || rc=$?
+assert_eq "incs -t: a shortcut for incs -i --template" "0" "$rc"
+assert_contains "incs -t: saves a template" "Template:    incus-init/base" "$out"
+assert_contains "incs -t: no proxy" "Proxy:       none" "$out"
 
 fresh_state
 mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"
@@ -1267,7 +1331,7 @@ fresh_state
 run_init proj > "$SANDBOX/out" 2>&1
 echo CERT > "$(fs proj-proxy /etc/iron-proxy/ca.crt)"
 printf '127.0.0.1 localhost\n' | incus file push -p - proj/etc/hosts
-printf 'github_pat_LATER\n' | incs proxy add proj --token > "$SANDBOX/out" 2>&1
+printf 'github_pat_LATER\n' | incs proxy add --service github proj --token > "$SANDBOX/out" 2>&1
 assert_eq "add infers the owned proxy" "proj-proxy" "$(cfg proj user.incs.proxy)"
 assert_eq "key is stored in the proxy" "github_pat_LATER" "$(cat "$(fs proj-proxy /etc/iron-proxy/tokens/proj--github)")"
 assert_not_contains "agent receives only a placeholder" "github_pat_LATER" "$(cfg proj environment.GH_TOKEN)"
@@ -1285,7 +1349,7 @@ printf 'github:\n' > "$SANDBOX/default-services.yaml"
 incs proxy apply proj "$SANDBOX/default-services.yaml" >/dev/null
 assert_contains "apply infers the owned proxy and configured vault" "op://later-vault/proj/credential" "$(cat "$(fs proj-proxy /etc/iron-proxy/entries/proj--github.yaml)")"
 make_agent other
-out="$(incs proxy add other proj-proxy 2>&1)" && rc=0 || rc=$?
+out="$(incs proxy add --service github other proj-proxy 2>&1)" && rc=0 || rc=$?
 assert_eq "owned proxies cannot be shared" "1" "$rc"
 assert_eq "rejected sharing leaves other unattached" "" "$(cfg other user.incs.proxy)"
 
@@ -1397,12 +1461,17 @@ assert_contains "dry-run with --gh-token: GitHub goes to the proxy" "preview-pro
 echo "templates (incs -i --template)"
 # ===========================================================================
 # save_template lives in incus.init, which cannot be sourced without running.
-# Pull the function out and run it against the fake.
+# Pull the function out, with the Tailscale stash/restore it calls, and run it
+# against the fake.
 save_template_src="$(awk '
-  /^(save_template|stash_tailscale_state|restore_tailscale_state)\(\)/ {capture=1}
+  /^(save_template|private_runtime_dir|stash_tailscale_state|restore_tailscale_state)\(\)/ {capture=1}
   capture {print}
   capture && /^}/ {capture=0}
 ' "$REPO_ROOT/incus.init")"
+# The stash holds the node key only in a private, memory-backed directory.
+TS_RUNDIR="$(mktemp -d /dev/shm/incs-test.XXXXXX)"
+trap 'rm -rf "$SANDBOX" "$TS_RUNDIR"' EXIT
+export XDG_RUNTIME_DIR="$TS_RUNDIR"
 
 run_save_template() {
   local container="$1"
@@ -1423,8 +1492,8 @@ fresh_state
 make_proxy work
 make_agent base
 printf 'export EDITOR=nvim\n' | incus file push -p - "base$ZSHENV"
-incs proxy add base work >/dev/null 2>&1
-incs proxy add base work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
+incs proxy add --service github base work >/dev/null 2>&1
+incs proxy add --service openai-api-key base work --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
 ph="$(cfg base environment.GH_TOKEN)"
 ph_openai="$(cfg base environment.OPENAI_API_KEY)"
 run_save_template base >/dev/null 2>&1 && rc=0 || rc=$?
@@ -1451,7 +1520,7 @@ assert_contains "template: …and their /etc/hosts lines" \
 fresh_state
 make_proxy work
 make_agent base
-incs proxy add base work >/dev/null 2>&1
+incs proxy add --service github base work >/dev/null 2>&1
 ph="$(cfg base environment.GH_TOKEN)"
 rm -f "$(fs base /etc/hosts)"
 out="$( (
@@ -1468,6 +1537,134 @@ assert_eq "template, /etc/hosts unreadable: no image is published" \
   "none" "$([[ -d "$FAKE_INCUS_STATE/images/incus-init/base" ]] && echo published || echo none)"
 assert_contains "template, /etc/hosts unreadable: the container keeps its placeholder" \
   "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
+
+# The Tailscale stash refuses (tailscaled will not stop): nothing else in the
+# builder may have been scrubbed by then.
+fresh_state
+make_proxy work
+make_agent base
+incs proxy add --service github base work >/dev/null 2>&1
+ph="$(cfg base environment.GH_TOKEN)"
+mkdir -p "$(fs base /var/lib/tailscale)" "$FAKE_INCUS_STATE/still-active"
+echo NODE-KEY > "$(fs base /var/lib/tailscale/tailscaled.state)"
+touch "$FAKE_INCUS_STATE/still-active/tailscaled"
+out="$( (
+  error() { echo "[ERROR] $1" >&2; exit 1; }
+  log()  { :; }; warn() { :; }; wait_for_container() { :; }; wait_for_network() { :; }
+  set -euo pipefail
+  CONTAINER_NAME=base HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1 TS_STATE_BACKUP=""
+  eval "$save_template_src"
+  save_template
+) 2>&1)" && rc=0 || rc=$?
+assert_eq "template, stash refuses: save fails" "1" "$rc"
+assert_contains "template, stash refuses: says why" "Could not stop tailscaled" "$out"
+assert_contains "template, stash refuses: the builder keeps its placeholder" \
+  "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
+assert_contains "template, stash refuses: …and its /etc/hosts lines" \
+  "# incs-proxy:github" "$(hosts_of base)"
+
+# The Tailscale restore fails after publishing: the builder still gets its
+# placeholder and /etc/hosts lines back, since the exit trap only retries
+# Tailscale.
+fresh_state
+make_proxy work
+make_agent base
+incs proxy add --service github base work >/dev/null 2>&1
+ph="$(cfg base environment.GH_TOKEN)"
+mkdir -p "$(fs base /var/lib/tailscale)"
+echo NODE-KEY > "$(fs base /var/lib/tailscale/tailscaled.state)"
+out="$( (
+  error() { echo "[ERROR] $1" >&2; exit 1; }
+  log()  { :; }; warn() { :; }; wait_for_container() { :; }; wait_for_network() { :; }
+  set -euo pipefail
+  export FAKE_INCUS_FAIL_EXEC='^tar -C /var/lib -xf'
+  CONTAINER_NAME=base HOST_USER="$USER_NAME" CONTAINER_WORKSPACE="/workspace" READY_TIMEOUT=1 TS_STATE_BACKUP=""
+  eval "$save_template_src"
+  save_template
+) 2>&1)" && rc=0 || rc=$?
+assert_eq "template, Tailscale restore fails: save fails" "1" "$rc"
+assert_contains "template, Tailscale restore fails: says why" "Could not restore the Tailscale state" "$out"
+assert_contains "template, Tailscale restore fails: the builder gets its placeholder back" \
+  "export GH_TOKEN=$ph" "$(cat "$(fs base "$ZSHENV")")"
+assert_contains "template, Tailscale restore fails: …and its /etc/hosts lines" \
+  "# incs-proxy:github" "$(hosts_of base)"
+rm -f "$TS_RUNDIR"/incs-tailscale.*
+
+# ===========================================================================
+echo "git reaches GitHub over HTTPS"
+# ===========================================================================
+# The workspace copy keeps SSH remotes; github.com resolves to the proxy,
+# which only speaks HTTPS.
+fresh_state
+make_proxy work
+make_agent proj
+gitcfg="$(fs proj "/home/$USER_NAME/.gitconfig")"
+insteadof() { git config --file "$gitcfg" --get-all url.https://github.com/.insteadOf 2>/dev/null | sort | tr '\n' ' '; }
+mkdir -p "$(dirname "$gitcfg")"
+git config --file "$gitcfg" --add url.https://github.com/.insteadOf gh:   # the user's own
+incs proxy add proj work --service github >/dev/null 2>&1
+assert_eq "attach: SSH GitHub URLs are rewritten to HTTPS, the user's own kept" \
+  "gh: git@github.com: ssh://git@github.com/ " "$(insteadof)"
+resolved() { HOME="$(dirname "$gitcfg")" GIT_CONFIG_NOSYSTEM=1 git ls-remote --get-url "$1"; }
+assert_eq "attach: git resolves an SSH remote to HTTPS" \
+  "https://github.com/MixTapeSoftware/agent_incus.git" "$(resolved git@github.com:MixTapeSoftware/agent_incus.git)"
+assert_eq "attach: …and an ssh:// remote" \
+  "https://github.com/o/r.git" "$(resolved ssh://git@github.com/o/r.git)"
+incs proxy add proj work --service github >/dev/null 2>&1
+assert_eq "re-attach: no duplicates" "gh: git@github.com: ssh://git@github.com/ " "$(insteadof)"
+incs proxy add proj work --service openai --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
+incs proxy rm proj --service openai >/dev/null 2>&1
+assert_eq "detaching another service leaves the rewrite" \
+  "gh: git@github.com: ssh://git@github.com/ " "$(insteadof)"
+incs proxy rm proj --service github >/dev/null 2>&1
+assert_eq "detaching GitHub removes only its rewrite" "gh: " "$(insteadof)"
+incs proxy add proj work --service github >/dev/null 2>&1
+incs proxy rm proj >/dev/null 2>&1
+assert_eq "detaching everything removes it too" "gh: " "$(insteadof)"
+
+# ===========================================================================
+echo "proxy info"
+# ===========================================================================
+fresh_state
+FAKE_INCUS_NEXT_IP=10.99.0.7 make_proxy work
+make_agent proj
+make_agent idle
+printf 'github_pat_INFO_secret\n' | incs proxy add --service github proj work --token >/dev/null 2>&1
+incs proxy add proj work --service openai --env OPENAI_API_KEY --host api.openai.com >/dev/null 2>&1
+gh_ph="$(cfg proj environment.GH_TOKEN)"
+out="$(incs proxy info work 2>&1)" && rc=0 || rc=$?
+assert_eq "info <proxy>: succeeds" "0" "$rc"
+assert_contains "info: the proxy and its address" "Proxy:   work" "$out"
+assert_contains "info: …its address" "10.99.0.7:443" "$out"
+assert_contains "info: each attached container" "proj" "$out"
+assert_contains "info: GitHub's variable" 'variable  $GH_TOKEN (a placeholder' "$out"
+assert_contains "info: GitHub's hosts" "hosts     api.github.com github.com uploads.github.com" "$out"
+assert_contains "info: a stored key says where it is" "key       stored in work" "$out"
+assert_contains "info: another API's variable" 'variable  $OPENAI_API_KEY (a placeholder' "$out"
+assert_contains "info: …its host" "hosts     api.openai.com" "$out"
+assert_contains "info: …its 1Password reference" "key       op://agent-tokens/proj/OPENAI_API_KEY" "$out"
+assert_not_contains "info: never prints a stored key" "github_pat_INFO_secret" "$out"
+assert_not_contains "info: never prints a placeholder" "$gh_ph" "$out"
+assert_not_contains "info: unattached containers are not listed" "idle" "$out"
+out2="$(incs proxy info proj 2>&1)" && rc=0 || rc=$?
+assert_eq "info <container>: succeeds" "0" "$rc"
+assert_contains "info <container>: shows its proxy" "Proxy:   work" "$out2"
+assert_contains "info <container>: shows its services" "openai" "$out2"
+out="$(incs proxy info idle 2>&1)" && rc=0 || rc=$?
+assert_eq "info, no proxy at all: refused" "1" "$rc"
+assert_contains "info, no proxy at all: says how to get one" "incs proxy new" "$out"
+# What incs -i leaves: an owned proxy with nothing attached yet.
+incus config set idle user.incs.owned-proxy=work
+out="$(incs proxy info idle 2>&1)" && rc=0 || rc=$?
+assert_eq "info, owned proxy, nothing attached: succeeds" "0" "$rc"
+assert_contains "info, owned proxy, nothing attached: names the proxy" "Proxy:   work" "$out"
+assert_contains "info, owned proxy, nothing attached: says no variables are set" "No variables set" "$out"
+assert_contains "info, owned proxy, nothing attached: says how to attach" "incs proxy add idle --service github" "$out"
+out="$(incs proxy info nope 2>&1)" && rc=0 || rc=$?
+assert_eq "info, unknown name: refused" "1" "$rc"
+make_proxy empty
+out="$(incs proxy info empty 2>&1)" && rc=0 || rc=$?
+assert_contains "info, nothing attached: says so" "No containers attached." "$out"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"

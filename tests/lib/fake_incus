@@ -15,6 +15,7 @@
 #   instances/<name>/root/etc/group   answers `getent group <name>`
 #   instances/<name>/root/etc/id-G    answers `id -G <user>` (absent: exit 1)
 #   instances/<name>/root/usr/bin/<tool>  answers `sh -c 'command -v <tool>'`
+#   still-active/tailscaled        tailscaled stays active after `systemctl stop`
 #   instances/<name>/profiles      profiles passed with -p at init/launch, one per line
 #   instances/<name>/stopped/<unit>   a unit `systemctl stop` stopped (cleared at start)
 #   images/<alias>/root/...        filesystem captured by `publish`
@@ -324,18 +325,23 @@ case "$cmd" in
         cat "$root/etc/id-G" 2>/dev/null || exit 1
         ;;
       "systemctl stop "*)
-        mkdir -p "$(inst_dir "$name")/stopped"
-        touch "$(inst_dir "$name")/stopped/${command_line##* }"
+        # A unit a test keeps running ignores the stop.
+        if [[ ! -f "$S/still-active/${command_line##* }" ]]; then
+          mkdir -p "$(inst_dir "$name")/stopped"
+          touch "$(inst_dir "$name")/stopped/${command_line##* }"
+        fi
         ;;
       "systemctl start "*) rm -f "$(inst_dir "$name")/stopped/${command_line##* }" ;;
       "systemctl is-active "*)
+        if [[ -f "$S/still-active/${command_line##* }" ]]; then echo active; exit 0; fi
         if [[ -f "$(inst_dir "$name")/stopped/${command_line##* }" ]]; then echo inactive; exit 3; fi
         echo active
         ;;
       # File checks and archive moves, against the fake filesystem.
       "sh -c test -"[df]" "*" && echo yes || echo no")
         set -- ${command_line#sh -c test }
-        if [[ ( "$1" == -d && -d "$root$2" ) || ( "$1" == -f && -f "$root$2" ) ]]; then echo yes; else echo no; fi
+        probe_path="${2//\'/}"   # the path may arrive single-quoted
+        if [[ ( "$1" == -d && -d "$root$probe_path" ) || ( "$1" == -f && -f "$root$probe_path" ) ]]; then echo yes; else echo no; fi
         ;;
       # A tool is installed when the fixture put it on a bin path.
       "sh -c command -v "*)
