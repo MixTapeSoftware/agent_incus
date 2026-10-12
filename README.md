@@ -649,6 +649,7 @@ incs proxy apply shared-client work services.yaml
 
 ```bash
 incs proxy list                            # proxies, addresses, and what each container has attached
+incs proxy refresh --all                   # bring proxies made by an older incs up to date
 incs proxy rm my-project --service stripe  # detach one service
 incs proxy rm my-project                   # detach everything; the placeholders stop working at once
 incs proxy delete work                     # refused while containers are attached, unless --force
@@ -662,6 +663,8 @@ incs proxy delete work                     # refused while containers are attach
 - Adds a line to the container's `/etc/hosts` that sends those hosts, and only those, to the proxy. Everything else connects directly, as before.
 - Installs the proxy's certificate authority in the container, since the proxy has to read HTTPS requests to rewrite them. Each proxy has its own authority.
 - Sets the variable to the placeholder, in the Incus environment and in `~/.zshenv`, replacing any real key already there.
+
+**What a proxy will forward.** Only requests for the hosts of its attached services; any other host gets a 403, placeholder or not. It never connects to private, shared or link-local addresses (10/8, 172.16/12, 192.168/16, 100.64/10, 169.254/16, loopback, and the IPv6 equivalents), whatever a hostname resolves to, so it is not a way into the host, the Incus bridge or your LAN. An API on a private address can't be attached. Its metrics endpoint listens on loopback only. `incs proxy info` shows the hosts a proxy allows. Proxies made by an older incs forward anywhere until attached to again or refreshed with `incs proxy refresh`.
 
 The proxy accepts connections from containers on one port, and that port speaks only TLS. A request has to arrive encrypted to be swapped, and it is forwarded encrypted. There is no way to make the proxy send a real key over plain HTTP.
 

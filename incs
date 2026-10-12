@@ -61,6 +61,7 @@ Credential proxy (real tokens stay out of containers; see: incs proxy help):
   proxy rm <container>           Detach a container's services
   proxy list                     Show proxies and attached containers
   proxy info <proxy|container>   Show what a proxy swaps in, and for which hosts
+  proxy refresh <proxy>|--all    Update proxies made by an older incs
   proxy new <name>               Create a shared proxy
   proxy delete <name>            Delete a proxy
 
