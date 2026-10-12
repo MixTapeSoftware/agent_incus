@@ -39,7 +39,7 @@ SOFTWARE.
 Source: https://github.com/obra/superpowers at commit
 `bb92a77741419a4ab5f06e711a283343f1ada0c3`.
 
-Skills: `brainstorming`, `diagnosing-superpowers`, `using-git-worktrees`,
+Skills: `brainstorming`, `diagnosing-superpowers`,
 `using-superpowers`, `verification-before-completion`, `writing-skills`.
 
 ```text

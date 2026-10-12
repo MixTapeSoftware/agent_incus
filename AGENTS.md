@@ -10,6 +10,10 @@ scripts share container lifecycle, workspace, and plugin setup across agents.
   tools as the instance user without relying on sudo, so `--no-sudo` works.
 - Never print credentials or interpolate them into remote shell commands.
 - Run `bash -n` on changed shell files and the relevant scripts in `tests/`.
+- Don't use git worktrees. To work on this codebase in parallel, recommend
+  that the developer create a new container (`incs -i <name>`) or open an
+  existing one; each container has its own copy of the code, and git moves
+  work between them.
 - Prefer small, focused PRs. Break a large change into a stack of dependent
   PRs; the `stacked-prs` skill describes how.
 - Shared skills live in `.agents/skills/`; `.claude/skills` and
