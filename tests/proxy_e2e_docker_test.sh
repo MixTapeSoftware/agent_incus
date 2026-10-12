@@ -229,6 +229,28 @@ start_proxy
 result "after_rm_a=$(via_proxy -H "Authorization: Bearer $PH_A")"
 result "after_rm_a_api=$(via_proxy -H "x-api-key: $PH_K")"
 result "after_rm_b_still_works=$(via_proxy -H "Authorization: Bearer $PH_B")"
+
+# Default deny: a host no entry names is refused, with or without a placeholder.
+code() { curl -s -o /dev/null -w '%{http_code}' --max-time 20 "$@"; }
+result "unlisted_host=$(code --resolve other.test:443:$PROXY_ADDR -H "Authorization: Bearer $PH_B" https://other.test/)"
+result "unlisted_host_bare=$(code --resolve other.test:443:$PROXY_ADDR https://other.test/)"
+
+# The deny list and the metrics bind come from the config itself: run once
+# more with only the listen address overridden. upstream.test resolves to
+# loopback here, which the config never lets the proxy dial.
+kill $PROXY_PID; wait $PROXY_PID 2>/dev/null || true
+IRON_PROXY_HTTPS_LISTEN=$PROXY_ADDR:443 \
+  /usr/local/bin/iron-proxy -config /etc/iron-proxy/proxy.yaml >/tmp/proxy-strict.log 2>&1 &
+PROXY_PID=$!
+for i in $(seq 1 50); do
+  if curl -s -o /dev/null --max-time 2 --resolve upstream.test:443:$PROXY_ADDR https://upstream.test/ 2>/dev/null; then break; fi
+  if ! kill -0 $PROXY_PID 2>/dev/null; then cat /tmp/proxy-strict.log; exit 1; fi
+  sleep 0.2
+done
+result "private_upstream=$(code --resolve upstream.test:443:$PROXY_ADDR -H "Authorization: Bearer $PH_B" https://upstream.test/)"
+rc=0; curl -s -o /dev/null --max-time 5 http://$PROXY_ADDR:9090/healthz || rc=$?
+result "metrics_off_loopback=$rc"
+result "metrics_on_loopback=$(code http://127.0.0.1:9090/healthz)"
 EOF
 
 echo "proxy end to end (docker, takes about a minute)"
@@ -266,6 +288,11 @@ assert_eq "detaching a removes its entries and stored keys" "0" "$(r after_rm_a_
 assert_eq "after detaching a, its other placeholder stops working too" "AUTH=|KEY=$PH_K" "$(r after_rm_a_api)"
 assert_eq "after detaching a, its placeholder stops working" "AUTH=Bearer $PH_A|KEY=" "$(r after_rm_a)"
 assert_eq "after detaching a, b is unaffected"            "AUTH=Bearer $REAL_B|KEY=" "$(r after_rm_b_still_works)"
+assert_eq "a host no service names is refused"             "403" "$(r unlisted_host)"
+assert_eq "…without a placeholder too"                     "403" "$(r unlisted_host_bare)"
+assert_eq "a private-address upstream is never dialed"     "502" "$(r private_upstream)"
+assert_eq "metrics are not reachable off loopback"         "7"   "$(r metrics_off_loopback)"
+assert_eq "metrics still answer on loopback"               "200" "$(r metrics_on_loopback)"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"

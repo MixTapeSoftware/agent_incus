@@ -1623,6 +1623,70 @@ incs proxy rm proj >/dev/null 2>&1
 assert_eq "detaching everything removes it too" "gh: " "$(insteadof)"
 
 # ===========================================================================
+echo "the proxy forwards only what it should"
+# ===========================================================================
+fresh_state
+make_proxy work
+make_agent proj
+incs proxy add proj work --service github >/dev/null 2>&1
+incs proxy add proj work --service openai --env OPENAI_API_KEY --host api.openai.com --host github.com >/dev/null 2>&1
+built="$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+allow="$(sed -n '/^  - name: allowlist$/,/^  - name: secrets$/p' <<< "$built")"
+assert_eq "allowlist: every attached host, once each, sorted" \
+  '        - "api.github.com"
+        - "api.openai.com"
+        - "github.com"
+        - "uploads.github.com"' "$(grep '^        - "' <<< "$allow")"
+assert_eq "allowlist: comes before the secrets" "1" \
+  "$(awk '/^  - name: allowlist$/ {a=NR} /^  - name: secrets$/ {s=NR} END {print (a && s && a < s) ? 1 : 0}' <<< "$built")"
+assert_eq "one transforms section" "1" "$(grep -c '^transforms:$' <<< "$built")"
+assert_contains "private ranges are never dialed" '    - "10.0.0.0/8"' "$built"
+assert_contains "…nor link-local (cloud metadata)" '    - "169.254.0.0/16"' "$built"
+assert_contains "…nor loopback, which the defaults covered" '    - "127.0.0.0/8"' "$built"
+assert_contains "…nor IPv6 private ranges" '    - "fc00::/7"' "$built"
+assert_contains "metrics stay on loopback" 'listen: "127.0.0.1:9090"' "$built"
+incs proxy rm proj --service openai >/dev/null 2>&1
+allow="$(sed -n '/^  - name: allowlist$/,/^  - name: secrets$/p' "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_not_contains "detaching a service drops its hosts" "api.openai.com" "$allow"
+assert_contains "…but keeps hosts another service still uses" '"github.com"' "$allow"
+incs proxy rm proj >/dev/null 2>&1
+assert_contains "nothing attached: nothing is forwarded" "      domains: []" "$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+out="$(incs proxy info work 2>&1)"
+assert_contains "info: says when a proxy forwards nowhere" "Allows:  none" "$out"
+incs proxy add proj work --service github >/dev/null 2>&1
+out="$(incs proxy info work 2>&1)"
+assert_contains "info: lists the hosts a proxy forwards to" \
+  "Allows:  api.github.com github.com uploads.github.com (every other host is refused)" "$out"
+
+# A proxy an older incs built: its base config still opens the secrets list,
+# and its rebuild script knows no allowlist.
+printf 'proxy:\n  https_listen: "0.0.0.0:443"\ntransforms:\n  - name: secrets\n    config:\n      secrets:\n' \
+  > "$(fs work /etc/iron-proxy/base.yaml)"
+printf '#!/bin/sh\ndir="${IRON_PROXY_DIR:-/etc/iron-proxy}"\ncat "$dir/base.yaml" "$dir"/entries/*.yaml > "$dir/proxy.yaml"\n' \
+  > "$(fs work /usr/local/bin/iron-rebuild)"
+incus exec work -- iron-rebuild >/dev/null 2>&1
+out="$(incs proxy info work 2>&1)"
+assert_contains "info: flags a proxy that forwards anywhere" "any host: made by an older incs. Run: incs proxy refresh work" "$out"
+make_proxy spare
+out="$(incs proxy refresh work 2>&1)" && rc=0 || rc=$?
+built="$(cat "$(fs work /etc/iron-proxy/proxy.yaml)")"
+assert_eq "refresh: succeeds" "0" "$rc"
+assert_contains "refresh: the old proxy now has an allowlist" "  - name: allowlist" "$built"
+assert_contains "refresh: …and the deny list" '    - "192.168.0.0/16"' "$built"
+assert_eq "refresh: one transforms section" "1" "$(grep -c '^transforms:$' <<< "$built")"
+assert_contains "refresh: the attached service keeps working" "proxy_value:" "$built"
+assert_contains "refresh: says what it allows now" "work allows: api.github.com github.com uploads.github.com" "$out"
+out="$(incs proxy refresh --all 2>&1)" && rc=0 || rc=$?
+assert_eq "refresh --all: succeeds" "0" "$rc"
+assert_contains "refresh --all: every proxy" "spare allows: none" "$out"
+assert_contains "refresh --all: …including attached ones" "work allows: api.github.com" "$out"
+out="$(incs proxy refresh proj 2>&1)" && rc=0 || rc=$?
+assert_eq "refresh of a container that is not a proxy: refused" "1" "$rc"
+assert_contains "refresh of a container: says why" "'proj' is not a proxy" "$out"
+out="$(incs proxy refresh 2>&1)" && rc=0 || rc=$?
+assert_eq "refresh with nothing named: refused" "1" "$rc"
+
+# ===========================================================================
 echo "proxy info"
 # ===========================================================================
 fresh_state

@@ -56,9 +56,17 @@ declare -F error >/dev/null || error() { echo -e "\033[0;31m[ERROR]\033[0m $1" >
 # Files installed into a proxy container
 # ---------------------------------------------------------------------------
 
-# Everything up to the (initially empty) secrets list. Per-container entries
-# are appended below it by iron-rebuild, so `secrets:` must stay last.
+# Where the proxy will not connect, whatever host a request names: the
+# iron-proxy defaults (cloud metadata, loopback) plus private, shared and
+# link-local ranges. A proxy forwards to public APIs only; it is never a path
+# into the host, the Incus bridge or the LAN. Setting the list replaces the
+# defaults, so they are repeated here.
+PROXY_UPSTREAM_DENY_CIDRS="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.168.0.0/16 ::1/128 fc00::/7 fe80::/10"
+
+# Everything but the transforms, which iron-rebuild writes: an allowlist of
+# every attached service's hosts, then the secrets.
 proxy_base_config() {
+  local cidr
   cat <<EOF
 # Managed by incs. Edit entries/*.yaml, not proxy.yaml, then run iron-rebuild.
 dns:
@@ -69,15 +77,20 @@ proxy:
   # swapped on a request that arrived over TLS and leaves over TLS.
   http_listen: "127.0.0.1:18080"
   https_listen: "0.0.0.0:$PROXY_PORT"
+  upstream_deny_cidrs:
+EOF
+  for cidr in $PROXY_UPSTREAM_DENY_CIDRS; do
+    echo "    - \"$cidr\""
+  done
+  cat <<EOF
 tls:
   ca_cert: $PROXY_DIR/ca.crt
   ca_key: $PROXY_DIR/ca.key
+# Metrics cannot be turned off; keep them off the network.
+metrics:
+  listen: "127.0.0.1:9090"
 log:
   level: info
-transforms:
-  - name: secrets
-    config:
-      secrets:
 EOF
 }
 
@@ -140,7 +153,27 @@ case "${1:-}" in
 esac
 tmp="$(mktemp "$dir/proxy.yaml.XXXXXX")"
 trap 'rm -f "$tmp"' EXIT
-cat "$dir/base.yaml" > "$tmp"
+# An older base.yaml carried the start of the transforms itself; drop it.
+sed '/^transforms:/,$d' "$dir/base.yaml" > "$tmp"
+# Default deny: the proxy forwards only to hosts some entry names. Hosts were
+# checked to be [A-Za-z0-9.-] before they were written, so they quote safely.
+hosts="$(for f in "$dir"/entries/*.yaml; do
+  if [ -f "$f" ]; then sed -n 's/^ *- host: "\(.*\)"$/\1/p' "$f"; fi
+done | sort -u)"
+{
+  echo "transforms:"
+  echo "  - name: allowlist"
+  echo "    config:"
+  if [ -z "$hosts" ]; then
+    echo "      domains: []"
+  else
+    echo "      domains:"
+    printf '%s\n' "$hosts" | sed 's/.*/        - "&"/'
+  fi
+  echo "  - name: secrets"
+  echo "    config:"
+  echo "      secrets:"
+} >> "$tmp"
 for f in "$dir"/entries/*.yaml; do
   if [ -f "$f" ]; then cat "$f" >> "$tmp"; fi
 done
@@ -1357,6 +1390,57 @@ proxy_cmd_list() {
   done <<< "$rows"
 }
 
+# The hosts a proxy will forward to, from the config it actually runs. A proxy
+# built by an older incs has no allowlist and forwards anywhere.
+proxy_allowed_hosts() {
+  local config hosts
+  config="$(incus file pull -q "$1$PROXY_DIR/proxy.yaml" - 2>/dev/null)" || {
+    echo "unknown (could not read its config)"; return 0; }
+  if ! grep -q '^  - name: allowlist$' <<< "$config"; then
+    echo "any host: made by an older incs. Run: incs proxy refresh $1"
+    return 0
+  fi
+  hosts="$(sed -n '/^  - name: allowlist$/,/^  - name: /s/^        - "\(.*\)"$/\1/p' <<< "$config" | tr '\n' ' ')"
+  echo "${hosts:-none}${hosts:+(every other host is refused)}"
+}
+
+# ---------------------------------------------------------------------------
+# incs proxy refresh <proxy>... | --all
+# Bring proxies made by an older incs up to the current base config and
+# rebuild script, then rebuild. Attaching a container does the same for its
+# proxy; this covers proxies nothing is being attached to.
+# ---------------------------------------------------------------------------
+proxy_cmd_refresh() {
+  local usage="Usage: incs proxy refresh <proxy>... | --all" names=() name
+  [[ $# -gt 0 ]] || error "$usage"
+  if [[ "$1" == "--all" ]]; then
+    [[ $# -eq 1 ]] || error "$usage"
+    while IFS= read -r name; do
+      [[ -n "$name" ]] && names+=("$name")
+    done < <(proxy_names)
+    if [[ ${#names[@]} -eq 0 ]]; then
+      echo "No proxies."
+      return 0
+    fi
+  else
+    names=("$@")
+  fi
+  for name in "${names[@]}"; do
+    [[ "$name" != -* ]] || error "$usage"
+    proxy_instance_exists "$name" || error "Proxy not found: $name"
+    proxy_is_proxy "$name" || error "'$name' is not a proxy"
+  done
+  for name in "${names[@]}"; do
+    log "Refreshing proxy '$name'..."
+    proxy_ensure_running "$name"
+    proxy_sync_rebuild_script "$name"
+    proxy_sync_base_config "$name" ""
+    incus exec "$name" -- iron-rebuild </dev/null || \
+      error "Could not rebuild proxy '$name'. Fix it, then run: incus exec $name -- iron-rebuild"
+    echo "  $name allows: $(proxy_allowed_hosts "$name")"
+  done
+}
+
 # ---------------------------------------------------------------------------
 # incs proxy info <proxy|container>
 # What a proxy is set up to do: for each attached container, the variable
@@ -1388,6 +1472,7 @@ proxy_cmd_info() {
   echo "Address: ${ip:+$ip:$PROXY_PORT}"
   echo "Owner:   ${owner:-none (shared)}"
   echo "Keys:    $keys"
+  echo "Allows:  $(proxy_allowed_hosts "$proxy")"
 
   local c pair service env spec source hosts
   if [[ -z "$containers" ]]; then
@@ -1536,6 +1621,9 @@ Commands:
   info <proxy|container>           Show a proxy's setup: per container, the
                                    placeholder variables, the hosts each key
                                    may reach and where each key comes from
+  refresh <proxy>... | --all       Update proxies made by an older incs to the
+                                   current config (only attached services'
+                                   hosts are forwarded; private ranges never)
   delete <name> [--force]          Delete a proxy. Refused while containers
                                    are attached unless --force.
 
@@ -1577,6 +1665,7 @@ proxy_main() {
     apply)          proxy_cmd_apply "$@" ;;
     rm|remove)      proxy_cmd_rm "$@" ;;
     list|ls)        proxy_cmd_list ;;
+    refresh)        proxy_cmd_refresh "$@" ;;
     info|show)      proxy_cmd_info "$@" ;;
     delete)         proxy_cmd_delete "$@" ;;
     ""|-h|--help|help) proxy_usage ;;
