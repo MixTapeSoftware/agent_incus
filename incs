@@ -1,7 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve symlinks: install_shortcuts links incs into ~/.local/bin, and sibling
+# scripts must be found next to the real file, not next to the link. macOS 12
+# and earlier have no realpath, so fall back to following the links by hand.
+_incs_resolve() {
+  if command -v realpath >/dev/null 2>&1; then realpath "$1"; return; fi
+  local p="$1" link
+  while [[ -L "$p" ]]; do
+    link="$(readlink "$p")"
+    case "$link" in /*) p="$link" ;; *) p="$(dirname "$p")/$link" ;; esac
+  done
+  echo "$p"
+}
+SCRIPT_DIR="$(cd "$(dirname "$(_incs_resolve "${BASH_SOURCE[0]}")")" && pwd)"
+# shellcheck source=incus.prompt
+source "$SCRIPT_DIR/incus.prompt"
 
 GREEN='\033[0;32m'
 RED='\033[0;31m'
@@ -21,7 +35,8 @@ Usage: incs [command] [args...]
 
 Commands:
   <container>                    Shell into container (default)
-  -s, shell <container> [cmd]    Shell into container
+  -s, shell [--with-sudo] <container> [cmd]
+                                 Shell into container (--with-sudo grants temporary sudo)
   -i, init [args...]             Create/provision a new container
   -n, net <container> [ports...] Manage port proxies
   -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)
@@ -205,8 +220,7 @@ cmd_set_env() {
   fi
 
   local value
-  read -rsp "Enter value for $var_name (input hidden, paste ok): " value
-  echo ""
+  read_secret value "Enter value for $var_name (input hidden, paste ok): "
   [[ -z "$value" ]] && error "Value required"
 
   incus config set "$container" "environment.$var_name=$value"

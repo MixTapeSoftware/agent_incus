@@ -9,8 +9,7 @@ plugin_prompt() {
   echo ""
   log "1Password CLI requires a service account token"
   echo "Create one at: https://start.1password.com/settings/automation"
-  read -rsp "Enter token: " ONEPASSWORD_SERVICE_KEY
-  echo ""
+  read_secret ONEPASSWORD_SERVICE_KEY "Enter token: "
   if [[ -z "$ONEPASSWORD_SERVICE_KEY" ]]; then error "Token required"; fi
 }
 
