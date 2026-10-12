@@ -175,6 +175,47 @@ assert_eq "no tailscaled: the host copy of the key is gone" "0" "$(backups)"
 assert_contains "no tailscaled: says how to start it" "systemctl start tailscaled" "$OUT"
 assert_not_contains "no tailscaled: does not point at a deleted backup" "incs-tailscale." "$OUT"
 
+# ===========================================================================
+echo "publish fails during a template build"
+# ===========================================================================
+# The real tail of incus.init: the trap hand-over after the build, then
+# save_template. A failed publish must still put the state back.
+{
+  echo 'set -euo pipefail'
+  echo 'log()  { echo "[+] $1"; }'
+  echo 'warn() { echo "[!] $1"; }'
+  echo 'error(){ echo "[ERROR] $1" >&2; exit 1; }'
+  echo 'wait_for_container() { :; }'
+  echo 'wait_for_network() { :; }'
+  for fn in stash_tailscale_state restore_tailscale_state warn_tailscale_backup \
+            template_cleanup_on_exit cleanup_on_exit save_template; do
+    extract_fn "$fn"
+  done
+  echo 'CONTAINER_NAME=box; HOST_USER=dev; CONTAINER_WORKSPACE=/workspace'
+  echo 'SAVE_TEMPLATE=1; READY_TIMEOUT=2; TS_STATE_BACKUP=""; BUILD_SUDO_GRANTED=0'
+  echo 'revoke_build_sudo() { :; }'
+  grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/incus.init"
+  awk '/^# Disable cleanup trap on success/ {c=1} /^# Done/ {exit} c' "$REPO_ROOT/incus.init"
+  awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/incus.init"
+} > "$SANDBOX/template-build.sh"
+assert_contains "harness: found the trap hand-over" "trap template_cleanup_on_exit EXIT" "$(cat "$SANDBOX/template-build.sh")"
+assert_contains "harness: found the publish step" "save_template" "$(awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/incus.init")"
+
+fresh_box
+FAKE_INCUS_FAIL_CALL='^publish box' bash "$SANDBOX/template-build.sh" > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?
+OUT="$(cat "$SANDBOX/out")"
+assert_eq "publish fails: the build fails" "1" "$RC"
+assert_eq "publish fails: the container is running again" "RUNNING" "$(cat "$FAKE_INCUS_STATE/instances/box/status")"
+assert_eq "publish fails: the node key is back" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state" 2>/dev/null)"
+assert_eq "publish fails: the host copy of the key is gone" "0" "$(backups)"
+assert_not_contains "publish fails: the finished container is not offered for deletion" "Delete it?" "$OUT"
+
+fresh_box
+bash "$SANDBOX/template-build.sh" > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?
+assert_eq "publish succeeds: the build succeeds" "0" "$RC"
+assert_eq "publish succeeds: the image has no Tailscale state" "gone" "$(present "$(image)/var/lib/tailscale")"
+assert_eq "publish succeeds: the node key is back" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state" 2>/dev/null)"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [[ $FAIL -eq 0 ]]

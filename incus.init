@@ -135,6 +135,23 @@ revoke_build_sudo() {
   BUILD_SUDO_GRANTED=0
 }
 
+warn_tailscale_backup() {
+  warn "Tailscale state for '$CONTAINER_NAME' is in ${TS_STATE_BACKUP:-} (it holds the node key: keep it private).
+  Restore it (start the container first if it is stopped: incus start $CONTAINER_NAME):
+    incus exec $CONTAINER_NAME -- tar -C /var/lib -xf - < ${TS_STATE_BACKUP:-}"
+}
+
+# While a finished build is published as a template. The container is complete,
+# so it is never offered for deletion; the Tailscale state it lent the publish
+# must still go back.
+template_cleanup_on_exit() {
+  local rc=$?
+  trap - EXIT INT TERM HUP
+  set +e
+  restore_tailscale_state || warn_tailscale_backup
+  exit "$rc"
+}
+
 # An EXIT trap, not ERR: error() calls exit directly, which ERR never sees.
 cleanup_on_exit() {
   local rc=$? reply=""
@@ -145,10 +162,7 @@ cleanup_on_exit() {
     revoke_build_sudo || \
       warn "Could not revoke build-time sudo in '$CONTAINER_NAME'. Delete it: incus delete --force $CONTAINER_NAME"
     # A template build that failed after moving the Tailscale state out.
-    restore_tailscale_state || \
-      warn "Tailscale state for '$CONTAINER_NAME' is in ${TS_STATE_BACKUP:-} (it holds the node key: keep it private).
-  Restore it (start the container first if it is stopped: incus start $CONTAINER_NAME):
-    incus exec $CONTAINER_NAME -- tar -C /var/lib -xf - < ${TS_STATE_BACKUP:-}"
+    restore_tailscale_state || warn_tailscale_backup
     if [[ $rc -ne 0 ]]; then
       echo ""
       warn "Script failed. Container '$CONTAINER_NAME' was partially created."
@@ -1129,9 +1143,14 @@ incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c '
 
 
 # ---------------------------------------------------------------------------
-# Disable cleanup trap on success
+# Disable cleanup trap on success. A template build swaps in a narrower guard
+# until it is published: save_template moves the Tailscale state out.
 # ---------------------------------------------------------------------------
-trap - EXIT INT TERM HUP
+if [[ "$SAVE_TEMPLATE" == "1" ]]; then
+  trap template_cleanup_on_exit EXIT
+else
+  trap - EXIT INT TERM HUP
+fi
 
 # ---------------------------------------------------------------------------
 # Done
@@ -1189,4 +1208,5 @@ print_agent_launches
 # ---------------------------------------------------------------------------
 if [[ "$SAVE_TEMPLATE" == "1" ]]; then
   save_template
+  trap - EXIT INT TERM HUP
 fi
