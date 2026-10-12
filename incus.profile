@@ -1,8 +1,8 @@
 # incus.profile
-# The agent-incus Incus profile: security hardening and default limits for
-# agent containers.
+# The agent-incus Incus profile: security hardening and default limits shared
+# by agent containers and credential proxies.
 #
-# Sourced by incus.init. Defines functions only.
+# Sourced by incus.init and incus.proxy. Defines functions only.
 
 AGENT_PROFILE="agent-incus"
 
@@ -23,7 +23,7 @@ ensure_profile() {
     security.idmap.isolated=true \
     limits.memory=6GB \
     limits.cpu=4
-  # Tagging is per-instance (incus.init sets user.managed-by on each
-  # container), so the profile itself never carries it.
+  # Tagging is per-instance: proxies use this profile but must not be
+  # managed-by=agent-incus, or kill-all/update-all would sweep them up.
   incus profile unset "$AGENT_PROFILE" user.managed-by 2>/dev/null || true
 }

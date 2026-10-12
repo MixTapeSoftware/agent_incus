@@ -361,6 +361,13 @@ case "$cmd" in
           *)   die "fake_incus: unsupported tar: $command_line" ;;
         esac
         ;;
+      "iron-rebuild"|"iron-rebuild "*)
+        # Run the real rebuild script the code under test installed, against
+        # the fake filesystem, with service management stubbed out.
+        script="$root/usr/local/bin/iron-rebuild"
+        [[ -f "$script" ]] || die "iron-rebuild: command not found"
+        IRON_PROXY_DIR="$root/etc/iron-proxy" PATH="$stub:$PATH" sh "$script" "${@:2}"
+        ;;
       *) : ;;
     esac
     ;;

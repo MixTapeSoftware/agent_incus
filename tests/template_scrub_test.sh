@@ -72,6 +72,8 @@ fresh_box() {
   echo "NODE-KEY" > "$(root)/var/lib/tailscale/tailscaled.state"
   echo "TLS-KEY"  > "$(root)/var/lib/tailscale/certs/box.ts.net.key"
   echo "keep"     > "$(root)/etc/hostname"
+  # save_template refuses to publish a container whose /etc/hosts it can't read.
+  printf '127.0.0.1 localhost\n' > "$(root)/etc/hosts"
 }
 publish() { incus stop box; incus publish box --alias incus-init/box; incus start box; }
 

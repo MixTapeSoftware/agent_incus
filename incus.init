@@ -49,6 +49,8 @@ Options:
   --vm-cpus N               VM vCPUs (default: 4)
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
+  --no-proxy                Do not create a credential proxy for this container
+  --proxy                   Create a credential proxy (the default)
   --no-tui                  Skip interactive plugin selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
@@ -154,7 +156,7 @@ template_cleanup_on_exit() {
 
 # An EXIT trap, not ERR: error() calls exit directly, which ERR never sees.
 cleanup_on_exit() {
-  local rc=$? reply=""
+  local rc=$? reply="" owned="" attached="" entries=""
   trap - EXIT INT TERM HUP
   set +e
   if [[ -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
@@ -169,10 +171,16 @@ cleanup_on_exit() {
       # No answer (stdin closed) keeps the container: never delete unasked.
       read -rp "Delete it? [Y/n] " reply || reply="n"
       if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+        owned="$(incus config get "$CONTAINER_NAME" user.incs.owned-proxy 2>/dev/null)"
+        attached="$(proxy_attached_to "$CONTAINER_NAME")"
+        entries="$(proxy_entry_names "$CONTAINER_NAME")"
         if incus delete --force "$CONTAINER_NAME"; then
           log "Deleted $CONTAINER_NAME"
+          proxy_after_delete "$CONTAINER_NAME" "$attached" "$entries"
+          proxy_delete_owned "$CONTAINER_NAME" "$owned" || \
+            warn "Could not remove owned proxy '$owned'. Clean up with: incs proxy delete $owned"
         else
-          warn "Could not delete '$CONTAINER_NAME'"
+          warn "Could not delete '$CONTAINER_NAME'; its proxy was kept"
         fi
       else
         warn "Container left in place. Clean up manually with: incs -d $CONTAINER_NAME"
@@ -191,6 +199,7 @@ BASE_IMAGE="images:ubuntu/24.04"
 CONTAINER_NAME=""
 DRY_RUN=0
 NO_TUI=0
+SKIP_CREDENTIAL_PROXY=0
 SAVE_TEMPLATE=0
 TS_STATE_BACKUP=""
 ACK_ENV=0
@@ -643,14 +652,31 @@ save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
 
-  # Save token lines from .zshenv, then strip them so they don't leak into the image
+  # Read /etc/hosts before changing anything: its proxy lines must not reach
+  # the image, so a template is not saved if they cannot be found.
+  local hosts_file saved_hosts
+  hosts_file="$(incus file pull -q "$CONTAINER_NAME/etc/hosts" - 2>/dev/null)" || \
+    error "Could not read /etc/hosts in $CONTAINER_NAME. No template saved: it might send hosts to a credential proxy."
+
+  # Save token lines from .zshenv, then strip them so they don't leak into the
+  # image. Lines written by a credential proxy attach (marked "# incs-proxy")
+  # go too: a placeholder and proxy address belong to one container, and a
+  # container launched from the template must not inherit them.
   local saved_tokens
   saved_tokens=$(incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=' ~/.zshenv 2>/dev/null || true")
+    "grep -E '^export (GH_TOKEN|OP_SERVICE_ACCOUNT_TOKEN)=|# incs-proxy(:[a-z0-9-]+)?\$' ~/.zshenv 2>/dev/null || true")
 
   log "Scrubbing secrets from image..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "sed -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d' ~/.zshenv 2>/dev/null || true"
+    "sed -E -i '/^export OP_SERVICE_ACCOUNT_TOKEN=/d; /^export GH_TOKEN=/d; /# incs-proxy(:[a-z0-9-]+)?\$/d' ~/.zshenv 2>/dev/null || true"
+
+  # The same goes for the /etc/hosts lines an attach adds: they send API hosts
+  # to one proxy's address.
+  saved_hosts="$(grep -E ' # incs-proxy:[a-z0-9-]+$' <<< "$hosts_file" || true)"
+  if [[ -n "$saved_hosts" ]]; then
+    { grep -vE ' # incs-proxy:[a-z0-9-]+$' <<< "$hosts_file" || true; } \
+      | incus file push -q --uid 0 --gid 0 --mode 0644 - "$CONTAINER_NAME/etc/hosts"
+  fi
 
   # Empty the workspace before publishing. A template is a reusable *provisioned
   # base* (packages, mise, shell, tools) — not a frozen copy of one repo. Baking
@@ -680,6 +706,10 @@ save_template() {
 $saved_tokens
 TOKENS"
   fi
+  if [[ -n "$saved_hosts" ]]; then
+    { incus file pull -q "$CONTAINER_NAME/etc/hosts" -; printf '%s\n' "$saved_hosts"; } \
+      | incus file push -q --uid 0 --gid 0 --mode 0644 - "$CONTAINER_NAME/etc/hosts"
+  fi
 
   wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
   log "Saved template: $alias"
@@ -707,6 +737,8 @@ while [[ $# -gt 0 ]]; do
     --ack-env)       ACK_ENV=1; shift ;;
     --agent)         [[ $# -lt 2 ]] && error "$1 requires an argument"; select_agent "$2"; shift 2 ;;
     --no-tui)        NO_TUI=1; shift ;;
+    --no-proxy)      SKIP_CREDENTIAL_PROXY=1; shift ;;
+    --proxy)         SKIP_CREDENTIAL_PROXY=0; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
     -*)
@@ -731,6 +763,8 @@ source "$SCRIPT_DIR/incus.envscan"
 source "$SCRIPT_DIR/incus.prompt"
 # shellcheck source=incus.profile
 source "$SCRIPT_DIR/incus.profile"
+# shellcheck source=incus.proxy
+source "$SCRIPT_DIR/incus.proxy"
 
 # ---------------------------------------------------------------------------
 # Validate
@@ -743,6 +777,13 @@ incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAM
 [[ "$CONTAINER_WORKSPACE" == /?* ]] || error "--workspace must be an absolute path other than / (got: $CONTAINER_WORKSPACE)"
 # Remote shell snippets cd into the workspace; quote it once for all of them.
 printf -v WORKSPACE_Q '%q' "$CONTAINER_WORKSPACE"
+
+if [[ "$SKIP_CREDENTIAL_PROXY" == "0" ]]; then
+  [[ ${#CONTAINER_NAME} -le 57 ]] || error "Container name is too long for a -proxy suffix; shorten it or use --no-proxy"
+  proxy_instance_exists "$CONTAINER_NAME-proxy" && \
+    error "Instance '$CONTAINER_NAME-proxy' already exists; choose another container name or use --no-proxy"
+fi
+
 
 # VM flag validation. VM-only options are meaningless for containers: warn and
 # ignore rather than error, so an errant flag never blocks a build.
@@ -870,6 +911,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
     fi
   done
   echo ""
+  if [[ "$SKIP_CREDENTIAL_PROXY" == "1" ]]; then
+    echo "Proxy:       none"
+  elif [[ "$(selected_get gh-auth)" == "1" ]]; then
+    echo "Proxy:       $CONTAINER_NAME-proxy (github, from GitHub Auth)"
+  else
+    echo "Proxy:       $CONTAINER_NAME-proxy (empty)"
+  fi
   echo "Template:    $( [[ "$SAVE_TEMPLATE" == "1" ]] && echo "incus-init/$CONTAINER_NAME" || echo no )"
   echo "========================================"
   exit 0
@@ -924,6 +972,14 @@ incus config set "$CONTAINER_NAME" user.agent-incus.workspace="$CONTAINER_WORKSP
 
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
+
+# Ownership belongs to this instance, including launches from a template.
+if [[ -n "$(incus config get "$CONTAINER_NAME" user.incs.owned-proxy)" ]]; then
+  incus config unset "$CONTAINER_NAME" user.incs.owned-proxy
+fi
+if [[ "$SKIP_CREDENTIAL_PROXY" == "0" ]]; then
+  proxy_create_owned "$CONTAINER_NAME"
+fi
 
 # ---------------------------------------------------------------------------
 # Provision (skipped when launching from a local base image)
@@ -1177,6 +1233,12 @@ echo ""
 echo "========================================"
 echo "Container:   $CONTAINER_NAME"
 echo "Image:       $BASE_IMAGE"
+if [[ "$SKIP_CREDENTIAL_PROXY" == "1" ]]; then
+  echo "Proxy:       none"
+else
+  _svcs="$(proxy_services "$CONTAINER_NAME" | sed -E 's/=[A-Za-z0-9_]+//g')"
+  echo "Proxy:       $CONTAINER_NAME-proxy (${_svcs:-empty})"
+fi
 echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
 if [[ "$IS_VM" == "1" ]]; then
   echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"
