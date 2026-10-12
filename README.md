@@ -107,6 +107,8 @@ The individual scripts and aliases (`inci`, `incn`) still work directly.
 
 `incs status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `incus.init` appear first under "Agent Incus instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the host's total memory, and disk against the root disk size when one is set.
 
+![incs status grouping Agent Incus instances, with state, type, CPU, memory, disk, and IPv4 columns](.github/images/incs-status.png)
+
 In a terminal, `incs status` is a live view that refreshes every second:
 
 | Key | Action |
