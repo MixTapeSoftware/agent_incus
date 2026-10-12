@@ -91,7 +91,8 @@ incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
-incs status                            # State, CPU, memory, disk, IPv4 of all instances
+incs status                            # Live view of all instances; space starts/stops one
+incs status --once                     # Print the status table once
 incs cron install                      # Install 7pm daily update cron
 incs cron install 3                    # Install 3am daily update cron
 incs cron status                       # Show current cron schedule
@@ -100,7 +101,17 @@ incs cron remove                       # Remove the update cron
 
 The individual scripts and aliases (`inci`, `incn`) still work directly.
 
-`incs status` marks running instances `●`, frozen `◐`, and stopped `○`. CPU is sampled over one second and scaled like `docker stats`: 100% is one full core, so a busy 4-vCPU instance can read 400%. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
+`incs status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `incus.init` appear first under "Agent Incus instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the host's total memory, and disk against the root disk size when one is set.
+
+In a terminal, `incs status` is a live view that refreshes every second:
+
+| Key | Action |
+|---|---|
+| `↑` / `↓` or `k` / `j` | Move the highlighted row |
+| `space` | Stop the highlighted instance if it is running, otherwise start it |
+| `q` or `Esc` | Quit |
+
+Start and stop run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
 
 ## incus.init Options
 
@@ -309,7 +320,7 @@ claude                                  #   ...then start the agent inside it
 incs project-dev                        # Pane 2: the dev container (tests, git, servers)
 # prefix + "  (split), then:
 incs -n project-dev 4000                # Pane 3 on the host: proxy the dev server to localhost:4000
-incs status                             #   ...and check CPU, memory, and disk across instances
+incs status                             #   ...and check CPU, memory, and disk; space starts/stops
 ```
 
 Leave tmux with prefix + `d`; containers keep running. Come back with `tmux attach -t project`, and stop everything at the end of the day with `incs -ka`.
