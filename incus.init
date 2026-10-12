@@ -38,7 +38,8 @@ Options:
   -w, --workspace PATH      Where the copy goes in the container (default: /workspace)
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
-  -t, --template            Save container as a reusable local template (empty workspace)
+  -t, --template            Save container as a reusable local template (empty
+                              workspace, no credential proxy unless --proxy)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
@@ -50,7 +51,7 @@ Options:
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
   --no-proxy                Do not create a credential proxy for this container
-  --proxy                   Create a credential proxy (the default)
+  --proxy                   Create a credential proxy (the default, except with --template)
   --no-tui                  Skip interactive plugin selector, use defaults
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
@@ -163,8 +164,13 @@ cleanup_on_exit() {
     # Before the prompt: the container may be kept, or the prompt never answered.
     revoke_build_sudo || \
       warn "Could not revoke build-time sudo in '$CONTAINER_NAME'. Delete it: incus delete --force $CONTAINER_NAME"
-    # A template build that failed after moving the Tailscale state out.
-    restore_tailscale_state || warn_tailscale_backup
+    # save_template moves the Tailscale state (node key) out of the container
+    # into a private host file, so the image doesn't carry it. If the build
+    # failed after that, put it back so this container stays the same tailnet
+    # node, and delete the host copy. If that fails, the file is left in place
+    # and the warning at the end of this trap prints its path, the same as
+    # when Incus can't be reached at all.
+    restore_tailscale_state || true
     if [[ $rc -ne 0 ]]; then
       echo ""
       warn "Script failed. Container '$CONTAINER_NAME' was partially created."
@@ -187,6 +193,11 @@ cleanup_on_exit() {
       fi
     fi
   fi
+  # Never leave the host copy of a node key unmentioned, even when Incus could
+  # not be asked about the container at all.
+  if [[ -n "${TS_STATE_BACKUP:-}" && -f "$TS_STATE_BACKUP" ]]; then
+    warn_tailscale_backup
+  fi
   exit "$rc"
 }
 
@@ -199,7 +210,7 @@ BASE_IMAGE="images:ubuntu/24.04"
 CONTAINER_NAME=""
 DRY_RUN=0
 NO_TUI=0
-SKIP_CREDENTIAL_PROXY=0
+SKIP_CREDENTIAL_PROXY=""   # resolved after parsing: --template changes the default
 SAVE_TEMPLATE=0
 TS_STATE_BACKUP=""
 ACK_ENV=0
@@ -561,6 +572,18 @@ _run_plugin_installs() {
   done
 }
 
+# A directory only this user can reach, held in memory: a file left there by a
+# failed build is never on disk and is gone at the next reboot.
+private_runtime_dir() {
+  local dir="$1"
+  [[ -n "$dir" && -d "$dir" && ! -L "$dir" && -w "$dir" ]] || return 1
+  [[ "$(stat -c '%u %a' "$dir" 2>/dev/null)" == "$(id -u) 700" ]] || return 1
+  case "$(stat -f -c %T "$dir" 2>/dev/null)" in
+    tmpfs|ramfs) return 0 ;;
+    *)           return 1 ;;
+  esac
+}
+
 # Tailscale keeps the node key, and the certificates `tailscale serve` obtained
 # for the node, under /var/lib/tailscale. Baked into a template, every launch
 # would come up as this machine with its tailnet access. So the directory is
@@ -574,18 +597,32 @@ stash_tailscale_state() {
     yes) ;;
     *)   error "Could not check $CONTAINER_NAME for Tailscale state. No template saved: it might carry the node key." ;;
   esac
+  # The backup holds the node key. XDG_RUNTIME_DIR is memory-only and private
+  # to the user; /tmp may be on disk and outlive a reboot, so it is not used.
+  # The variable can be set to anything, so the directory itself is checked.
+  private_runtime_dir "${XDG_RUNTIME_DIR:-}" || \
+    error "XDG_RUNTIME_DIR is not a private, memory-backed directory (owned by you, mode 700, on tmpfs), so there is nowhere safe to hold the Tailscale node key while the image is published. No template saved. Run from a login session (not sudo or cron)."
   log "Removing the Tailscale node identity from the image..."
-  incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled </dev/null 2>/dev/null || true
-  # A tailscaled still running could write the state back before the publish.
-  # Only a stopped (or absent) service lets it go ahead; so does no answer.
-  local active
-  active="$(incus exec "$CONTAINER_NAME" -- systemctl is-active tailscaled </dev/null 2>/dev/null)" || true
-  case "$active" in
-    inactive|failed|unknown) ;;
-    *) error "Could not stop tailscaled in $CONTAINER_NAME. No template saved: it might write the node key back." ;;
-  esac
-  TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")"
-  incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$TS_STATE_BACKUP"
+  # A tailscaled still running could write the state back before publish. Only
+  # an explicit inactive/failed counts: a query that fails proves nothing.
+  incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null </dev/null || true
+  local ts backup=""
+  ts="$(incus exec "$CONTAINER_NAME" -- systemctl is-active tailscaled 2>/dev/null </dev/null)" || true
+  if [[ "$ts" != "inactive" && "$ts" != "failed" ]]; then
+    incus exec "$CONTAINER_NAME" -- systemctl start tailscaled 2>/dev/null </dev/null || true
+    error "Could not stop tailscaled in $CONTAINER_NAME (state: ${ts:-unknown}). No template saved: it could write the node key back."
+  fi
+  # The exit trap restores from TS_STATE_BACKUP, so it is set only once the
+  # archive is complete: half an archive must never go back over the state.
+  if ! backup="$(mktemp "$XDG_RUNTIME_DIR/incs-tailscale.XXXXXX")" || \
+     ! incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$backup" </dev/null; then
+    if [[ -n "$backup" ]] && ! rm -f "$backup"; then
+      warn "A partial Tailscale archive is left in $backup (it may hold the node key): delete it."
+    fi
+    incus exec "$CONTAINER_NAME" -- systemctl start tailscaled 2>/dev/null </dev/null || true
+    error "Could not archive the Tailscale state in $CONTAINER_NAME. No template saved."
+  fi
+  TS_STATE_BACKUP="$backup"
   incus exec "$CONTAINER_NAME" -- rm -rf /var/lib/tailscale
 }
 
@@ -604,13 +641,20 @@ restore_tailscale_state() {
     sleep 1
   done
   # tailscaled came back up at boot with a fresh, logged-out state; replace it.
-  incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null || true
+  # If it keeps running it can overwrite the restored state, so it must stop.
+  incus exec "$CONTAINER_NAME" -- systemctl stop tailscaled 2>/dev/null </dev/null || true
+  local ts
+  ts="$(incus exec "$CONTAINER_NAME" -- systemctl is-active tailscaled 2>/dev/null </dev/null)" || true
+  [[ "$ts" == "inactive" || "$ts" == "failed" ]] || return 1
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -xf - < "$TS_STATE_BACKUP" || return 1
-  # The state is back in place, so the host copy of the node key can go.
-  rm -f "$TS_STATE_BACKUP"
-  TS_STATE_BACKUP=""
+  # The state is back in place, so the host copy of the node key can go. This
+  # runs under || (errexit off), so a failed delete is checked here: keep the
+  # path so the exit trap reports the file, and return failure.
+  local kept=0
+  if rm -f "$TS_STATE_BACKUP"; then TS_STATE_BACKUP=""; else kept=1; fi
   incus exec "$CONTAINER_NAME" -- systemctl start tailscaled </dev/null || \
     warn "Tailscale state is restored in $CONTAINER_NAME, but tailscaled did not start. Start it: incus exec $CONTAINER_NAME -- systemctl start tailscaled"
+  return "$kept"
 }
 
 # ---------------------------------------------------------------------------
@@ -618,18 +662,46 @@ restore_tailscale_state() {
 # nothing the container writes reaches the host, which sees only the work that
 # leaves through git.
 # ---------------------------------------------------------------------------
+
+# In a linked worktree (or submodule) .git is a file pointing at a host path
+# the container can't see, so the copy would not be a usable repository.
+# Worktrees aren't needed here: each container already has its own copy.
+reject_linked_worktree() {
+  [[ -f "$1/.git" ]] || return 0
+  error "$1 is a linked git worktree (or submodule): its .git points at a host path the container can't see.
+  For parallel work, create another container from the main checkout (incs -i <name>), or open an existing one. Each container has its own copy of the code."
+}
+
 copy_workspace() {
-  local existing
+  local present existing=""
   # A template built before templates were emptied carries a workspace owned
   # by whoever built it. If our UID differs those files are unwritable (git
   # commit fails on .git/index.lock), so re-own them rather than error. Files
   # in a workspace that did not come from a template are a mistake: stop.
-  existing="$(incus exec "$CONTAINER_NAME" -- ls -A "$CONTAINER_WORKSPACE" 2>/dev/null </dev/null || true)"
+  # An exec error must not read as "empty": files could be copied over.
+  present="$(incus exec "$CONTAINER_NAME" -- sh -c "test -d '$CONTAINER_WORKSPACE' && echo yes || echo no" </dev/null)" || present=""
+  case "$present" in
+    no)  ;;
+    yes) existing="$(incus exec "$CONTAINER_NAME" -- ls -A "$CONTAINER_WORKSPACE" </dev/null)" || \
+           error "Could not list $CONTAINER_WORKSPACE in $CONTAINER_NAME" ;;
+    *)   error "Could not check $CONTAINER_WORKSPACE in $CONTAINER_NAME" ;;
+  esac
   if [[ -n "$existing" ]]; then
     [[ "$FROM_BASE_IMAGE" == "1" ]] || \
       error "$CONTAINER_WORKSPACE is not empty inside the container: $BASE_IMAGE already has files there."
-    log "Reusing workspace from template; re-owning to $HOST_USER..."
-  else
+    if [[ "$NO_COPY" == "1" ]]; then
+      # --no-copy promises an empty workspace, whatever the template carried.
+      [[ -n "$CONTAINER_WORKSPACE" && "$CONTAINER_WORKSPACE" != "/" ]] || \
+        error "Refusing to empty '$CONTAINER_WORKSPACE' for --no-copy"
+      log "Emptying the workspace the template carried (--no-copy)..."
+      incus exec "$CONTAINER_NAME" -- rm -rf "$CONTAINER_WORKSPACE" </dev/null || \
+        error "Could not empty $CONTAINER_WORKSPACE in $CONTAINER_NAME"
+      existing=""
+    else
+      log "Reusing workspace from template; re-owning to $HOST_USER..."
+    fi
+  fi
+  if [[ -z "$existing" ]]; then
     incus exec "$CONTAINER_NAME" -- mkdir -p "$CONTAINER_WORKSPACE" </dev/null
     # The working tree as it is on disk, .git and uncommitted work included.
     # Extracted as the container's root (--no-same-owner), then handed to the
@@ -651,6 +723,10 @@ copy_workspace() {
 save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
+
+  # First, before anything else is scrubbed: it is the step that can refuse to
+  # save, and once it has run, the exit trap puts the state back on failure.
+  stash_tailscale_state
 
   # Read /etc/hosts before changing anything: its proxy lines must not reach
   # the image, so a template is not saved if they cannot be found.
@@ -689,8 +765,6 @@ save_template() {
     incus exec "$CONTAINER_NAME" -- rm -rf "$CONTAINER_WORKSPACE"
   fi
 
-  stash_tailscale_state
-
   log "Stopping container for snapshot..."
   incus stop "$CONTAINER_NAME"
   incus publish "$CONTAINER_NAME" --alias "$alias"
@@ -698,9 +772,8 @@ save_template() {
   incus start "$CONTAINER_NAME"
   wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 
-  restore_tailscale_state || error "Could not restore the Tailscale state in $CONTAINER_NAME from $TS_STATE_BACKUP"
-
-  # Restore saved tokens to the running container
+  # Restore saved tokens to the running container. Before the Tailscale state:
+  # its restore can fail and exit, and the exit trap only retries Tailscale.
   if [[ -n "$saved_tokens" ]]; then
     incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cat >> ~/.zshenv <<'TOKENS'
 $saved_tokens
@@ -710,6 +783,8 @@ TOKENS"
     { incus file pull -q "$CONTAINER_NAME/etc/hosts" -; printf '%s\n' "$saved_hosts"; } \
       | incus file push -q --uid 0 --gid 0 --mode 0644 - "$CONTAINER_NAME/etc/hosts"
   fi
+
+  restore_tailscale_state || error "Could not restore the Tailscale state in $CONTAINER_NAME from $TS_STATE_BACKUP"
 
   wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
   log "Saved template: $alias"
@@ -753,6 +828,12 @@ while [[ $# -gt 0 ]]; do
     *)               CONTAINER_NAME="$1"; shift ;;
   esac
 done
+
+# A template build gets no proxy unless asked for one: the image never carries
+# a proxy, and every launch from it creates its own.
+if [[ -z "$SKIP_CREDENTIAL_PROXY" ]]; then
+  if [[ "$SAVE_TEMPLATE" == "1" ]]; then SKIP_CREDENTIAL_PROXY=1; else SKIP_CREDENTIAL_PROXY=0; fi
+fi
 
 # ---------------------------------------------------------------------------
 # macOS pre-flight (noop on Linux)
@@ -805,10 +886,11 @@ HOST_GID="$(id -g)"
 # its host directory is not scanned.
 # ---------------------------------------------------------------------------
 ENV_FILES_LIST=""
-if [[ "$SAVE_TEMPLATE" != "1" ]]; then
+if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]]; then
   WORKSPACE_PATH="${WORKSPACE_PATH/#\~/$HOME}"
   WORKSPACE_PATH="$(realpath "$WORKSPACE_PATH")"
   [[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
+  reject_linked_worktree "$WORKSPACE_PATH"
 
   if [[ "$NO_COPY" != "1" ]]; then
     ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"

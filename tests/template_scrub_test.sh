@@ -27,13 +27,15 @@ assert_not_contains() {
 }
 
 SANDBOX="$(mktemp -d)"
-trap 'rm -rf "$SANDBOX"' EXIT
-mkdir -p "$SANDBOX/bin" "$SANDBOX/run"
+# Where the backup lands: private (mktemp -d makes it 0700) and in memory, as
+# incus.init requires of XDG_RUNTIME_DIR.
+RUNDIR="$(mktemp -d /dev/shm/incs-test.XXXXXX)"
+trap 'rm -rf "$SANDBOX" "$RUNDIR"' EXIT
+mkdir -p "$SANDBOX/bin"
 cp "$SCRIPT_DIR/lib/fake_incus" "$SANDBOX/bin/incus"
 chmod +x "$SANDBOX/bin/incus"
 export PATH="$SANDBOX/bin:$PATH"
-# Where the backup lands.
-export XDG_RUNTIME_DIR="$SANDBOX/run"
+export XDG_RUNTIME_DIR="$RUNDIR"
 
 extract_fn() {
   awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/incus.init"
@@ -42,9 +44,10 @@ log()  { echo "[+] $1"; }
 warn() { echo "[!] $1"; }
 error() { echo "[ERROR] $1" >&2; exit 1; }
 READY_TIMEOUT=2
+eval "$(extract_fn private_runtime_dir)"
 eval "$(extract_fn stash_tailscale_state)"
 eval "$(extract_fn restore_tailscale_state)"
-declare -F stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in incus.init"; exit 1; }
+declare -F private_runtime_dir stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in incus.init"; exit 1; }
 
 CONTAINER_NAME=box
 TS_STATE_BACKUP=""
@@ -120,6 +123,31 @@ assert_eq "stash: says nothing" "" "$OUT"
 assert_not_contains "stash: does not touch tailscaled" "tailscaled" "$(execs)"
 restore
 assert_eq "restore: a no-op success" "0" "$RC"
+XDG_RUNTIME_DIR="" stash
+assert_eq "stash, no XDG_RUNTIME_DIR: still succeeds with nothing to stash" "0" "$RC"
+
+# ===========================================================================
+echo "no private place for the backup"
+# ===========================================================================
+# The key must not fall back to /tmp, which may be on disk, nor go wherever
+# XDG_RUNTIME_DIR happens to point: the directory must be 0700 and in memory.
+open_dir="$(mktemp -d /dev/shm/incs-test.XXXXXX)"; chmod 755 "$open_dir"
+link_dir="$SANDBOX/link"; ln -s "$RUNDIR" "$link_dir"
+bad_dirs=("" "$SANDBOX/missing" "$open_dir" "$link_dir")
+# A 0700 directory on disk, where the sandbox is not itself on tmpfs.
+if [[ "$(stat -f -c %T "$SANDBOX")" != tmpfs ]]; then
+  mkdir -m 700 "$SANDBOX/disk"; bad_dirs+=("$SANDBOX/disk")
+fi
+for dir in "${bad_dirs[@]}"; do
+  fresh_box
+  XDG_RUNTIME_DIR="$dir" stash_sub
+  assert_eq "XDG_RUNTIME_DIR='$dir': stops the build" "1" "$RC"
+  assert_contains "XDG_RUNTIME_DIR='$dir': says why" "XDG_RUNTIME_DIR is not a private, memory-backed directory" "$OUT"
+  assert_eq "XDG_RUNTIME_DIR='$dir': the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+  assert_not_contains "XDG_RUNTIME_DIR='$dir': tailscaled is not touched" "tailscaled" "$(execs)"
+  [[ -z "$dir" || ! -d "$dir" ]] || assert_eq "XDG_RUNTIME_DIR='$dir': no backup there" "" "$(ls -A "$dir")"
+done
+rm -rf "$open_dir"
 
 # ===========================================================================
 echo "the restore fails"
@@ -204,7 +232,7 @@ echo "publish fails during a template build"
   echo 'error(){ echo "[ERROR] $1" >&2; exit 1; }'
   echo 'wait_for_container() { :; }'
   echo 'wait_for_network() { :; }'
-  for fn in stash_tailscale_state restore_tailscale_state warn_tailscale_backup \
+  for fn in private_runtime_dir stash_tailscale_state restore_tailscale_state warn_tailscale_backup \
             template_cleanup_on_exit cleanup_on_exit save_template; do
     extract_fn "$fn"
   done
@@ -232,6 +260,70 @@ bash "$SANDBOX/template-build.sh" > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?
 assert_eq "publish succeeds: the build succeeds" "0" "$RC"
 assert_eq "publish succeeds: the image has no Tailscale state" "gone" "$(present "$(image)/var/lib/tailscale")"
 assert_eq "publish succeeds: the node key is back" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state" 2>/dev/null)"
+
+# ===========================================================================
+echo "tailscaled will not stop"
+# ===========================================================================
+# systemctl cannot be asked: that proves nothing, so the build stops.
+fresh_box
+FAKE_INCUS_FAIL_EXEC='^systemctl is-active tailscaled' stash_sub
+assert_eq "stash, state unknown: stops the build" "1" "$RC"
+assert_contains "stash, state unknown: says so" "(state: unknown)" "$OUT"
+assert_eq "stash, state unknown: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "stash, state unknown: no backup" "0" "$(backups)"
+assert_contains "stash, state unknown: tailscaled is started again" "box :: systemctl start tailscaled" "$(execs)"
+
+# The archive fails: nothing may point the exit trap at a partial backup.
+fresh_box
+FAKE_INCUS_FAIL_EXEC='^tar -C /var/lib -cf' stash_sub
+assert_eq "archive fails: stops the build" "1" "$RC"
+assert_contains "archive fails: says why" "Could not archive the Tailscale state" "$OUT"
+assert_eq "archive fails: no backup is left" "0" "$(backups)"
+assert_eq "archive fails: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_contains "archive fails: tailscaled is started again" "box :: systemctl start tailscaled" "$(execs)"
+
+# …and the partial file cannot be removed either.
+fresh_box
+rm() { [[ "$*" == *incs-tailscale.* ]] && return 1; command rm "$@"; }
+FAKE_INCUS_FAIL_EXEC='^tar -C /var/lib -cf' stash_sub
+unset -f rm
+assert_eq "partial archive kept: still stops the build" "1" "$RC"
+assert_contains "partial archive kept: names the file" "$XDG_RUNTIME_DIR/incs-tailscale." "$OUT"
+assert_contains "partial archive kept: tailscaled is still started again" "box :: systemctl start tailscaled" "$(execs)"
+rm -f "$XDG_RUNTIME_DIR"/incs-tailscale.*
+
+
+fresh_box
+mkdir -p "$FAKE_INCUS_STATE/still-active"; touch "$FAKE_INCUS_STATE/still-active/tailscaled"
+stash_sub
+assert_eq "stash, still running: stops the build" "1" "$RC"
+assert_contains "stash, still running: says why" "Could not stop tailscaled in box (state: active)" "$OUT"
+assert_eq "stash, still running: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "stash, still running: no backup" "0" "$(backups)"
+
+fresh_box
+stash
+backup="$TS_STATE_BACKUP"
+mkdir -p "$FAKE_INCUS_STATE/still-active"; touch "$FAKE_INCUS_STATE/still-active/tailscaled"
+restore
+assert_eq "restore, still running: fails" "1" "$RC"
+assert_eq "restore, still running: the backup is kept" "present" "$(present "$backup")"
+assert_eq "restore, still running: nothing extracted over the live state" "gone" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+
+# ===========================================================================
+echo "the host copy cannot be deleted"
+# ===========================================================================
+fresh_box
+stash
+backup="$TS_STATE_BACKUP"
+# Fail the delete itself (a read-only directory would not stop root).
+rm() { [[ "$*" == *incs-tailscale.* ]] && return 1; command rm "$@"; }
+restore
+unset -f rm
+assert_eq "undeletable backup: restore reports failure" "1" "$RC"
+assert_eq "undeletable backup: the node key is back in the container" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "undeletable backup: the path is still remembered" "$backup" "$TS_STATE_BACKUP"
+assert_contains "undeletable backup: tailscaled is started anyway" "box :: systemctl start tailscaled" "$(execs)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

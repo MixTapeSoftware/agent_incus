@@ -28,6 +28,14 @@ if [[ -z "$STATUS" ]]; then
   echo "Container not found: $CONTAINER" >&2
   exit 1
 fi
+# A credential proxy holds the real tokens and has no user or shell to enter.
+if [[ "$(incus config get "$CONTAINER" user.incs.role 2>/dev/null)" == "proxy" ]]; then
+  OWNER="$(incus config get "$CONTAINER" user.incs.proxy-owner 2>/dev/null || true)"
+  echo "$CONTAINER is a credential proxy, not a dev container: it has no user shell." >&2
+  [[ -n "$OWNER" ]] && echo "Open the container it serves instead: incs $OWNER" >&2
+  echo "Manage the proxy with: incs proxy" >&2
+  exit 1
+fi
 if [[ "$STATUS" != "RUNNING" ]]; then
   echo "Starting $CONTAINER..."
   incus start "$CONTAINER"

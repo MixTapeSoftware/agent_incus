@@ -11,7 +11,7 @@ plugin_prompt() {
   if [[ "${SKIP_CREDENTIAL_PROXY:-0}" == "0" ]]; then
     echo "It is stored in this container's credential proxy; the container gets a placeholder."
   else
-    warn "--no-proxy: the real token will be stored inside the container"
+    warn "No credential proxy: the real token will be stored inside the container"
   fi
   echo "Create one at: https://github.com/settings/tokens?type=beta"
   echo "Recommended scopes: Contents (read/write), Metadata (read)"
@@ -84,7 +84,8 @@ plugin_install() {
 
   log "Configuring git credential helper and identity..."
   local git_script
-  printf -v git_script 'export GH_TOKEN=%q\ngh auth setup-git\n' "$GH_TOKEN_VALUE"
+  # The token works over HTTPS only, so SSH GitHub remotes are sent there too.
+  printf -v git_script 'export GH_TOKEN=%q\ngh auth setup-git\n%s\n' "$GH_TOKEN_VALUE" "$PROXY_GITHUB_GIT_HTTPS"
   printf '%s' "$git_script" | incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh
   _gh_auth_git_identity
 

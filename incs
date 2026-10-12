@@ -39,6 +39,8 @@ Commands:
                                  Shell into container (--with-sudo grants temporary sudo)
   -i, init [args...]             Create a container with its own credential proxy
                                    (--no-proxy to opt out)
+  -t, template <name> [args...]  Build a container and save it as a template
+                                   (incs -i --template; no proxy unless --proxy)
   -n, net <container> [ports...] Manage port proxies
   -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)
   -d, delete <container>          Force delete a container
@@ -51,12 +53,14 @@ Commands:
   -h, help                       Show this help
 
 Credential proxy (real tokens stay out of containers; see: incs proxy help):
-  proxy add <container> [proxy]  Attach GitHub, or any API with --env/--host
+  proxy add <container> --service NAME
+                                 Attach github, or any API with --env/--host
                                    (defaults to its attached or owned proxy)
   proxy apply <container> <file> Attach every service listed in a file
   proxy configure <proxy>        Set a 1Password service account token
   proxy rm <container>           Detach a container's services
   proxy list                     Show proxies and attached containers
+  proxy info <proxy|container>   Show what a proxy swaps in, and for which hosts
   proxy new <name>               Create a shared proxy
   proxy delete <name>            Delete a proxy
 
@@ -83,7 +87,8 @@ Examples:
   incs -ua                       Update all agent-incus containers
   incs status                    One-time status of all instances
   incs -i scratch --no-proxy                 Create a container without a proxy
-  incs proxy add your-container --token      Add GitHub access through its proxy
+  incs proxy add your-container --service github --token
+                                             Add GitHub access through its proxy
   incs proxy configure your-container-proxy  Configure its 1Password account
   incs cron install              Install 7pm daily update cron
   incs cron install 3            Install 3am daily update cron
@@ -399,6 +404,10 @@ case "$1" in
   -i|init)
     shift
     exec "$SCRIPT_DIR/incus.init" "$@"
+    ;;
+  -t|template)
+    shift
+    exec "$SCRIPT_DIR/incus.init" --template "$@"
     ;;
   -n|net)
     shift

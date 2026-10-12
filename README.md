@@ -4,18 +4,21 @@ A set of shell scripts that automate the creation of [Incus](https://linuxcontai
 
 Why shell scripts? They introduce no dependencies, are ergonomic enough for simple systems administration tasks, and transparently convey their purpose.
 
+In order to head off a variety of attack vectors, nothing on the host is mounted into the container. All work happens inside a sealed sandbox (Incus system container or VM) via provided tools such as nvim and GitHub integration. See [No Host Mounts](#no-host-mounts).
+
 ## Contents
 
 - [Prerequisites](#prerequisites)
 - [Install](#install)
 - [Quick Start](#quick-start)
+- [No Host Mounts](#no-host-mounts)
 - [Scripts](#scripts)
 - [incus.init Options](#incusinit-options)
   - [What incus.init does](#what-incusinit-does)
   - [Coding Agents](#coding-agents)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
-  - [Getting work out](#getting-work-out)
+  - [Pushing Changes](#pushing-changes)
   - [Daily Flow with tmux](#daily-flow-with-tmux)
   - [Templates](#templates)
   - [Virtual Machines](#virtual-machines)
@@ -63,6 +66,28 @@ incs my-project claude
 # Or: incs my-project grok
 ```
 
+## No Host Mounts
+
+A container never sees a live host directory. `incs -i` copies your directory into `/workspace` once, `.git` and uncommitted work included, and that copy is the container's from then on. Nothing it writes lands on your host. Work comes back out the way it would from any other machine: through git, as commits you fetch and read (see [Pushing Changes](#pushing-changes)).
+
+**Why.** Your host runs what's in a checkout, usually without asking:
+
+- git runs commands that `.git/config` names: `core.fsmonitor` on every `git status`, including the ones your editor runs every few seconds; `core.pager` when you read a log or a diff; and the hooks in `.git/hooks` (or wherever `core.hooksPath` points) when you commit, check out, merge or push
+- `npm install` runs `package.json` scripts, direnv loads `.envrc`, and your editor reads `.vscode/tasks.json`
+- mise reads `mise.toml`, and hook managers like husky and lefthook read their configs
+
+A writable mount hands all of that to whatever runs in the container: an agent, a dependency, a prompt injection. Earlier versions mounted the workspace and tried to fence off the dangerous parts: `.git/config` and hooks read-only, then config.worktree, then submodules. A guard like that is never finished, because the next thing your host executes from the tree is one you didn't list. And with `shift=true`, root inside the container was root over your checkout, able to leave setuid files on the host. So the mount is gone, along with every flag that kept it alive.
+
+**What you give up**, and how this repo expects you to work instead:
+
+- **Editing host files from a host editor.** Edit inside the container. The Chadception plugin (Chad's [NvChad](https://nvchad.com/) config, see [Optional Plugins](#optional-plugins)) sets up Neovim there.
+- **Live sync.** A container doesn't see host edits made after it was created, and the host doesn't see the container's edits until you fetch them. Commit and push often.
+- **One checkout shared by several containers.** Each container gets its own copy, and git moves work between them.
+- **Git worktrees.** A linked worktree's `.git` points at the host repository, so `incs -i` refuses one. Run it from the main checkout; to work in parallel, create another container instead.
+- **A safety net.** The copy lives only in the container, so `incs -d` deletes any work you haven't pushed.
+
+There is no flag to bring the mount back, and there won't be one.
+
 ## Scripts
 
 | Script | Alias | Purpose |
@@ -87,6 +112,7 @@ incs -s my-project                     # Shell (explicit)
 incs -s my-project mix test            # Run a command in container
 incs -s my-project "mix test | tail"   # One quoted string runs as a shell line
 incs -i my-project                     # Create a new container
+incs -t base-dev                       # Build and save a template (incs -i --template)
 incs -i my-project --from base-dev     # Create from template
 incs -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
 incs -n my-project 4000:8080           # Host 4000 -> container 8080
@@ -99,8 +125,9 @@ incs -ua                               # Update all agent-incus containers
 incs status                            # State, CPU, memory, disk, IPv4 of all instances
 incs -d my-project                     # Delete a container and its owned proxy
 incs -i scratch --no-proxy             # Create a container without a proxy
-incs proxy add my-project --token      # Add GitHub access through its default proxy
-incs proxy add my-project --env OPENAI_API_KEY --host api.openai.com   # Any header-key API
+incs proxy add my-project --service github --token   # Add GitHub access through its default proxy
+incs proxy add my-project --service openai --env OPENAI_API_KEY --host api.openai.com   # Any header-key API
+incs proxy info my-project             # What its proxy swaps in, and for which hosts
 incs proxy apply my-project services.yaml   # Attach every service listed in a file
 incs proxy configure my-project-proxy  # Read keys from 1Password
 incs proxy rm my-project               # Detach services from a container
@@ -125,7 +152,8 @@ Options:
   -w, --workspace PATH      Where the copy goes in the container (default: /workspace)
   -f, --from TEMPLATE       Launch from a saved template (shorthand for --image incus-init/TEMPLATE)
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
-  -t, --template            Save container as a reusable local template (empty workspace)
+  -t, --template            Save container as a reusable local template (empty
+                              workspace, no credential proxy unless --proxy)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
   --vm                      Provision a KVM virtual machine instead of a container
@@ -146,7 +174,7 @@ Options:
 2. Creates an empty credential proxy named `<container>-proxy` (skip with `--no-proxy`)
 3. Installs build tools, dev libraries, Python, and Node.js
 4. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
-5. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
+5. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Pushing Changes](#pushing-changes))
 6. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 7. Presents an interactive TUI to select optional plugins (see below)
 
@@ -212,6 +240,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | Plugin | Description |
 |---|---|
 | [1Password CLI](https://developer.1password.com/docs/cli/) | Password manager CLI |
+| Chadception | Chad's [NvChad](https://nvchad.com/) Neovim config, for editing inside the container |
 | [Chadmux](https://github.com/chadfennell/chadmux) | Chad's tmux config, Incus pane labels, and TPM plugins |
 | [Chromium / Playwright](https://playwright.dev/) | Headless browser for testing |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | AI coding assistant |
@@ -282,7 +311,7 @@ Plugin files are sourced in a **separate bash process** to safely extract metada
 
 ## The Development Workflow
 
-Each container gets its own copy of the directory you create it from, `.git` and uncommitted work included. Nothing on the host is mounted into it, so the container can do what it likes to its copy and the host only sees work that leaves through git (see [Getting work out](#getting-work-out)).
+Each container gets its own copy of the directory you create it from, `.git` and uncommitted work included. Nothing on the host is mounted into it, so the container can do what it likes to its copy and the host only sees work that leaves through git (see [Pushing Changes](#pushing-changes)).
 
 Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container as the boundary. Use `incs shell --with-sudo` when you need to install packages interactively:
 
@@ -298,7 +327,7 @@ graph LR
 ```bash
 # Agent container — no credentials (gets an empty project-agent-proxy)
 incs -i project-agent
-incs proxy add project-agent --token  # add GitHub access through the proxy when needed
+incs proxy add project-agent --service github --token  # add GitHub access through the proxy when needed
 
 # Dev container — GitHub token stored in project-dev-proxy, 1Password CLI inside
 incs -i --1pass --gh-token project-dev
@@ -307,15 +336,15 @@ incs -i --1pass --gh-token project-dev
 incs shell --with-sudo project-dev
 
 # Save as reusable template, then spin up new containers instantly
-incs -i --template project-base
+incs -t project-base
 incs -i --from project-base project-agent-2
 ```
 
 Each container works on its own copy. Work moves between containers, and back to the host, through git.
 
-### Getting work out
+### Pushing Changes
 
-Commit inside the container and push a branch. For git there to reach GitHub, pass `--gh-token` when you create the container. Then fetch the branch on the host and read it before you run anything:
+Commit inside the container and push a branch. Git there reaches GitHub through the container's credential proxy: pass `--gh-token` when you create it, or add a token later with `incs proxy add <container> --service github --token`. The copy keeps your remotes, and an SSH remote (`git@github.com:...`) can't reach the proxy, so attaching GitHub also tells git to use HTTPS for GitHub; `git push` works without changing `origin`. Then fetch the branch on the host and read it before you run anything:
 
 ```bash
 git fetch origin
@@ -375,12 +404,13 @@ Provisioning a container from scratch installs packages, build tools, mise, Oh M
 **Build once:**
 
 ```bash
-incs -i --template my-base
+incs -t my-base        # same as: incs -i --template my-base
 ```
 
 This provisions the container (with an empty workspace) and saves it locally as `incus-init/my-base`. Before publishing it removes:
 
 - `GH_TOKEN` and `OP_SERVICE_ACCOUNT_TOKEN` exports from `~/.zshenv`
+- credential-proxy lines in `~/.zshenv` and `/etc/hosts`
 - the Tailscale node identity and serve certificates (`/var/lib/tailscale`)
 
 Anything else stays in the image, including logins made during the build (for example Claude Code's credentials under `~/.claude`, `gh auth login`, or cloud CLI configs). Log out of those, or remove their files, before saving a template. The original container keeps running with its tokens and tailnet membership intact.
@@ -431,7 +461,7 @@ native `/dev/net/tun` instead of a device passthrough.
 build and the launch, because a published VM image can only launch as a VM.
 
 ```bash
-incs -i --vm --template my-vm-base          # publishes a VM-type template
+incs -t my-vm-base --vm                     # publishes a VM-type template
 incs -i --vm --from my-vm-base my-vm         # must include --vm
 ```
 
@@ -530,7 +560,7 @@ graph LR
 
 It is built on [iron-proxy](https://github.com/paradigmxyz/iron-proxy), pinned to a specific release and verified by checksum.
 
-**1. Create a container.** `incs -i` also creates an empty credential proxy named `<container>-proxy`. This applies to fresh containers, VMs, template builds, and launches from a template.
+**1. Create a container.** `incs -i` also creates an empty credential proxy named `<container>-proxy`. This applies to fresh containers, VMs, and launches from a template. A template build (`--template`) gets no proxy unless you pass `--proxy`.
 
 ```bash
 incs -i my-project                    # creates my-project and my-project-proxy
@@ -543,8 +573,8 @@ Creation needs no keys or 1Password account. The empty proxy has no attached ser
 **2. Add credentials when needed.** Paste a key at the hidden prompt to store it in the proxy:
 
 ```bash
-incs proxy add my-project --token
-incs proxy add my-project --env OPENAI_API_KEY --host api.openai.com --token
+incs proxy add my-project --service github --token
+incs proxy add my-project --service openai --env OPENAI_API_KEY --host api.openai.com --token
 ```
 
 `add` automatically uses the container's proxy. The real key stays there; the container receives a placeholder.
@@ -563,17 +593,19 @@ Use one vault item per container, named after the container. The GitHub token go
 Then attach the services that the container needs:
 
 ```bash
-incs proxy add my-project
-incs proxy add my-project --env OPENAI_API_KEY    --host api.openai.com
-incs proxy add my-project --env ANTHROPIC_API_KEY --host api.anthropic.com --prefix sk-ant-
-incs proxy add my-project --env STRIPE_KEY        --host api.stripe.com --service stripe
+incs proxy add my-project --service github
+incs proxy add my-project --service openai    --env OPENAI_API_KEY    --host api.openai.com
+incs proxy add my-project --service anthropic --env ANTHROPIC_API_KEY --host api.anthropic.com --prefix sk-ant-
+incs proxy add my-project --service stripe    --env STRIPE_KEY        --host api.stripe.com
 ```
+
+The container's variable holds only a placeholder. The proxy keeps the real key and swaps it in on requests to the listed hosts, so the key never enters the container. `incs proxy info my-project` shows what is attached, the hosts each key may reach and where each key comes from.
 
 | Option | Meaning |
 |---|---|
+| `--service NAME` | Required. `github` is built in; any other name needs `--env` and `--host` |
 | `--env VAR` | The variable that will hold the placeholder |
 | `--host HOST` | Where the key may be sent. Repeat for several hosts. Exact names only, no wildcards |
-| `--service NAME` | A name for this attachment. Default: the variable, lowercased (`openai-api-key`) |
 | `--prefix STR` | Start the placeholder with `STR`, for tools that check a key's shape |
 | `--ref op://vault/item/field` | Read the key from somewhere other than the default reference |
 | `--token` | Paste the key instead; it is stored in the proxy, not 1Password |
@@ -607,7 +639,7 @@ After attaching, open a new shell to pick up the placeholder and trust settings.
 ```bash
 incs proxy new work --vault acme-agents
 incs -i shared-client --no-proxy
-incs proxy add shared-client work
+incs proxy add shared-client work --service github
 incs proxy apply shared-client work services.yaml
 ```
 
@@ -622,7 +654,7 @@ incs proxy rm my-project                   # detach everything; the placeholders
 incs proxy delete work                     # refused while containers are attached, unless --force
 ```
 
-Deleting a container with `incs -d` also deletes its owned proxy and the credentials stored there. A shared proxy keeps running; only the deleted container's entries are removed. If container deletion fails, its proxy and credentials remain intact. `incs proxy rm` detaches services while preserving the owned proxy for later use. Explicitly deleting an owned proxy with `incs proxy delete` clears its ownership link on the container. Proxies are skipped by `incs -ka` and `incs -ua`.
+`rm` is a revocation, so it fails closed: if the proxy cannot be updated, or Incus cannot say whether the proxy still exists, the container stays attached and the command says so; run it again once Incus is back. Deleting a container with `incs -d` also deletes its owned proxy and the credentials stored there. A shared proxy keeps running; only the deleted container's entries are removed. If container deletion fails, its proxy and credentials remain intact. `incs proxy rm` detaches services while preserving the owned proxy for later use. Explicitly deleting an owned proxy with `incs proxy delete` clears its ownership link on the container. Proxies are skipped by `incs -ka` and `incs -ua`.
 
 **What attaching does:**
 
@@ -653,7 +685,7 @@ The proxy accepts connections from containers on one port, and that port speaks 
 
 - **Tailscale is unaffected.** Only the hosts you attached are sent to the proxy.
 
-**Templates.** Saving a template strips the placeholders and the `/etc/hosts` lines from the image. Each launch creates a new empty proxy by default; attach its services afterward. Use `--no-proxy` to opt out. The proxy's certificate authority does remain trusted in the image.
+**Templates.** A template build creates no proxy by default; pass `--proxy` if the build itself needs one (for example `--gh-token` to clone private repos). Saving a template strips the placeholders and the `/etc/hosts` lines from the image, though a proxy's certificate authority, if the build had one, stays trusted in it. Each launch from a template creates its own empty proxy; attach its services afterward, or use `--no-proxy` to opt out.
 
 **Existing containers.** A key that has already lived in a container should be treated as exposed. After attaching, create a new key, store it in 1Password, and revoke the old one.
 
