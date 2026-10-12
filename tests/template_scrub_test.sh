@@ -143,6 +143,21 @@ assert_eq "check fails: the state is left in place" "present" "$(present "$(root
 assert_eq "check fails: no backup" "0" "$(backups)"
 
 # ===========================================================================
+echo "tailscaled does not stop"
+# ===========================================================================
+fresh_box
+FAKE_INCUS_FAIL_EXEC='^systemctl stop tailscaled' stash_sub
+assert_eq "still running: stops the build" "1" "$RC"
+assert_contains "still running: says why" "Could not stop tailscaled" "$OUT"
+assert_eq "still running: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+assert_eq "still running: no backup" "0" "$(backups)"
+
+fresh_box
+FAKE_INCUS_FAIL_EXEC='^systemctl is-active' stash_sub
+assert_eq "no answer about tailscaled: stops the build" "1" "$RC"
+assert_eq "no answer about tailscaled: the state is left in place" "present" "$(present "$(root)/var/lib/tailscale/tailscaled.state")"
+
+# ===========================================================================
 echo "publish failed with the container stopped"
 # ===========================================================================
 fresh_box
