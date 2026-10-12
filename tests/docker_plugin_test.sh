@@ -134,6 +134,16 @@ assert_contains "mask check fails: says why" "AppArmor mask" "$OUT"
 assert_not_contains "mask check fails: no restart" "restart box" "$(calls)"
 assert_not_contains "mask check fails: no package install" "apt-get" "$(cat "$FAKE_INCUS_STATE"/exec-stdin/* 2>/dev/null)"
 
+# The unit cannot be deleted: it would mask AppArmor again at the restart.
+fresh_box
+mkdir -p "$(root)/etc/systemd/system"
+echo "[Unit]" > "$(root)$MASK_UNIT"
+FAKE_INCUS_FAIL_EXEC='^systemctl disable mask-apparmor' FAKE_INCUS_FAIL_CALL="^file delete box$MASK_UNIT" install
+assert_eq "mask delete fails: the plugin fails" "1" "$RC"
+assert_contains "mask delete fails: says why" "AppArmor mask unit" "$OUT"
+assert_eq "mask delete fails: the unit is still there" "present" "$([[ -e "$(root)$MASK_UNIT" ]] && echo present || echo gone)"
+assert_not_contains "mask delete fails: no restart" "restart box" "$(calls)"
+
 # ===========================================================================
 echo "a VM"
 # ===========================================================================
