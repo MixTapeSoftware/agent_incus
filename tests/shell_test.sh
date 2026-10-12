@@ -121,6 +121,13 @@ out="$(shell box 2>&1)" && rc=0 || rc=$?
 assert_eq "proxy without an owner: refused" "1" "$rc"
 assert_not_contains "proxy without an owner: no empty pointer" "Open the container it serves" "$out"
 
+# If the role can't be read, the container may be a proxy: refuse.
+fresh_box; with_user_groups
+out="$(FAKE_INCUS_FAIL_CALL='^config get box user\.incs\.role$' shell box 2>&1)" && rc=0 || rc=$?
+assert_eq "role lookup fails: refused" "1" "$rc"
+assert_contains "role lookup fails: says why" "Could not read the role of box" "$out"
+assert_not_contains "role lookup fails: never entered" "setpriv" "$(cat "$FAKE_INCUS_STATE/calls.log")"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

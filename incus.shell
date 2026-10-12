@@ -29,7 +29,12 @@ if [[ -z "$STATUS" ]]; then
   exit 1
 fi
 # A credential proxy holds the real tokens and has no user or shell to enter.
-if [[ "$(incus config get "$CONTAINER" user.incs.role 2>/dev/null)" == "proxy" ]]; then
+# A failed lookup must not read as "not a proxy".
+if ! ROLE="$(incus config get "$CONTAINER" user.incs.role 2>/dev/null)"; then
+  echo "Could not read the role of $CONTAINER; not entering it." >&2
+  exit 1
+fi
+if [[ "$ROLE" == "proxy" ]]; then
   OWNER="$(incus config get "$CONTAINER" user.incs.proxy-owner 2>/dev/null || true)"
   echo "$CONTAINER is a credential proxy, not a dev container: it has no user shell." >&2
   [[ -n "$OWNER" ]] && echo "Open the container it serves instead: incs $OWNER" >&2

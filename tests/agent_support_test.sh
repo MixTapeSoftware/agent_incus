@@ -12,6 +12,7 @@ cat > "$fixture/bin/incus" <<'INCUS'
 case "$1" in
   info) exit 1 ;;
   list) printf 'RUNNING\n' ;;
+  config) [[ "$2" == get ]] && { echo; exit 0; }; echo "Unexpected incus call: $*" >&2; exit 1 ;;
   exec)
     case "$*" in
       *' -- id -G '*) printf '1000\n' ;;
