@@ -10,7 +10,7 @@
 # into a config file can make that file unparseable.
 #
 # Every prompt that takes a pasted value should use read_secret or read_value.
-# Sourced by incs and incus.init (and so every plugin).
+# Sourced by incs, incus.init (and so every plugin), and incus.proxy.
 # Kept compatible with bash 3.2 and BSD sed (macOS).
 
 # Filter: drop terminal escape sequences and control characters, then trim
