@@ -83,6 +83,7 @@ incs my-project claude
 incs my-project                        # Shell into container (default)
 incs -s my-project                     # Shell (explicit)
 incs -s my-project mix test            # Run a command in container
+incs -s my-project "mix test | tail"   # One quoted string runs as a shell line
 incs -i my-project                     # Create a new container
 incs -i my-project --from base-dev     # Create from template
 incs -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost

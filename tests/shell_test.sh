@@ -85,6 +85,29 @@ assert_eq "group lookup unavailable: falls back to the host GID" \
   "setpriv --reuid=$HOST_UID_NOW --regid=$HOST_GID_NOW --groups=$HOST_GID_NOW --inh-caps=-all -- zsh -li" \
   "$(launched)"
 
+echo "workspace and command arguments"
+
+fresh_box; with_user_groups
+shell box >/dev/null 2>&1
+assert_contains "no recorded workspace: starts in /workspace" " --cwd /workspace " "$(last_call)"
+
+fresh_box; with_user_groups
+incus config set box user.agent-incus.workspace=/src
+shell box >/dev/null 2>&1
+assert_contains "recorded workspace: starts there" " --cwd /src " "$(last_call)"
+
+fresh_box; with_user_groups
+shell box "echo a | wc -l" >/dev/null 2>&1
+assert_eq "one argument: passed through as a command line" \
+  "setpriv --reuid=$HOST_UID_NOW --regid=$USER_GID --groups=$USER_GID,$DOCKER_GID --inh-caps=-all -- zsh -lic echo a | wc -l" \
+  "$(launched)"
+
+fresh_box; with_user_groups
+shell box touch "a b" 'c;d' >/dev/null 2>&1
+assert_eq "several arguments: each quoted so its boundaries survive" \
+  "setpriv --reuid=$HOST_UID_NOW --regid=$USER_GID --groups=$USER_GID,$DOCKER_GID --inh-caps=-all -- zsh -lic touch a\\ b c\\;d" \
+  "$(launched)"
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]

@@ -65,15 +65,27 @@ fi
 
 RUN_AS=(setpriv --reuid="$HOST_UID" --regid="$PRIMARY_GID" --groups="$USER_GIDS" --inh-caps=-all --)
 
+# incus.init records where the workspace went (--workspace).
+WORKSPACE=$(incus config get "$CONTAINER" user.agent-incus.workspace 2>/dev/null || true)
+WORKSPACE="${WORKSPACE:-/workspace}"
+
 if [[ ${#CMD_ARGS[@]} -gt 0 ]]; then
+  # One argument is a shell command line (`incs -s box "a | b"`). Several are
+  # a command and its arguments: quote each so the boundaries survive zsh.
+  if [[ ${#CMD_ARGS[@]} -eq 1 ]]; then
+    CMD="${CMD_ARGS[0]}"
+  else
+    printf -v CMD '%q ' "${CMD_ARGS[@]}"
+    CMD="${CMD% }"
+  fi
   exec incus exec "$CONTAINER" \
-    --cwd /workspace \
+    --cwd "$WORKSPACE" \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
-    -- "${RUN_AS[@]}" zsh -lic "${CMD_ARGS[*]}"
+    -- "${RUN_AS[@]}" zsh -lic "$CMD"
 else
   exec incus exec "$CONTAINER" \
-    --cwd /workspace \
+    --cwd "$WORKSPACE" \
     --env "HOME=/home/$HOST_USER" \
     --env "USER=$HOST_USER" \
     -- "${RUN_AS[@]}" zsh -li

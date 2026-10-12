@@ -625,8 +625,10 @@ copy_workspace() {
   fi
   incus exec "$CONTAINER_NAME" -- chown -R "$HOST_USER:$HOST_USER" "$CONTAINER_WORKSPACE" </dev/null
   # Git refuses a repository it considers someone else's ("dubious ownership").
+  local ws_q
+  printf -v ws_q '%q' "$CONTAINER_WORKSPACE"
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
-    "git config --global --add safe.directory '$CONTAINER_WORKSPACE' 2>/dev/null || true"
+    "git config --global --add safe.directory $ws_q 2>/dev/null || true"
 }
 
 save_template() {
@@ -730,6 +732,9 @@ require_commands incus curl sudo realpath
 [[ -z "$CONTAINER_NAME" ]] && { warn "Container name required"; echo ""; usage; }
 [[ ! "$CONTAINER_NAME" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] && error "Invalid container name: must start with a letter, only letters/digits/hyphens"
 incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAME' already exists"
+[[ "$CONTAINER_WORKSPACE" == /?* ]] || error "--workspace must be an absolute path other than / (got: $CONTAINER_WORKSPACE)"
+# Remote shell snippets cd into the workspace; quote it once for all of them.
+printf -v WORKSPACE_Q '%q' "$CONTAINER_WORKSPACE"
 
 # VM flag validation. VM-only options are meaningless for containers: warn and
 # ignore rather than error, so an errant flag never blocks a build.
@@ -906,6 +911,8 @@ else
   incus launch "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE"
 fi
 incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
+# incus.shell starts sessions here.
+incus config set "$CONTAINER_NAME" user.agent-incus.workspace="$CONTAINER_WORKSPACE"
 
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
@@ -1017,16 +1024,13 @@ wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
 if [[ "$FROM_BASE_IMAGE" == "0" ]]; then
 
   log "Configuring zsh..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'ZSHEOF'
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "bash -s -- $WORKSPACE_Q" <<'ZSHEOF'
     set -e
 
-    # Auto-cd to /workspace on login
+    # Auto-cd to the workspace on login, unless the session already chose a
+    # directory (incus.shell passes --cwd).
     touch ~/.zshrc
-    cat >> ~/.zprofile <<'WORKSPACE'
-if [[ -d /workspace ]]; then
-    cd /workspace
-fi
-WORKSPACE
+    printf 'if [[ $PWD == "$HOME" && -d %q ]]; then\n    cd %q\nfi\n' "$1" "$1" >> ~/.zprofile
 ZSHEOF
 
   # Install Oh My Zsh — must run before appending to .zshrc since
@@ -1056,7 +1060,7 @@ revoke_build_sudo || error "Could not revoke build-time sudo"
 # reached it.
 if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] && [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
   log "Trusting workspace mise config..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cd '$CONTAINER_WORKSPACE' && mise trust"
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cd $WORKSPACE_Q && mise trust"
 
   # Pre-clone asdf plugins with system git before `mise install`.
   # mise's built-in gix cloner trips on some plugin repos (e.g. asdf-php)
@@ -1065,13 +1069,14 @@ if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] && [[ -f "$WORKSPACE_PATH/
   # gix in current mise releases, so we sidestep the clone entirely: if the
   # plugin dir already exists, mise skips its own clone.
   log "Pre-cloning mise plugins via system git (gix workaround)..."
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'PRECLONE'
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "bash -s -- $WORKSPACE_Q" <<'PRECLONE'
     set -e
-    tools=$(python3 - <<'PY'
-import os, re
+    tools=$(python3 - "$1" <<'PY'
+import os, re, sys
+ws = sys.argv[1]
 tools = set()
 for f in ("mise.toml", ".mise.toml"):
-    p = f"/workspace/{f}"
+    p = os.path.join(ws, f)
     if not os.path.exists(p):
         continue
     in_tools = False
@@ -1090,7 +1095,7 @@ for f in ("mise.toml", ".mise.toml"):
             km = re.match(r'^"?([A-Za-z0-9_-]+)"?\s*=', s)
             if km:
                 tools.add(km.group(1))
-p = "/workspace/.tool-versions"
+p = os.path.join(ws, ".tool-versions")
 if os.path.exists(p):
     with open(p) as fh:
         for line in fh:
@@ -1121,7 +1126,7 @@ PRECLONE
   log "Running mise install for workspace..."
   # Non-fatal: a broken tool version in the workspace config shouldn't nuke an
   # otherwise-complete instance (plugins and env are already applied by now).
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cd '$CONTAINER_WORKSPACE' && mise install" || \
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cd $WORKSPACE_Q && mise install" || \
     warn "mise install failed — fix tool versions and rerun 'mise install' inside the instance"
 fi
 

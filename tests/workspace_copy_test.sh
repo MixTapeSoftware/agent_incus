@@ -77,12 +77,18 @@ assert_eq "copy: .git arrives" "yes" "$([[ -f "$(root)/workspace/.git/HEAD" ]] &
 assert_contains "copy: handed to the user" "box :: chown -R dev:dev /workspace" "$(execs)"
 assert_contains "copy: says what it copies" "Copying $HOST into /workspace" "$OUT"
 assert_not_contains "copy: nothing is mounted" "config device add" "$(calls)"
-assert_contains "copy: git trusts the workspace" "safe.directory '/workspace'" "$(execs)"
+assert_contains "copy: git trusts the workspace" "safe.directory /workspace " "$(execs)"
 
 # A different path inside the container.
 fresh_box
 CONTAINER_WORKSPACE=/src copy
 assert_eq "--workspace: copies to that path" "committed" "$(cat "$(root)/src/README" 2>/dev/null)"
+
+# The path reaches a remote shell (su -c): quoted, it stays one word.
+fresh_box
+CONTAINER_WORKSPACE="/it's here" copy
+assert_eq "--workspace with a quote and a space: git trusts exactly that path" \
+  "/it's here" "$(git config --file "$(root)/home/dev/.gitconfig" --get safe.directory 2>/dev/null)"
 
 # ===========================================================================
 echo "starting empty"
@@ -128,6 +134,11 @@ for flag in --no-mount --git-rw --mount-path; do
   out="$(bash "$REPO_ROOT/incus.init" "$flag" x box 2>&1)" && rc=0 || rc=$?
   assert_eq "$flag: rejected" "1" "$rc"
   assert_contains "$flag: as an unknown option" "Unknown option: $flag" "$out"
+done
+for ws in src /; do
+  out="$(bash "$REPO_ROOT/incus.init" -w "$ws" newbox 2>&1)" && rc=0 || rc=$?
+  assert_eq "--workspace $ws: rejected" "1" "$rc"
+  assert_contains "--workspace $ws: says it must be absolute" "--workspace must be an absolute path" "$out"
 done
 
 echo ""
