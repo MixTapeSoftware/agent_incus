@@ -374,7 +374,7 @@ STATUS_TTY_SAVED=""
 STATUS_TMP=""
 
 status_tui_restore() {
-  printf '\033[?25h\033[?1049l'
+  printf '\033[?7h\033[?25h\033[?1049l'
   if [[ -n "$STATUS_TTY_SAVED" ]]; then stty "$STATUS_TTY_SAVED" 2>/dev/null || true; fi
   if [[ -n "$STATUS_TMP" ]]; then rm -rf "$STATUS_TMP"; fi
 }
@@ -390,6 +390,7 @@ status_interactive() {
   local names=() states=() count=0 sel=0 sel_name="" hl i
   local pending="" still msg="" fetch=true last=-1 jobs=0
   local key rest line out table name state verb log_file p_verb p_name p_log err
+  local lines=() frame=() size term_rows n head tail body_len avail top=0 sel_line
   if [[ -n "${NO_COLOR:-}" ]]; then color=false; fi
 
   STATUS_TMP=$(mktemp -d)
@@ -398,7 +399,9 @@ status_interactive() {
   trap 'exit 130' INT
   trap 'exit 143' TERM
   stty -echo
-  printf '\033[?1049h\033[?25l'
+  # Alternate screen, hidden cursor, and no line wrapping: a long line is
+  # clipped at the right edge instead of pushing the frame down a row.
+  printf '\033[?1049h\033[?25l\033[?7l'
   host=$(status_host)
   prev=$sample
 
@@ -457,10 +460,50 @@ status_interactive() {
     fi
 
     table=$(status_render "$json" "$prev" "$at" "$host" "$color" "$hl") || table="Failed to render status"
+    # Fit the frame to the terminal. The header row stays at the top and the
+    # footer, key help, and messages stay at the bottom; the instance rows
+    # between them scroll to keep the highlighted row visible.
+    lines=()
+    sel_line=-1
+    while IFS= read -r line; do
+      if [[ "$line" == $'\033[7m'* ]]; then sel_line=${#lines[@]}; fi
+      lines+=("$line")
+    done <<<"$table"
+    n=${#lines[@]}
+    head=0
+    tail=0
+    if ((n >= 3 && sel_line >= 0)); then
+      head=1   # column header
+      tail=2   # blank line and running count
+    fi
+    size=$(stty size 2>/dev/null) || size=""
+    term_rows=${size%% *}
+    if ! [[ "$term_rows" =~ ^[0-9]+$ ]] || ((term_rows < 1)); then term_rows=24; fi
+    frame=()
+    for ((i = 0; i < head; i++)); do frame+=("${lines[$i]}"); done
+    body_len=$((n - head - tail))
+    avail=$((term_rows - head - tail - 2))
+    if [[ -n "$msg" ]]; then avail=$((avail - $(printf '%s\n' "$msg" | wc -l))); fi
+    if ((avail < 1)); then avail=1; fi
+    if ((sel == 0)); then top=0; fi
+    if ((sel_line >= 0)); then
+      if ((sel_line - head < top)); then top=$((sel_line - head)); fi
+      if ((sel_line - head >= top + avail)); then top=$((sel_line - head - avail + 1)); fi
+    fi
+    if ((top > body_len - avail)); then top=$((body_len - avail)); fi
+    if ((top < 0)); then top=0; fi
+    for ((i = head + top; i < n - tail && i < head + top + avail; i++)); do frame+=("${lines[$i]}"); done
+    for ((i = n - tail; i < n; i++)); do frame+=("${lines[$i]}"); done
+    frame+=("" "↑/↓ or j/k select · space start/stop · q quit")
+    if [[ -n "$msg" ]]; then
+      while IFS= read -r line; do frame+=("$line"); done <<<"$msg"
+    fi
+    # No newline after the last row, or a full-height frame would scroll.
     out=$'\033[H'
-    while IFS= read -r line; do out+="$line"$'\033[K\n'; done <<<"$table"
-    out+=$'\033[K\n'"↑/↓ or j/k select · space start/stop · q quit"$'\033[K\n'
-    while IFS= read -r line; do out+="$line"$'\033[K\n'; done <<<"$msg"
+    for ((i = 0; i < ${#frame[@]}; i++)); do
+      if ((i > 0)); then out+=$'\n'; fi
+      out+="${frame[$i]}"$'\033[K'
+    done
     out+=$'\033[J'
     printf '%s' "$out"
 

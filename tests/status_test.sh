@@ -167,6 +167,46 @@ if script -qec true /dev/null >/dev/null 2>&1; then
     kill "$watchdog" 2>/dev/null || true) || true
   if [[ "$out" == *"Agent Incus instances:"* && "$out" != *$'\033[?1049h'* ]]; then once=yes; else once=no; fi
   assert_eq "--once on a terminal prints the table only" "yes" "$once"
+
+  # More instances than terminal rows: every frame fits the screen, the
+  # highlighted row is always on it, and space acts on that row.
+  big="$stub/big"
+  mkdir -p "$big"
+  cp "$stub/resources.json" "$big/"
+  jq -n '[range(0; 30) as $i | {name: ("instance-" + (if $i < 10 then "0" else "" end) + ($i | tostring)),
+    status: "Running", type: "container", expanded_config: {"user.managed-by": "agent-incus"},
+    state: {pid: (1000 + $i), cpu: {usage: 1}, memory: {usage: 1048576}, disk: {}, network: {}}}]' > "$big/sample1.json"
+  cp "$big/sample1.json" "$big/sample2.json"
+  out=$(
+    {
+      sleep 1.5
+      for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do printf 'j'; sleep 0.1; done
+      sleep 0.5
+      printf ' ';      sleep 1.5   # stop instance-15
+      printf 'q';      sleep 1
+    } | STUB="$big" PATH="$stub:$PATH" TERM=xterm \
+      script -qec "stty rows 10 cols 100; bash '$REPO_ROOT/incs' status" /dev/null
+  ) || true
+  assert_eq "space acts on the visible selection" "stop instance-15" "$(cat "$big/calls" 2>/dev/null)"
+  # Each frame starts with cursor-home and ends at clear-to-end.
+  tallest=0
+  bad=0
+  rest=${out//$'\r'/}
+  rest=${rest#*$'\033[H'}
+  while [[ -n "$rest" ]]; do
+    f=${rest%%$'\033[H'*}
+    f=${f%%$'\033[J'*}
+    rows=$(printf '%s\n' "$f" | wc -l)
+    if ((rows > tallest)); then tallest=$((rows)); fi
+    if [[ "$f" != *$'\033[7m'* ]]; then bad=$((bad + 1)); fi
+    if [[ "$rest" == *$'\033[H'* ]]; then rest=${rest#*$'\033[H'}; else rest=""; fi
+  done
+  if ((tallest >= 1 && tallest <= 10)); then fits=yes; else fits="no ($tallest rows)"; fi
+  assert_eq "frames fit a 10-row terminal" "yes" "$fits"
+  assert_eq "every frame shows the highlighted row" "0" "$bad"
+  last=${out##*$'\033[H'}
+  if [[ "$last" == *$'\033[7m\033[32m●\033[39m  instance-15'* ]]; then shown=yes; else shown=no; fi
+  assert_eq "instance-15 is highlighted on screen" "yes" "$shown"
 else
   echo "  skip (needs util-linux script)"
 fi
