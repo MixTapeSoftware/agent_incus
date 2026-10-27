@@ -432,16 +432,17 @@ defaults are `20GiB` disk / `4GiB` memory / `4` vCPUs (override with
 container-only and would be rejected by Incus), and Tailscale uses the VM's
 native `/dev/net/tun` instead of a device passthrough.
 
-**Templates work the same** — with one rule: `--vm` must be on **both** the
-build and the launch, because a published VM image can only launch as a VM.
+**Templates work the same.** Build a VM template with `--vm`; launches from it
+are VMs automatically, because a published VM image can only launch as a VM.
 
 ```bash
 incs -i --vm --template my-vm-base          # publishes a VM-type template
-incs -i --vm --from my-vm-base my-vm         # must include --vm
+incs -i --from my-vm-base my-vm             # launches as a VM; --vm is inferred
 ```
 
-Omitting `--vm` on the launch (or adding it to a container template) fails early
-with a clear image-type message rather than a cryptic Incus error.
+Adding `--vm` to a launch from a container template fails early with a clear
+image-type message rather than a cryptic Incus error. The `--vm-*` resource
+options apply to a VM launched from a template too.
 
 > Requires a host that can run VMs (KVM / `/dev/kvm`). On macOS this is the
 > Colima VM that `incus.init` bootstraps.

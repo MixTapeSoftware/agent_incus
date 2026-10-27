@@ -744,6 +744,28 @@ incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAM
 # Remote shell snippets cd into the workspace; quote it once for all of them.
 printf -v WORKSPACE_Q '%q' "$CONTAINER_WORKSPACE"
 
+# ---------------------------------------------------------------------------
+# Detect if launching from a local base image (skip provisioning)
+# ---------------------------------------------------------------------------
+FROM_BASE_IMAGE=0
+if [[ "$BASE_IMAGE" != images:* ]]; then
+  FROM_BASE_IMAGE=1
+  if ! incus image info "$BASE_IMAGE" &>/dev/null; then
+    error "Template image '$BASE_IMAGE' not found. Run 'incus image list' to see available templates."
+  fi
+  # Local templates are single-type: a VM template can't launch as a container
+  # and vice-versa. A VM template implies --vm; a container template given --vm
+  # fails here with a clear message instead of a cryptic one mid-launch.
+  _img_type="$(incus image info "$BASE_IMAGE" 2>/dev/null | awk -F': ' '/^Type:/{print $2; exit}')"
+  if [[ "$IS_VM" == "1" && "$_img_type" == "container" ]]; then
+    error "Template '$BASE_IMAGE' is a container image; drop --vm or rebuild it with --vm."
+  elif [[ "$IS_VM" == "0" && "$_img_type" == "virtual-machine" ]]; then
+    log "Template '$BASE_IMAGE' is a VM image; launching as a VM"
+    IS_VM=1
+  fi
+  log "Using local template: $BASE_IMAGE"
+fi
+
 # VM flag validation. VM-only options are meaningless for containers: warn and
 # ignore rather than error, so an errant flag never blocks a build.
 if [[ "$IS_VM" == "1" ]]; then
@@ -884,27 +906,6 @@ trap 'exit 143' TERM
 trap 'exit 129' HUP
 
 ensure_profile
-
-# ---------------------------------------------------------------------------
-# Detect if launching from a local base image (skip provisioning)
-# ---------------------------------------------------------------------------
-FROM_BASE_IMAGE=0
-if [[ "$BASE_IMAGE" != images:* ]]; then
-  FROM_BASE_IMAGE=1
-  if ! incus image info "$BASE_IMAGE" &>/dev/null; then
-    error "Template image '$BASE_IMAGE' not found. Run 'incus image list' to see available templates."
-  fi
-  # Local templates are single-type: a VM template can't launch as a container
-  # and vice-versa. Catch the mismatch here with a clear message instead of
-  # letting Incus emit a cryptic error mid-launch.
-  _img_type="$(incus image info "$BASE_IMAGE" 2>/dev/null | awk -F': ' '/^Type:/{print $2; exit}')"
-  if [[ "$IS_VM" == "1" && "$_img_type" == "container" ]]; then
-    error "Template '$BASE_IMAGE' is a container image; drop --vm or rebuild it with --vm."
-  elif [[ "$IS_VM" == "0" && "$_img_type" == "virtual-machine" ]]; then
-    error "Template '$BASE_IMAGE' is a VM image; add --vm to launch it."
-  fi
-  log "Using local template: $BASE_IMAGE"
-fi
 
 # ---------------------------------------------------------------------------
 # Create container
