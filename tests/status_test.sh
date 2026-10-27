@@ -66,6 +66,8 @@ cat > "$stub/sample1.json" <<'EOF'
 [
  {"name":"alpha","status":"Running","type":"container",
   "expanded_config":{"user.managed-by":"agent-incus","limits.memory":"4GiB"},
+  "config":{"image.description":"Ubuntu noble amd64"},"profiles":["default","agent-incus"],
+  "created_at":"2026-10-12T14:03:12.5-05:00","last_used_at":"2026-10-26T09:12:00Z",
   "state":{"pid":100,"cpu":{"usage":5000000000},"memory":{"usage":432316416},
    "disk":{"root":{"usage":2254857830,"total":107374182400}},
    "network":{"docker0":{"addresses":[{"family":"inet","address":"172.17.0.1","scope":"global"}]},
@@ -81,6 +83,7 @@ cat > "$stub/sample1.json" <<'EOF'
    "network":{"eth0":{"addresses":[{"family":"inet","address":"10.0.0.8","scope":"global"}]}}}},
  {"name":"gamma","status":"Stopped","type":"container","expanded_config":{"user.managed-by":"agent-incus"},
   "expanded_devices":{"root":{"type":"disk","path":"/","pool":"default","size":"20GiB"}},
+  "last_used_at":"0001-01-01T00:00:00Z",
   "state":{"pid":0,"cpu":{"usage":0},"memory":{"usage":0},
    "disk":{"root":{"usage":3221225472,"total":21474836480}},"network":null}}
 ]
@@ -177,36 +180,128 @@ if script -qec true /dev/null >/dev/null 2>&1; then
     status: "Running", type: "container", expanded_config: {"user.managed-by": "agent-incus"},
     state: {pid: (1000 + $i), cpu: {usage: 1}, memory: {usage: 1048576}, disk: {}, network: {}}}]' > "$big/sample1.json"
   cp "$big/sample1.json" "$big/sample2.json"
+  # 90 columns shows the table, 120 the list and details side by side.
+  for cols in 90 120; do
+    rm -f "$big/count" "$big/calls"
+    out=$(
+      {
+        sleep 1.5
+        for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do printf 'j'; sleep 0.1; done
+        sleep 0.5
+        printf ' ';      sleep 1.5   # stop instance-15
+        printf 'q';      sleep 1
+      } | STUB="$big" PATH="$stub:$PATH" TERM=xterm \
+        script -qec "stty rows 10 cols $cols; bash '$REPO_ROOT/incs' status" /dev/null
+    ) || true
+    assert_eq "space acts on the visible selection ($cols cols)" "stop instance-15" "$(cat "$big/calls" 2>/dev/null)"
+    # Each frame starts with cursor-home and ends at clear-to-end.
+    tallest=0
+    bad=0
+    rest=${out//$'\r'/}
+    rest=${rest#*$'\033[H'}
+    while [[ -n "$rest" ]]; do
+      f=${rest%%$'\033[H'*}
+      f=${f%%$'\033[J'*}
+      rows=$(printf '%s\n' "$f" | wc -l)
+      if ((rows > tallest)); then tallest=$((rows)); fi
+      if [[ "$f" != *$'\033[7m'* ]]; then bad=$((bad + 1)); fi
+      if [[ "$rest" == *$'\033[H'* ]]; then rest=${rest#*$'\033[H'}; else rest=""; fi
+    done
+    if ((tallest >= 1 && tallest <= 10)); then fits=yes; else fits="no ($tallest rows)"; fi
+    assert_eq "frames fit a 10-row terminal ($cols cols)" "yes" "$fits"
+    assert_eq "every frame shows the highlighted row ($cols cols)" "0" "$bad"
+    last=${out##*$'\033[H'}
+    if [[ "$last" == *$'\033[7m\033[32m●\033[39m  instance-15'* ]]; then shown=yes; else shown=no; fi
+    assert_eq "instance-15 is highlighted on screen ($cols cols)" "yes" "$shown"
+  done
+
+  echo "panels:"
+  # Runs the live view in a pseudo-terminal of the given size, typing the
+  # keys piped in, and prints everything it drew.
+  tui() {
+    rm -f "$stub/count" "$stub/calls"
+    STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "stty $1; bash '$REPO_ROOT/incs' status" /dev/null
+  }
+  last_frame() { local f=${1##*$'\033[H'}; printf '%s\n' "${f%%$'\033[J'*}"; }
+  plain() { sed $'s/\033\\[[0-9;?]*[A-Za-z]//g; s/\r//g'; }
+
+  # Idle samples, so alpha's CPU reads 0.0%.
+  cp "$stub/sample1.json" "$stub/sample2.json"
+  out=$({ sleep 1.5; printf 'q'; sleep 1; } | tui "rows 20 cols 120") || true
+  frame=$(last_frame "$out" | plain)
+  if [[ "$frame" == *"│ alpha"* && "$frame" == *"Profiles      default, agent-incus"* ]]; then side=yes; else side=no; fi
+  assert_eq "a wide terminal shows the details beside the list" "yes" "$side"
+  details=$(sed -n 's/.*│ //p' <<<"$frame" | sed 's/ *$//')
+  expected_details=$(cat <<'EOF'
+alpha
+ Info
+
+State         Running
+Type          Container
+CPU           0.0%
+Memory        412.3MiB / 16.0GiB
+Disk          2.1GiB
+IPv4          10.0.0.5, 100.64.0.9
+Image         Ubuntu noble amd64
+Profiles      default, agent-incus
+Created       2026-10-12 14:03
+Last started  2026-10-26 09:12
+EOF
+)
+  assert_eq "details of the selected instance" "$expected_details" "$(sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' <<<"$details")"
+  # The dots are one column but three bytes; count them as one.
+  dividers=$(sed 's/●/o/g; s/○/o/g; s/◐/o/g' <<<"$frame" |
+    while IFS= read -r line; do
+      if [[ "$line" == *"│"* ]]; then prefix=${line%%│*}; echo "${#prefix}"; fi
+    done | sort -u | wc -l)
+  assert_eq "every row puts the divider in the same column" "1" "$((dividers))"
+
+  # Tab gives the keys to the details: j scrolls them instead of moving the
+  # selection, and space still acts on the selected instance.
   out=$(
     {
       sleep 1.5
-      for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do printf 'j'; sleep 0.1; done
-      sleep 0.5
-      printf ' ';      sleep 1.5   # stop instance-15
-      printf 'q';      sleep 1
-    } | STUB="$big" PATH="$stub:$PATH" TERM=xterm \
-      script -qec "stty rows 10 cols 100; bash '$REPO_ROOT/incs' status" /dev/null
+      printf 'j';  sleep 0.3   # alpha -> gamma
+      printf '\t'; sleep 0.3   # keys to the details
+      printf 'j';  sleep 0.3   # scrolls, gamma stays selected
+      printf ' ';  sleep 1.5   # start gamma
+      printf 'q';  sleep 1
+    } | tui "rows 20 cols 120"
   ) || true
-  assert_eq "space acts on the visible selection" "stop instance-15" "$(cat "$big/calls" 2>/dev/null)"
-  # Each frame starts with cursor-home and ends at clear-to-end.
-  tallest=0
-  bad=0
-  rest=${out//$'\r'/}
-  rest=${rest#*$'\033[H'}
+  assert_eq "with the details focused, space acts on the selection" "start gamma" "$(cat "$stub/calls" 2>/dev/null)"
+  frame=$(last_frame "$out")
+  if [[ "$frame" == *$'\033[1m○  gamma'* && "$frame" == *$'\033[7m Info \033[27m'* ]]; then focused=yes; else focused=no; fi
+  assert_eq "focus shows on the details tab, not the list" "yes" "$focused"
+
+  # Narrow: enter opens the details full screen, j scrolls them, esc goes
+  # back to the table.
+  out=$(
+    {
+      sleep 1.5
+      printf '\r'; sleep 1.2   # details
+      for _ in 1 2 3 4 5 6; do printf 'j'; sleep 0.1; done
+      sleep 1.2
+      printf '\033'; sleep 2   # back
+      printf 'q';  sleep 1
+    } | tui "rows 12 cols 80"
+  ) || true
+  frames=()
+  rest=${out#*$'\033[H'}
   while [[ -n "$rest" ]]; do
     f=${rest%%$'\033[H'*}
-    f=${f%%$'\033[J'*}
-    rows=$(printf '%s\n' "$f" | wc -l)
-    if ((rows > tallest)); then tallest=$((rows)); fi
-    if [[ "$f" != *$'\033[7m'* ]]; then bad=$((bad + 1)); fi
+    frames+=("$(printf '%s' "${f%%$'\033[J'*}" | plain)")
     if [[ "$rest" == *$'\033[H'* ]]; then rest=${rest#*$'\033[H'}; else rest=""; fi
   done
-  if ((tallest >= 1 && tallest <= 10)); then fits=yes; else fits="no ($tallest rows)"; fi
-  assert_eq "frames fit a 10-row terminal" "yes" "$fits"
-  assert_eq "every frame shows the highlighted row" "0" "$bad"
-  last=${out##*$'\033[H'}
-  if [[ "$last" == *$'\033[7m\033[32m●\033[39m  instance-15'* ]]; then shown=yes; else shown=no; fi
-  assert_eq "instance-15 is highlighted on screen" "yes" "$shown"
+  opened=no
+  scrolled=no
+  for f in "${frames[@]}"; do
+    if [[ "$f" == "alpha"$'\n'* && "$f" == *"State         Running"* && "$f" != *"│"* ]]; then opened=yes; fi
+    if [[ "$f" == "alpha"$'\n'* && "$f" == *"Last started  2026-10-26 09:12"* ]]; then scrolled=yes; fi
+  done
+  assert_eq "enter opens the details full screen" "yes" "$opened"
+  assert_eq "j scrolls the details" "yes" "$scrolled"
+  if [[ "${frames[${#frames[@]}-1]}" == *"NAME   TYPE"* ]]; then back=yes; else back=no; fi
+  assert_eq "esc returns to the table" "yes" "$back"
 else
   echo "  skip (needs util-linux script)"
 fi
