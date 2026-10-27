@@ -302,6 +302,21 @@ EOF
   assert_eq "j scrolls the details" "yes" "$scrolled"
   if [[ "${frames[${#frames[@]}-1]}" == *"NAME   TYPE"* ]]; then back=yes; else back=no; fi
   assert_eq "esc returns to the table" "yes" "$back"
+
+  # An image description comes from image metadata. A newline in it must not
+  # forge a list row, and an escape sequence must not reach the terminal.
+  cp "$stub/sample1.json" "$stub/sample1.json.orig"
+  jq '(.[] | select(.name == "alpha") | .config["image.description"]) = "Evil\nL\tFORGED ROW\u001b]0;pwned\u0007"' \
+    "$stub/sample1.json.orig" > "$stub/sample1.json"
+  cp "$stub/sample1.json" "$stub/sample2.json"
+  out=$({ sleep 1.5; printf 'q'; sleep 1; } | tui "rows 20 cols 120") || true
+  if [[ "$out" != *$'\033]0;'* ]]; then clean=yes; else clean=no; fi
+  assert_eq "escape sequences in metadata never reach the terminal" "yes" "$clean"
+  frame=$(last_frame "$out" | plain)
+  if grep -q '^FORGED ROW' <<<"$frame" || ! grep -q 'Image         Evil L FORGED ROW' <<<"$frame"; then forged=yes; else forged=no; fi
+  assert_eq "a newline in metadata stays on the Image row" "no" "$forged"
+  mv "$stub/sample1.json.orig" "$stub/sample1.json"
+  cp "$stub/sample1.json" "$stub/sample2.json"
 else
   echo "  skip (needs util-linux script)"
 fi

@@ -345,7 +345,9 @@ def info:
       ["Profiles", ($i.profiles // [] | if length == 0 then "-" else join(", ") end)],
       ["Created", ($i.created_at | when)],
       ["Last started", ($i.last_used_at | when)] ]
-  | .[] | (.[0] | pad(14)) + .[1];
+  # Values such as the image description come from image metadata. A newline
+  # would forge a tagged row, and an escape sequence would reach the terminal.
+  | .[] | (.[0] | pad(14)) + (.[1] | tostring | gsub("[[:cntrl:]]"; " "));
 
 ($at // now) as $t
 | [ ordered | to_entries[] | (.value | row($t)) + {index: .key, inst: .value} ] as $rows
