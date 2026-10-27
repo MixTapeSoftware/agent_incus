@@ -89,8 +89,34 @@ incus profile device add "$PROFILE" eth0 nic network="$NET" \
   security.ipv4_filtering=true security.mac_filtering=true >/dev/null || { fail "profile NIC"; exit 1; }
 info "launching $X from $IMAGE (the first run downloads the image)"
 incus launch "$IMAGE" "$X" -p default -p "$PROFILE" >/dev/null || { fail "launch $X"; exit 1; }
+# Why DHCP failed: a dead dnsmasq, a host firewall dropping DHCP on a new
+# bridge (ufw does this by default), or port=0 itself. The control turns DNS
+# back on and retries, which separates the last from the other two.
+diagnose_dhcp() {
+  info "$X state: $(incus list "^$X\$" -c s --format csv)"
+  info "$X eth0: $(incus exec "$X" -- ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2}' | tr '\n' ' ')"
+  info "dnsmasq for $NET: $(pgrep -af "dnsmasq.*$NET" | head -1)"
+  info "leases: $(incus network list-leases "$NET" --format csv 2>/dev/null | tr '\n' ';')"
+  if command -v ufw >/dev/null; then
+    info "ufw: $(sudo -n ufw status 2>/dev/null | head -1 || echo 'installed; status needs sudo')"
+  fi
+  local f
+  for f in "/var/log/incus/dnsmasq.$NET.log" "/var/snap/incus/common/incus/logs/dnsmasq.$NET.log"; do
+    if sudo -n test -e "$f" 2>/dev/null || [[ -e "$f" ]]; then
+      info "last lines of $f:"; { sudo -n tail -5 "$f" 2>/dev/null || tail -5 "$f"; } | sed 's/^/    /'
+    fi
+  done
+  info "control: turning DNS back on (unset raw.dnsmasq) and restarting $X"
+  incus network unset "$NET" raw.dnsmasq >/dev/null
+  incus restart "$X" >/dev/null
+  if wait_ip "$X"; then
+    info "RESULT: DHCP works with DNS on and fails with port=0. port=0 itself breaks DHCP here."
+  else
+    info "RESULT: DHCP fails on this new bridge even with DNS on, so port=0 isn't the cause. Check the host firewall. With ufw: 'sudo ufw allow in on $NET', rerun, then 'sudo ufw delete allow in on $NET'."
+  fi
+}
 info "waiting up to 60s for a DHCP address"
-if wait_ip "$X"; then pass "DHCP still hands out an address ($(ip_of "$X"))"; else fail "DHCP hands out an address"; exit 1; fi
+if wait_ip "$X"; then pass "DHCP still hands out an address ($(ip_of "$X"))"; else fail "DHCP hands out an address"; diagnose_dhcp; exit 1; fi
 X_IP="$(ip_of "$X")"
 
 resolv="$(incus exec "$X" -- cat /etc/resolv.conf 2>/dev/null)"
