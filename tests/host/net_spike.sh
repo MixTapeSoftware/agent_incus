@@ -26,7 +26,7 @@ SET=incs-spike-clients          # address set: the proxy's attached clients
 ACL_P=incs-spike-p-in           # proxy ingress: 443 from the set only
 ACL_PREC=incs-spike-prec        # allow and drop on the same port: which wins?
 ACL_AGENT=incs-spike-agent      # agent: ingress from the host only, no egress to the host
-IMAGE=images:alpine/3.20
+IMAGE=images:alpine/3.24
 HOST_PORT=47999                 # host side of the proxy-device check
 HOST_SVC_PORT=47998             # a host service on the bridge address
 
