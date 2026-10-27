@@ -94,6 +94,7 @@ incs -n my-project -r 4000            # Remove proxy for port 4000
 incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
+incs                                   # Live view of all instances (same as incs status)
 incs status                            # Live view of all instances; space starts/stops one
 incs status --once                     # Print the status table once
 incs -d my-project                     # Delete a container
@@ -109,15 +110,18 @@ The individual scripts and aliases (`inci`, `incn`) still work directly.
 
 ![incs status live view grouping Agent Incus instances, with one row highlighted and state, type, CPU, memory, disk, and IPv4 columns](.github/images/incs-status.png)
 
-In a terminal, `incs status` is a live view that refreshes every second:
+In a terminal, `incs status` is a live view that refreshes every second. On a terminal at least 100 columns wide it has two panels: the instances on the left, with name, CPU, and memory, and the highlighted instance's details on the right. The details add the image, profiles, and when the instance was created and last started. A narrower terminal shows the table, and `Enter` opens the details full screen.
 
 | Key | Action |
 |---|---|
-| `↑` / `↓` or `k` / `j` | Move the highlighted row |
+| `↑` / `↓` or `k` / `j` | Move the highlighted row, or scroll the details while they have the keys |
+| `Tab` | Move the keys between the list and the details |
+| `Enter` | Give the keys to the details; on a narrow terminal, open them full screen |
 | `space` | Stop the highlighted instance if it is running, otherwise start it |
-| `q` or `Esc` | Quit |
+| `Esc` | Back to the list from the details, otherwise quit |
+| `q` | Quit |
 
-Start and stop run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
+Start and stop run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. `incs` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
 
 ## incus.init Options
 

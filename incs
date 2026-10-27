@@ -34,6 +34,7 @@ usage() {
 Usage: incs [command] [args...]
 
 Commands:
+  (no command)                   Live status view on a terminal, this help otherwise
   <container>                    Shell into container (default)
   -s, shell [--with-sudo] <container> [cmd]
                                  Shell into container (--with-sudo grants temporary sudo)
@@ -46,7 +47,8 @@ Commands:
   -u, update <container>         Update packages in a container
   -ua, update-all                Update packages in all agent-incus containers
   status [--once]                Live view of all instances: state, CPU, memory, disk,
-                                 IPv4; j/k or arrows select, space starts/stops
+                                 IPv4; j/k or arrows select, space starts/stops,
+                                 tab or enter shows details
   new-plugin <slug> [opts]       Generate a new plugin file from a template
   -h, help                       Show this help
 
@@ -56,6 +58,7 @@ Cron:
   cron status                    Show current cron schedule
 
 Examples:
+  incs                                       Live status view (same as incs status)
   incs your-container                        Shell into your-container
   incs -s your-container                     Shell into your-container (explicit)
   incs -s your-container mix test            Run a command in your-container
@@ -258,7 +261,7 @@ def managed: .expanded_config["user.managed-by"] == "agent-incus";
 def ordered: map(select(managed)) + map(select(managed | not));
 '
 
-STATUS_JQ="$STATUS_ORDER_DEFS"'
+STATUS_DEFS="$STATUS_ORDER_DEFS"'
 def pad($w): if length < $w then . + (" " * ($w - length)) else . end;
 def dp1: (. * 10 | round) as $d | "\($d / 10 | floor).\($d % 10)";
 def human:
@@ -301,7 +304,9 @@ def group($title; $rows; $w):
     "", $title,
     ($rows[] | if .index == $sel then "\u001b[7m" + line($w) + "\u001b[27m" else line($w) end)
   end;
+'
 
+STATUS_JQ="$STATUS_DEFS"'
 ($at // now) as $t
 | if length == 0 then "No instances found" else
     [ ordered | to_entries[] | (.value | row($t)) + {index: .key} ] as $rows
@@ -312,6 +317,64 @@ def group($title; $rows; $w):
       group("Other Incus instances:"; [$rows[] | select(.managed | not)]; $w),
       "",
       "\([$rows[] | select(.status == "Running")] | length) of \($rows | length) running"
+        + (if $host.cpus != null then ", host has \($host.cpus) CPUs" else "" end)
+  end
+'
+
+# The two-panel view, as tagged lines for status_frame_panels:
+#   L  a list row, padded to the panel width before any escape codes go in,
+#      so the shell can put the details beside it by position
+#   S  the index of the selected instance among the L rows
+#   R  a details row for the selected instance
+#   F  a footer row
+# The selected row is reversed while the list has the keys, and bold while
+# the details have them.
+STATUS_PANELS_JQ="$STATUS_DEFS"'
+def clip($n): if length > $n then .[0:$n - 1] + "…" else . end;
+def when: if . == null or startswith("0001-") then "-" else .[0:16] | sub("T"; " ") end;
+def lcells: [(.cells[0] | clip(30)), .cells[2], (.cells[3] | split(" / ")[0])];
+def info:
+  . as $r | .inst as $i
+  | [ ["State", $i.status],
+      ["Type", (if $i.type == "virtual-machine" then "Virtual machine" else "Container" end)],
+      ["CPU", $r.cells[2]],
+      ["Memory", $r.cells[3]],
+      ["Disk", $r.cells[4]],
+      ["IPv4", $r.cells[5]],
+      ["Image", ($i.config["image.description"] // "-")],
+      ["Profiles", ($i.profiles // [] | if length == 0 then "-" else join(", ") end)],
+      ["Created", ($i.created_at | when)],
+      ["Last started", ($i.last_used_at | when)] ]
+  | .[] | (.[0] | pad(14)) + .[1];
+
+($at // now) as $t
+| [ ordered | to_entries[] | (.value | row($t)) + {index: .key, inst: .value} ] as $rows
+| if ($rows | length) == 0 then "L\tNo instances found", "S\t-1" else
+    ["NAME", "CPU", "MEMORY"] as $hdr
+    | [range(0; $hdr | length) as $i | [$hdr[$i], ($rows[] | lcells[$i])] | map(length) | max] as $w
+    | ([3 + ($w | add) + 2 * ($w | length - 1), ("Agent Incus instances:" | length)] | max) as $lw
+    | def lrow:
+        (dot + "  " + (lcells | fmt($w) | pad($lw - 3))) as $s
+        | if $sel != .index then $s
+          elif $focus == "list" then "\u001b[7m" + $s + "\u001b[27m"
+          else "\u001b[1m" + $s + "\u001b[22m" end;
+      def lgroup($title; $g):
+        if ($g | length) == 0 then [] else
+          [{text: ("" | pad($lw))}, {text: ($title | pad($lw))}]
+          + [$g[] | {text: lrow, sel: (.index == $sel)}]
+        end;
+    ( [{text: ("   " + ($hdr | fmt($w)) | pad($lw))}]
+      + lgroup("Agent Incus instances:"; [$rows[] | select(.managed)])
+      + lgroup("Other Incus instances:"; [$rows[] | select(.managed | not)]) ) as $left
+    | ($left[] | "L\t" + .text),
+      "S\t\([$left | to_entries[] | select(.value.sel) | .key] | first // -1)",
+      ( $rows[] | select(.index == $sel)
+        | "R\t\u001b[1m" + .inst.name + "\u001b[22m",
+          "R\t" + (if $focus == "info" then "\u001b[7m Info \u001b[27m" else " \u001b[4mInfo\u001b[24m " end),
+          "R\t",
+          ("R\t" + info) ),
+      "F\t",
+      "F\t\([$rows[] | select(.status == "Running")] | length) of \($rows | length) running"
         + (if $host.cpus != null then ", host has \($host.cpus) CPUs" else "" end)
   end
 '
@@ -334,6 +397,12 @@ status_host() {
 status_render() {
   jq -r --argjson prev "$2" --argjson at "$3" --argjson host "$4" \
     --argjson color "$5" --argjson sel "$6" "$STATUS_JQ" <<<"$1"
+}
+
+# Usage: status_render_panels <json> <prev> <at> <host> <color> <sel> <focus>
+status_render_panels() {
+  jq -r --argjson prev "$2" --argjson at "$3" --argjson host "$4" \
+    --argjson color "$5" --argjson sel "$6" --arg focus "$7" "$STATUS_PANELS_JQ" <<<"$1"
 }
 
 cmd_status() {
@@ -369,9 +438,15 @@ cmd_status() {
 # move the highlighted row, space starts or stops it, q quits. Start and
 # stop run in the background so the view keeps refreshing; each job writes
 # its exit code to <log>.rc when it finishes.
+#
+# A terminal at least STATUS_WIDE_COLS wide shows the instances on the left
+# and the selected one's details on the right; tab moves the keys between
+# them. A narrower one shows the table, and enter opens the details full
+# screen until esc.
 # ---------------------------------------------------------------------------
 STATUS_TTY_SAVED=""
 STATUS_TMP=""
+STATUS_WIDE_COLS=100
 
 status_tui_restore() {
   printf '\033[?7h\033[?25h\033[?1049l'
@@ -385,12 +460,93 @@ status_note() {
   printf '%s\n%s\n' "$1" "$2" | sed '/^$/d' | tail -n 3
 }
 
+# The status_frame_* helpers add rows to status_interactive's frame and move
+# its scroll offsets, top (list) and rtop (details), reading its term_rows,
+# msg_lines and sel.
+
+# Fits the table to the terminal. The header row stays at the top and the
+# footer at the bottom; the instance rows between them scroll to keep the
+# highlighted row visible.
+# Usage: status_frame_table <table>
+status_frame_table() {
+  local lines=() line n head=0 tail=0 body_len avail sel_line=-1 i
+  while IFS= read -r line; do
+    if [[ "$line" == $'\033[7m'* ]]; then sel_line=${#lines[@]}; fi
+    lines+=("$line")
+  done <<<"$1"
+  n=${#lines[@]}
+  if ((n >= 3 && sel_line >= 0)); then
+    head=1   # column header
+    tail=2   # blank line and running count
+  fi
+  for ((i = 0; i < head; i++)); do frame+=("${lines[$i]}"); done
+  body_len=$((n - head - tail))
+  avail=$((term_rows - head - tail - 2 - msg_lines))
+  if ((avail < 1)); then avail=1; fi
+  if ((sel == 0)); then top=0; fi
+  if ((sel_line >= 0)); then
+    if ((sel_line - head < top)); then top=$((sel_line - head)); fi
+    if ((sel_line - head >= top + avail)); then top=$((sel_line - head - avail + 1)); fi
+  fi
+  if ((top > body_len - avail)); then top=$((body_len - avail)); fi
+  if ((top < 0)); then top=0; fi
+  for ((i = head + top; i < n - tail && i < head + top + avail; i++)); do frame+=("${lines[$i]}"); done
+  for ((i = n - tail; i < n; i++)); do frame+=("${lines[$i]}"); done
+}
+
+# Lays out status_render_panels output: the list and the details side by
+# side when wide is true, otherwise the details alone. The list's header row
+# and the details' title and tab rows stay put; the rows under them scroll.
+# Usage: status_frame_panels <tagged lines> <wide>
+status_frame_panels() {
+  local tagged="$1" wide="$2" line lefts=() rights=() foots=() sel_at=-1
+  local height list_rows info_rows blank="" i j l r
+  while IFS= read -r line; do
+    case "${line%%$'\t'*}" in
+      L) lefts+=("${line#*$'\t'}") ;;
+      R) rights+=("${line#*$'\t'}") ;;
+      F) foots+=("${line#*$'\t'}") ;;
+      S) sel_at=${line#*$'\t'} ;;
+    esac
+  done <<<"$tagged"
+  # Below the panels: the footer, a blank line, and the key help.
+  height=$((term_rows - ${#foots[@]} - 2 - msg_lines))
+  if ((height < 3)); then height=3; fi
+  list_rows=$((height - 1))
+  info_rows=$((height - 2))
+  if ((sel == 0)); then top=0; fi
+  if ((sel_at >= 1)); then
+    if ((sel_at - 1 < top)); then top=$((sel_at - 1)); fi
+    if ((sel_at - 1 >= top + list_rows)); then top=$((sel_at - list_rows)); fi
+  fi
+  if ((top > ${#lefts[@]} - 1 - list_rows)); then top=$((${#lefts[@]} - 1 - list_rows)); fi
+  if ((top < 0)); then top=0; fi
+  if ((rtop > ${#rights[@]} - 2 - info_rows)); then rtop=$((${#rights[@]} - 2 - info_rows)); fi
+  if ((rtop < 0)); then rtop=0; fi
+  # Every list row is already padded to the panel width.
+  if ((${#lefts[@]} > 0)); then blank=$(printf '%*s' "${#lefts[0]}" ''); fi
+  for ((i = 0; i < height; i++)); do
+    r=""
+    if ((i < 2)); then j=$i; else j=$((rtop + i)); fi
+    if ((j < ${#rights[@]})); then r=${rights[$j]}; fi
+    if [[ $wide == true ]]; then
+      l=$blank
+      if ((i == 0)); then j=0; else j=$((top + i)); fi
+      if ((j < ${#lefts[@]})); then l=${lefts[$j]}; fi
+      frame+=("$l │ $r")
+    else
+      frame+=("$r")
+    fi
+  done
+  if ((${#foots[@]} > 0)); then frame+=("${foots[@]}"); fi
+}
+
 status_interactive() {
   local color=true host json="[]" listed sample='{"t":0,"cpu":{}}' prev at=null
   local names=() states=() count=0 sel=0 sel_name="" hl i
   local pending="" still msg="" fetch=true last=-1 jobs=0
-  local key rest line out table name state verb log_file p_verb p_name p_log err
-  local lines=() frame=() size term_rows n head tail body_len avail top=0 sel_line
+  local key rc rest line out table tagged keys name state verb log_file p_verb p_name p_log err
+  local frame=() size term_rows term_cols msg_lines wide focus=list top=0 rtop=0
   if [[ -n "${NO_COLOR:-}" ]]; then color=false; fi
 
   STATUS_TMP=$(mktemp -d)
@@ -459,42 +615,36 @@ status_interactive() {
       sel_name=${names[$sel]}
     fi
 
-    table=$(status_render "$json" "$prev" "$at" "$host" "$color" "$hl") || table="Failed to render status"
-    # Fit the frame to the terminal. The header row stays at the top and the
-    # footer, key help, and messages stay at the bottom; the instance rows
-    # between them scroll to keep the highlighted row visible.
-    lines=()
-    sel_line=-1
-    while IFS= read -r line; do
-      if [[ "$line" == $'\033[7m'* ]]; then sel_line=${#lines[@]}; fi
-      lines+=("$line")
-    done <<<"$table"
-    n=${#lines[@]}
-    head=0
-    tail=0
-    if ((n >= 3 && sel_line >= 0)); then
-      head=1   # column header
-      tail=2   # blank line and running count
-    fi
+    # Fit the frame to the terminal: the view, then the key help and any
+    # messages at the bottom.
     size=$(stty size 2>/dev/null) || size=""
     term_rows=${size%% *}
+    term_cols=${size##* }
     if ! [[ "$term_rows" =~ ^[0-9]+$ ]] || ((term_rows < 1)); then term_rows=24; fi
+    if ! [[ "$term_cols" =~ ^[0-9]+$ ]]; then term_cols=0; fi
+    wide=false
+    if ((term_cols >= STATUS_WIDE_COLS)); then wide=true; fi
+    if ((count == 0)); then focus=list; fi
+    msg_lines=0
+    if [[ -n "$msg" ]]; then msg_lines=$(printf '%s\n' "$msg" | wc -l); fi
     frame=()
-    for ((i = 0; i < head; i++)); do frame+=("${lines[$i]}"); done
-    body_len=$((n - head - tail))
-    avail=$((term_rows - head - tail - 2))
-    if [[ -n "$msg" ]]; then avail=$((avail - $(printf '%s\n' "$msg" | wc -l))); fi
-    if ((avail < 1)); then avail=1; fi
-    if ((sel == 0)); then top=0; fi
-    if ((sel_line >= 0)); then
-      if ((sel_line - head < top)); then top=$((sel_line - head)); fi
-      if ((sel_line - head >= top + avail)); then top=$((sel_line - head - avail + 1)); fi
+    if [[ $wide == false && $focus == list ]]; then
+      table=$(status_render "$json" "$prev" "$at" "$host" "$color" "$hl") || table="Failed to render status"
+      status_frame_table "$table"
+      keys="↑/↓ or j/k select · enter details · space start/stop · q quit"
+    else
+      tagged=$(status_render_panels "$json" "$prev" "$at" "$host" "$color" "$hl" "$focus") ||
+        tagged=$'L\tFailed to render status'
+      status_frame_panels "$tagged" "$wide"
+      if [[ $focus == list ]]; then
+        keys="↑/↓ or j/k select · tab details · space start/stop · q quit"
+      elif [[ $wide == true ]]; then
+        keys="↑/↓ or j/k scroll · tab list · space start/stop · q quit"
+      else
+        keys="↑/↓ or j/k scroll · esc back · space start/stop · q quit"
+      fi
     fi
-    if ((top > body_len - avail)); then top=$((body_len - avail)); fi
-    if ((top < 0)); then top=0; fi
-    for ((i = head + top; i < n - tail && i < head + top + avail; i++)); do frame+=("${lines[$i]}"); done
-    for ((i = n - tail; i < n; i++)); do frame+=("${lines[$i]}"); done
-    frame+=("" "↑/↓ or j/k select · space start/stop · q quit")
+    frame+=("" "$keys")
     if [[ -n "$msg" ]]; then
       while IFS= read -r line; do frame+=("$line"); done <<<"$msg"
     fi
@@ -508,21 +658,44 @@ status_interactive() {
     printf '%s' "$out"
 
     key=""
-    IFS= read -rsn1 -t 1 key || true
+    rc=0
+    IFS= read -rsn1 -t 1 key || rc=$?
+    # Enter reads as an empty key that succeeded; a timeout fails.
+    if ((rc == 0)) && [[ -z "$key" ]]; then key=enter; fi
     if [[ "$key" == $'\033' ]]; then
       rest=""
       IFS= read -rsn2 -t 1 rest || true
       case "$rest" in
         "[A" | OA) key=k ;;
         "[B" | OB) key=j ;;
-        "") key=q ;;
+        "") key=esc ;;
         *) key="" ;;
       esac
     fi
     case "$key" in
       q | Q) break ;;
-      j) if ((sel < count - 1)); then sel=$((sel + 1)); fi ;;
-      k) if ((sel > 0)); then sel=$((sel - 1)); fi ;;
+      esc) if [[ $focus == info ]]; then focus=list; else break; fi ;;
+      $'\t')
+        if [[ $focus == list ]] && ((count > 0)); then focus=info; else focus=list; fi
+        rtop=0
+        ;;
+      enter) if ((count > 0)); then focus=info; rtop=0; fi ;;
+      j)
+        if [[ $focus == info ]]; then
+          rtop=$((rtop + 1))
+        elif ((sel < count - 1)); then
+          sel=$((sel + 1))
+          rtop=0
+        fi
+        ;;
+      k)
+        if [[ $focus == info ]]; then
+          if ((rtop > 0)); then rtop=$((rtop - 1)); fi
+        elif ((sel > 0)); then
+          sel=$((sel - 1))
+          rtop=0
+        fi
+        ;;
       " ")
         ((count > 0)) || continue
         name=${names[$sel]}
@@ -610,7 +783,11 @@ fi
 SNIPPET
 }
 
-[[ $# -eq 0 ]] && usage
+# A bare incs on a terminal opens the live status view. Piped, scripted, or
+# without jq for the view, it prints help instead.
+if [[ $# -eq 0 ]]; then
+  if [[ -t 0 && -t 1 ]] && command -v jq >/dev/null 2>&1; then set -- status; else usage; fi
+fi
 
 case "$1" in
   -h|--help|help)
