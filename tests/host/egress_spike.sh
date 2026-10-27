@@ -87,7 +87,9 @@ info "bridge $NET: $GW_CIDR"
 incus profile create "$PROFILE" >/dev/null
 incus profile device add "$PROFILE" eth0 nic network="$NET" \
   security.ipv4_filtering=true security.mac_filtering=true >/dev/null || { fail "profile NIC"; exit 1; }
+info "launching $X from $IMAGE (the first run downloads the image)"
 incus launch "$IMAGE" "$X" -p default -p "$PROFILE" >/dev/null || { fail "launch $X"; exit 1; }
+info "waiting up to 60s for a DHCP address"
 if wait_ip "$X"; then pass "DHCP still hands out an address ($(ip_of "$X"))"; else fail "DHCP hands out an address"; exit 1; fi
 X_IP="$(ip_of "$X")"
 
@@ -114,6 +116,7 @@ check "a DNS query to the bridge gets no answer" "no" \
 # Tools for the rest. The container has no DNS of its own, so point it at a
 # public resolver for the install only; its network is still open here.
 incus exec "$X" -- sh -c 'echo "nameserver 1.1.1.1" > /etc/resolv.conf'
+info "installing socat in $X"
 incus exec "$X" -- apk add --no-cache -q socat >/dev/null 2>&1 || { fail "install socat in $X (needs internet)"; exit 1; }
 check "TCP to the bridge's port 53 is refused" "no" "$(connects "$GW" 53)"
 
@@ -195,6 +198,7 @@ info "after the lock, still arriving: udp $udp_after packets, tcp $tcp_after lin
 check "a new TCP connection after the lock is refused" "no" "$(connects "$HOST_IP" "$TCP_PORT")"
 
 section "after a restart, behind the lock"
+info "restarting $X behind the lock"
 incus restart "$X" >/dev/null; wait_ip "$X"
 check "the container keeps its address across the restart" "$X_IP" "$(ip_of "$X")"
 send_from() { incus exec "$X" -- sh -c "echo probe | timeout 3 socat -u - UDP:$HOST_IP:$UDP_PORT,sourceport=$1" >/dev/null 2>&1; }
