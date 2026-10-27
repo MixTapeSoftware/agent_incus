@@ -211,6 +211,30 @@ else
   echo "  skip (needs util-linux script)"
 fi
 
+echo "bare incs:"
+out=$(STUB="$stub" PATH="$stub:$PATH" bash "$REPO_ROOT/incs" </dev/null 2>&1) || true
+if [[ "$out" == "Usage: incs"* ]]; then help=yes; else help=no; fi
+assert_eq "off a terminal it prints help" "yes" "$help"
+if script -qec true /dev/null >/dev/null 2>&1; then
+  rm -f "$stub/count"
+  out=$(
+    { sleep 1.5; printf 'q'; sleep 1; } |
+      STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/incs'" /dev/null
+  ) || true
+  if [[ "$out" == *$'\033[?1049h'* && "$out" == *"Agent Incus instances:"* ]]; then live=yes; else live=no; fi
+  assert_eq "on a terminal it opens the live view" "yes" "$live"
+
+  # Without jq the view can't run, so a bare incs prints help instead.
+  nojq="$stub/nojq"
+  mkdir -p "$nojq"
+  for tool in bash sh cat dirname readlink realpath; do ln -sf "$(command -v "$tool")" "$nojq/$tool"; done
+  out=$(PATH="$nojq" SHELL="$nojq/sh" TERM=xterm "$(command -v script)" -qec "bash '$REPO_ROOT/incs'" /dev/null </dev/null) || true
+  if [[ "$out" == *"Usage: incs"* && "$out" != *$'\033[?1049h'* ]]; then help=yes; else help=no; fi
+  assert_eq "on a terminal without jq it prints help" "yes" "$help"
+else
+  echo "  skip (needs util-linux script)"
+fi
+
 echo "CPU missing from first sample:"
 cp "$stub/sample1.json" "$stub/sample2.json"
 sed -i.bak 's/"cpu":{"usage":5000000000}/"cpu":{}/' "$stub/sample1.json"

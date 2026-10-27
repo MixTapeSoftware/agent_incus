@@ -34,6 +34,7 @@ usage() {
 Usage: incs [command] [args...]
 
 Commands:
+  (no command)                   Live status view on a terminal, this help otherwise
   <container>                    Shell into container (default)
   -s, shell [--with-sudo] <container> [cmd]
                                  Shell into container (--with-sudo grants temporary sudo)
@@ -56,6 +57,7 @@ Cron:
   cron status                    Show current cron schedule
 
 Examples:
+  incs                                       Live status view (same as incs status)
   incs your-container                        Shell into your-container
   incs -s your-container                     Shell into your-container (explicit)
   incs -s your-container mix test            Run a command in your-container
@@ -610,7 +612,11 @@ fi
 SNIPPET
 }
 
-[[ $# -eq 0 ]] && usage
+# A bare incs on a terminal opens the live status view. Piped, scripted, or
+# without jq for the view, it prints help instead.
+if [[ $# -eq 0 ]]; then
+  if [[ -t 0 && -t 1 ]] && command -v jq >/dev/null 2>&1; then set -- status; else usage; fi
+fi
 
 case "$1" in
   -h|--help|help)
