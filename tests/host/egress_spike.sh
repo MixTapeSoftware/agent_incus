@@ -17,7 +17,8 @@
 # It creates only throwaway objects named incs-spike*, refuses to start if any
 # already exist, and deletes them all on exit. It also runs a small Python
 # listener on the host for the connection test. Needs python3 on the host.
-# conntrack and passwordless sudo are optional, for the last check.
+# conntrack and passwordless sudo are optional, for the last check. If ufw is
+# active, it adds narrow rules for its bridge with sudo and removes them on exit.
 # Prints PASS/FAIL for what the design relies on and INFO for what it needs
 # to know. Paste the whole output back.
 
@@ -45,8 +46,20 @@ section() { echo ""; echo "== $1"; }
 
 TMP=""
 HOST_PY_PID=""
+UFW_ADDED=0
+# ufw denies incoming and routed traffic by default, which drops DHCP on a new
+# bridge. These open only what the spike needs: DHCP, the two listener ports,
+# and forwarding out for the socat install. DNS (53) stays closed.
+ufw_rules() {
+  local verb="$1"
+  sudo ufw $verb allow in on "$NET" to any port 67 proto udp &&
+  sudo ufw $verb allow in on "$NET" to any port "$UDP_PORT" proto udp &&
+  sudo ufw $verb allow in on "$NET" to any port "$TCP_PORT" proto tcp &&
+  sudo ufw route $verb allow in on "$NET"
+}
 cleanup() {
   echo ""; echo "== cleanup"
+  [[ "$UFW_ADDED" == "1" ]] && ufw_rules delete >/dev/null 2>&1
   [[ -n "$HOST_PY_PID" ]] && kill "$HOST_PY_PID" 2>/dev/null
   incus delete --force "$X" >/dev/null 2>&1
   incus network acl delete "$ACL_LOCK" >/dev/null 2>&1
@@ -68,6 +81,12 @@ trap cleanup EXIT
 TMP="$(mktemp -d)"
 info "server version: $(incus version 2>/dev/null | awk -F': *' '/^Server version/ {print $2}')"
 info "firewall driver: $(incus info 2>/dev/null | awk -F': *' 'tolower($1) ~ /firewall/ {print $2; exit}')"
+info "br_netfilter loaded: $(lsmod 2>/dev/null | grep -q '^br_netfilter' && echo yes || echo no) (yes means ufw also filters traffic between containers on one bridge)"
+if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+  info "ufw is active; adding narrow rules for $NET (sudo; removed on exit)"
+  UFW_ADDED=1
+  ufw_rules "" >/dev/null || { fail "add the ufw rules for $NET"; exit 1; }
+fi
 
 ip_of() { incus list "^$1\$" -c 4 --format csv | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1; }
 wait_ip() { for _ in $(seq 1 60); do [[ -n "$(ip_of "$1")" ]] && return 0; sleep 1; done; return 1; }
@@ -112,7 +131,7 @@ diagnose_dhcp() {
   if wait_ip "$X"; then
     info "RESULT: DHCP works with DNS on and fails with port=0. port=0 itself breaks DHCP here."
   else
-    info "RESULT: DHCP fails on this new bridge even with DNS on, so port=0 isn't the cause. Check the host firewall. With ufw: 'sudo ufw allow in on $NET', rerun, then 'sudo ufw delete allow in on $NET'."
+    info "RESULT: DHCP fails on this new bridge even with DNS on, so port=0 isn't the cause. Check the host firewall (ufw rules added by this script: $UFW_ADDED)."
   fi
 }
 info "waiting up to 60s for a DHCP address"
