@@ -46,6 +46,7 @@ section() { echo ""; echo "== $1"; }
 
 TMP=""
 HOST_PY_PID=""
+FLOW_PIDS=""
 UFW_ADDED=0
 # ufw denies incoming and routed traffic by default, which drops DHCP on a new
 # bridge. These open only what the spike needs: DHCP, the two listener ports,
@@ -61,6 +62,7 @@ cleanup() {
   echo ""; echo "== cleanup"
   [[ "$UFW_ADDED" == "1" ]] && ufw_rules delete >/dev/null 2>&1
   [[ -n "$HOST_PY_PID" ]] && kill "$HOST_PY_PID" 2>/dev/null
+  [[ -n "$FLOW_PIDS" ]] && kill $FLOW_PIDS 2>/dev/null
   incus delete --force "$X" >/dev/null 2>&1
   incus network acl delete "$ACL_LOCK" >/dev/null 2>&1
   incus profile delete "$PROFILE" >/dev/null 2>&1
@@ -240,10 +242,14 @@ diagnose_flow() {
 t0="$(now)"; send_from 40002; sleep 1
 check "control: one UDP packet from the open container reaches the host" "yes" "$([[ "$(seen_since "$t0" udp 40002)" -gt 0 ]] && echo yes || echo no)"
 
-# No ':' or ',' in the loop: socat reads those as address separators.
+# Each flow runs under its own incus exec, kept as a host background job:
+# processes backgrounded inside a finished exec don't survive. The flows end
+# when the container restarts; cleanup kills the host side.
 tick='while true; do echo tick; sleep 0.5; done'
-incus exec "$X" -- sh -c "setsid socat -u SYSTEM:'$tick' UDP:$HOST_IP:$UDP_PORT,sourceport=$OLD_SPORT </dev/null >/dev/null 2>&1 &"
-incus exec "$X" -- sh -c "setsid socat -u SYSTEM:'$tick' TCP:$HOST_IP:$TCP_PORT </dev/null >/dev/null 2>&1 &"
+incus exec "$X" -- sh -c "$tick | socat -u - UDP:$HOST_IP:$UDP_PORT,sourceport=$OLD_SPORT" </dev/null >/dev/null 2>&1 &
+FLOW_PIDS="$!"
+incus exec "$X" -- sh -c "$tick | socat -u - TCP:$HOST_IP:$TCP_PORT" </dev/null >/dev/null 2>&1 &
+FLOW_PIDS="$FLOW_PIDS $!"
 sleep 3
 t0="$(now)"; sleep 3
 udp_ok="$([[ "$(seen_since "$t0" udp "$OLD_SPORT")" -gt 0 ]] && echo yes || echo no)"
