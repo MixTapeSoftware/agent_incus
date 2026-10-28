@@ -143,7 +143,7 @@ info "resolv.conf from DHCP: $(tr '\n' ';' <<< "$resolv")"
 if grep -q "nameserver $GW" <<< "$resolv"; then
   fail "DHCP still advertises the bridge ($GW) as a DNS server with port=0 alone"
   info "trying raw.dnsmasq 'port=0' plus 'dhcp-option=option:dns-server'"
-  incus network set "$NET" raw.dnsmasq "$(printf 'port=0\ndhcp-option=option:dns-server')" >/dev/null 2>"$TMP/err" \
+  incus network set "$NET" "raw.dnsmasq=$(printf 'port=0\ndhcp-option=option:dns-server')" >/dev/null 2>"$TMP/err" \
     || info "setting the extra dhcp-option failed: $(cat "$TMP/err")"
   incus restart "$X" >/dev/null; wait_ip "$X"
   resolv="$(incus exec "$X" -- cat /etc/resolv.conf 2>/dev/null)"
@@ -171,7 +171,7 @@ sleep 3
 check "a DHCP renewal keeps the address" "$old_ip" "$(ip_of "$X")"
 
 # Changing a DHCP setting restarts dnsmasq; DNS must stay off afterwards.
-incus network set "$NET" ipv4.dhcp.expiry 2h >/dev/null
+incus network set "$NET" ipv4.dhcp.expiry=2h >/dev/null
 sleep 3
 check "after dnsmasq restarts, nothing listens for DNS on $GW" "" "$(dns_listeners)"
 
@@ -214,12 +214,31 @@ def tcp():
 threading.Thread(target=udp, daemon=True).start()
 tcp()
 PY
+touch "$TMP/seen.log"
 python3 -I "$TMP/listen.py" "$HOST_IP" "$UDP_PORT" "$TCP_PORT" "$TMP/seen.log" & HOST_PY_PID=$!
 sleep 1
 # Lines seen since a time, from the container's address, optionally one port.
 seen_since() { awk -v t="$1" -v p="$2" -v ip="$X_IP" -v sp="${3:-}" \
   '$1 >= t && $2 == p && $3 == ip && (sp == "" || $4 == sp)' "$TMP/seen.log" | wc -l | tr -d ' '; }
 now() { date +%s; }
+send_from() { incus exec "$X" -- sh -c "echo probe | timeout 3 socat -u - UDP:$HOST_IP:$UDP_PORT,sourceport=$1" >/dev/null 2>&1; }
+
+# Where the path breaks: the listener itself, the host firewall, or socat.
+diagnose_flow() {
+  python3 -I -c 'import socket,sys; socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"self\n", (sys.argv[1], int(sys.argv[2])))' \
+    "$HOST_IP" "$UDP_PORT"
+  sleep 1
+  info "listener alive: $(kill -0 "$HOST_PY_PID" 2>/dev/null && echo yes || echo no); packet from the host itself logged: $(grep -q " udp $HOST_IP " "$TMP/seen.log" && echo yes || echo no)"
+  info "socat processes in $X: $(incus exec "$X" -- sh -c 'pidof socat | wc -w' 2>/dev/null)"
+  info "ufw blocks to the listener in the last 2 minutes:"
+  sudo journalctl -k --since "-2min" --no-pager 2>/dev/null | grep -E 'UFW BLOCK.*DPT=(47990|47991)' | tail -3 | sed 's/^/    /'
+  info "seen.log: $(tail -3 "$TMP/seen.log" | tr '\n' ';')"
+  info "RESULT: inconclusive. The open container can't reach the host listener, so the lock test would prove nothing. Stopping here."
+}
+
+# One packet first: if this doesn't arrive, nothing below can.
+t0="$(now)"; send_from 40002; sleep 1
+check "control: one UDP packet from the open container reaches the host" "yes" "$([[ "$(seen_since "$t0" udp 40002)" -gt 0 ]] && echo yes || echo no)"
 
 # No ':' or ',' in the loop: socat reads those as address separators.
 tick='while true; do echo tick; sleep 0.5; done'
@@ -227,8 +246,11 @@ incus exec "$X" -- sh -c "setsid socat -u SYSTEM:'$tick' UDP:$HOST_IP:$UDP_PORT,
 incus exec "$X" -- sh -c "setsid socat -u SYSTEM:'$tick' TCP:$HOST_IP:$TCP_PORT </dev/null >/dev/null 2>&1 &"
 sleep 3
 t0="$(now)"; sleep 3
-check "control: the open container's UDP flow reaches the host" "yes" "$([[ "$(seen_since "$t0" udp)" -gt 0 ]] && echo yes || echo no)"
-check "control: the open container's TCP stream reaches the host" "yes" "$([[ "$(seen_since "$t0" tcp)" -gt 0 ]] && echo yes || echo no)"
+udp_ok="$([[ "$(seen_since "$t0" udp "$OLD_SPORT")" -gt 0 ]] && echo yes || echo no)"
+tcp_ok="$([[ "$(seen_since "$t0" tcp)" -gt 0 ]] && echo yes || echo no)"
+check "control: the open container's UDP flow reaches the host" "yes" "$udp_ok"
+check "control: the open container's TCP stream reaches the host" "yes" "$tcp_ok"
+if [[ "$udp_ok" != yes ]]; then diagnose_flow; echo ""; echo "== done: $PASS passed, $FAIL failed"; exit 1; fi
 
 # Lock it: outbound default reject with no allow rules, the shape enforce uses
 # (enforce would also allow DHCP and the proxy port).
@@ -246,7 +268,6 @@ section "after a restart, behind the lock"
 info "restarting $X behind the lock"
 incus restart "$X" >/dev/null; wait_ip "$X"
 check "the container keeps its address across the restart" "$X_IP" "$(ip_of "$X")"
-send_from() { incus exec "$X" -- sh -c "echo probe | timeout 3 socat -u - UDP:$HOST_IP:$UDP_PORT,sourceport=$1" >/dev/null 2>&1; }
 t2="$(now)"
 for _ in 1 2 3 4 5; do send_from "$OLD_SPORT"; send_from "$NEW_SPORT"; sleep 0.5; done
 sleep 1
