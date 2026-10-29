@@ -1,0 +1,6 @@
+[Unit]
+Description=incs proxy prototype: keeps agent a's socket in the running state (never accepts)
+
+[Service]
+ExecStart=/bin/sleep infinity
+DynamicUser=yes
