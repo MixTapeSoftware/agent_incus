@@ -2,7 +2,7 @@
 # tests/host/egress_spike.sh
 # Spike for the egress allowlist design
 # (docs/superpowers/specs/2026-10-27-egress-allowlist-design.md, Build gates).
-# It checks two things the design takes on faith, on a real Incus host:
+# It checks three things the design takes on faith, on a real Incus host:
 #
 #   1. A bridge with its DNS server turned off still hands out addresses, and
 #      neither answers nor advertises DNS.
@@ -10,6 +10,8 @@
 #      the container down, and then a restart. If it survives the restart,
 #      incs has to clear the host's connection tracking, or give the
 #      container a new IP.
+#   3. If it survives, whether a new IP on lock ends it: the old flow resent
+#      from the new IP, and from the old IP as root inside the container.
 #
 #   bash tests/host/egress_spike.sh              # about 2 minutes
 #   bash tests/host/egress_spike.sh --restart    # also restarts Incus (sudo) and re-checks DNS
@@ -17,8 +19,8 @@
 # It creates only throwaway objects named incs-spike*, refuses to start if any
 # already exist, and deletes them all on exit. It also runs a small Python
 # listener on the host for the connection test. Needs python3 on the host.
-# conntrack and passwordless sudo are optional, for the last check. If ufw is
-# active, it adds narrow rules for its bridge with sudo and removes them on exit.
+# If ufw is active, it adds narrow rules for its bridge with sudo and removes
+# them on exit.
 # Prints PASS/FAIL for what the design relies on and INFO for what it needs
 # to know. Paste the whole output back.
 
@@ -287,15 +289,43 @@ else
   info "RESULT: a restart is enough to end old flows on this host."
 fi
 
+# --- 3. a new IP on lock -----------------------------------------------------
+# The fix incs would use: lock = a new address. The host's old entries are
+# keyed on the old address, and IPv4 filtering should stop the container from
+# sending from an address it no longer holds, even as root inside it.
 if [[ "$old_ok" == yes ]]; then
-  if command -v conntrack >/dev/null && sudo -n true 2>/dev/null; then
-    sudo conntrack -D -s "$X_IP" >/dev/null 2>&1; sudo conntrack -D -d "$X_IP" >/dev/null 2>&1
-    t3="$(now)"
-    for _ in 1 2 3; do send_from "$OLD_SPORT"; sleep 0.5; done
-    sleep 1
-    check "after clearing the container's connection tracking, the old flow is blocked" "0" "$(seen_since "$t3" udp "$OLD_SPORT")"
+  section "a new IP on lock"
+  NEW_IP="${GW%.*}.200"
+  info "moving $X from $X_IP to $NEW_IP and restarting"
+  incus config device set "$X" eth0 ipv4.address="$NEW_IP" >/dev/null 2>"$TMP/err" \
+    || { fail "set a static address on eth0: $(cat "$TMP/err")"; }
+  incus restart "$X" >/dev/null
+  for _ in $(seq 1 60); do [[ "$(ip_of "$X")" == "$NEW_IP" ]] && break; sleep 1; done
+  check "the container gets the new address" "$NEW_IP" "$(ip_of "$X")"
+  # UDP lines from one address and source port since a time.
+  seen_from() { awk -v t="$1" -v ip="$2" -v sp="$3" '$1 >= t && $2 == "udp" && $3 == ip && $4 == sp' "$TMP/seen.log" | wc -l | tr -d ' '; }
+
+  t3="$(now)"
+  for _ in 1 2 3; do send_from "$OLD_SPORT"; sleep 0.5; done
+  sleep 1
+  check "from the new IP, the old source port is blocked" "0" "$(seen_from "$t3" "$NEW_IP" "$OLD_SPORT")"
+
+  # As root inside the container, take the old address back and resend the
+  # old flow from exactly its old address and port.
+  incus exec "$X" -- ip addr add "$X_IP/${GW_CIDR#*/}" dev eth0 >/dev/null 2>&1 \
+    && info "added $X_IP back to eth0 inside $X" || info "could not add $X_IP inside $X"
+  t4="$(now)"
+  for _ in 1 2 3; do
+    incus exec "$X" -- sh -c "echo spoof | timeout 3 socat -u - UDP:$HOST_IP:$UDP_PORT,bind=$X_IP:$OLD_SPORT" >/dev/null 2>&1
+    sleep 0.5
+  done
+  sleep 1
+  spoof_seen="$(seen_from "$t4" "$X_IP" "$OLD_SPORT")"
+  check "sending from the old IP as root doesn't revive the old flow" "0" "$spoof_seen"
+  if [[ "$spoof_seen" == "0" ]]; then
+    info "RESULT: a new IP on lock ends old flows without root on the host."
   else
-    info "to check whether clearing works, run as root while the spike is paused: conntrack -D -s $X_IP; conntrack -D -d $X_IP"
+    info "RESULT: IPv4 filtering didn't stop the old address. A new IP isn't enough; incs needs to clear connection tracking."
   fi
 fi
 
