@@ -17,6 +17,11 @@ INCS_NET_ACL="incs-base"
 # The September 2026 fail-open fixes for ACLs are in 7.5.1.
 INCS_NET_MIN_INCUS="7.5.1"
 INCS_RESOLVERS="${INCS_RESOLVERS:-1.1.1.1,9.9.9.9}"
+# It ends up in dnsmasq's config and in rules, so only IPv4 addresses pass.
+[[ "$INCS_RESOLVERS" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(,[0-9]{1,3}(\.[0-9]{1,3}){3})*$ ]] || {
+  echo "INCS_RESOLVERS must be IPv4 addresses separated by commas (got: $INCS_RESOLVERS)" >&2
+  exit 1
+}
 INCS_LOCK_DIR="${INCS_LOCK_DIR:-$HOME/.local/state/incs/lock}"
 INCS_UFW_CONF="${INCS_UFW_CONF:-/etc/ufw/ufw.conf}"
 
@@ -103,13 +108,28 @@ net_preflight() {
   to use the default bridge, where instances can reach each other and the host."
 }
 
-# A free 10.x.0.0/16, checked against the host's routes and Incus's networks.
+# Whether two CIDRs overlap: the shorter prefix contains the other.
+net_overlaps() {
+  local a b l mask
+  a=$(net_ip2int "${1%/*}"); b=$(net_ip2int "${2%/*}")
+  l="${1#*/}"; (( ${2#*/} < l )) && l="${2#*/}"
+  mask=$(net_mask "$l")
+  (( (a & mask) == (b & mask) ))
+}
+
+# A free 10.x.0.0/16: one no route on the host and no Incus network
+# overlaps, including broader ones such as a VPN's 10.0.0.0/8.
 net_pick_subnet() {
   if [[ -n "${INCS_NET_SUBNET:-}" ]]; then echo "$INCS_NET_SUBNET"; return 0; fi
-  local used o
-  used="$(ip -4 route 2>/dev/null; incus network list --format csv 2>/dev/null)"
+  local used o c taken
+  used="$( { ip -4 route 2>/dev/null; incus network list --format csv 2>/dev/null; } |
+    grep -oE '([0-9]+\.){3}[0-9]+/[0-9]+' | sort -u)" || used=""
   for o in $(seq 200 250) $(seq 100 199); do
-    grep -qE "(^|[^0-9])10\.$o\." <<< "$used" && continue
+    taken=0
+    for c in $used; do
+      if net_overlaps "$c" "10.$o.0.0/16"; then taken=1; break; fi
+    done
+    [[ "$taken" == 1 ]] && continue
     echo "10.$o.0.1/16"
     return 0
   done
@@ -223,9 +243,10 @@ ensure_net() {
 # only grows, so a given-up address comes back only after it wraps. Run it
 # under incs_lock.
 net_next_address() {
-  local subnet base n span used host ip tries=0
+  local subnet base n span used host ip gw tries=0
   subnet="$(incus network get "$INCS_NET" ipv4.address)"
   base=$(( $(net_ip2int "${subnet%/*}") & 0xFFFF0000 ))
+  gw="${subnet%/*}"
   n="$(incus network get "$INCS_NET" user.incs.next-address 2>/dev/null)"
   [[ "$n" =~ ^[0-9]+$ ]] || n=0
   used="$(incus network list-leases "$INCS_NET" --format csv 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+')" || used=""
@@ -236,6 +257,7 @@ net_next_address() {
     n=$(( n + 1 ))
     (( (host & 255) == 0 || (host & 255) == 255 )) && continue
     ip="$(net_int2ip $(( base + host )))"
+    [[ "$ip" == "$gw" ]] && continue
     grep -qx "$ip" <<< "$used" && continue
     incus network set "$INCS_NET" "user.incs.next-address=$n" >/dev/null ||
       error "Could not record the next address on $INCS_NET"

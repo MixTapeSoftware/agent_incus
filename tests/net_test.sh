@@ -142,6 +142,15 @@ assert_eq ".255 and .0 are skipped" "10.201.1.1" "$(net 'net_next_address')"
 printf '65269' > "$FAKE_INCUS_STATE/networks/incsbr0/user.incs.next-address"
 assert_eq "the counter wraps below the DHCP pool" "10.201.0.10" "$(net 'net_next_address')"
 
+mkdir -p "$FAKE_INCUS_STATE/networks/incsbr0"
+printf '10.77.0.10/16' > "$FAKE_INCUS_STATE/networks/incsbr0/ipv4.address"
+printf '0' > "$FAKE_INCUS_STATE/networks/incsbr0/user.incs.next-address"
+assert_eq "a custom gateway's address is never handed out" "10.77.0.11" "$(net 'net_next_address')"
+assert_eq "routes that overlap a candidate rule it out" "yes" "$(net 'net_overlaps 10.0.0.0/8 10.200.0.0/16 && ! net_overlaps 10.199.0.0/16 10.200.0.0/16 && echo yes')"
+assert_eq "a broad route pushes the pick outside it" "10.200.0.1/16" "$(INCS_NET_SUBNET= net 'ip() { echo "10.201.0.0/16 dev wg0"; }; net_pick_subnet')"
+assert_eq "a 10/8 route leaves no free 10.x" "1" "$(INCS_NET_SUBNET= net 'ip() { echo "10.0.0.0/8 via 192.168.1.1"; }; net_pick_subnet' >/dev/null 2>&1; echo $?)"
+assert_contains "resolvers that aren't IPv4 addresses are refused" "must be IPv4 addresses" "$(INCS_RESOLVERS=$'1.1.1.1\nport=53' net 'true' 2>&1 || true)"
+
 echo "lock"
 fresh
 mkdir -p "$INCS_LOCK_DIR"; echo 999999 > "$INCS_LOCK_DIR/pid"
