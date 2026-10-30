@@ -416,8 +416,8 @@ cmd_hosts() {
 }
 
 # The decision records, without the probe's. jq picks fields by name, so a
-# hostile hostname can't forge a column; tabs and newlines in it can't
-# either, since @tsv escapes them.
+# hostile hostname can't forge a column, and control characters in it are
+# replaced so it can't reach a terminal as an escape code.
 cmd_log() {
   local agent="$1" since="${2:--1h}"
   valid_agent "$agent"
@@ -428,7 +428,7 @@ cmd_log() {
       | (.MESSAGE | strings | select(contains("CANONICAL-PROXY-DECISION"))
          | (try fromjson catch null)) as $m
       | select($m != null)
-      | ($m.requested_host // "" | tostring) as $hp
+      | ($m.requested_host // "" | tostring | .[0:300] | gsub("[[:cntrl:]]"; "?")) as $hp
       | select(($hp | split(":")[0]) != $probe)
       | [ ($m.time // "-"),
           ($hp | sub(":[0-9]+$"; "")),
@@ -436,7 +436,7 @@ cmd_log() {
           (if $m.allow == false then "blocked"
            elif $m.enforce_would_deny == true then "would-block"
            else "allowed" end),
-          ($m.decision_reason // "-"),
+          ($m.decision_reason // "-" | tostring | .[0:200] | gsub("[[:cntrl:]]"; "?")),
           $gen ]
       | @tsv'
 }

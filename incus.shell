@@ -29,6 +29,12 @@ if [[ -z "$STATUS" ]]; then
   exit 1
 fi
 if [[ "$STATUS" != "RUNNING" ]]; then
+  # A lockdown that didn't finish keeps the container stopped until it does.
+  _transition=$(incus config get "$CONTAINER" user.incs.egress.transition 2>/dev/null || true)
+  if [[ -n "$_transition" && "$_transition" != "none" ]]; then
+    echo "$CONTAINER is partway through turning its allowlist on, so it stays stopped. Finish it: incs egress refresh $CONTAINER" >&2
+    exit 1
+  fi
   echo "Starting $CONTAINER..."
   incus start "$CONTAINER"
   attempts=0

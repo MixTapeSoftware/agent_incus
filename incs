@@ -40,6 +40,8 @@ Commands:
                                  Shell into container (--with-sudo grants temporary sudo)
   -i, init [args...]             Create/provision a new container
   -n, net <container> [ports...] Manage port proxies
+  egress <command> [args...]     Which internet hosts a container may reach
+                                 (incs egress -h)
   -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)
   -d, delete <container>          Force delete a container
   -k, kill <container>           Stop a container
@@ -807,6 +809,10 @@ case "$1" in
     shift
     exec "$SCRIPT_DIR/incus.network" "$@"
     ;;
+  egress)
+    shift
+    exec "$SCRIPT_DIR/incs.egress" "$@"
+    ;;
   -e|env)
     shift
     cmd_set_env "$@"
@@ -814,8 +820,16 @@ case "$1" in
   -d|delete)
     shift
     [[ $# -lt 1 ]] && error "Usage: incs delete <container>"
+    _egress="$(incus config get "$1" user.incs.egress.container 2>/dev/null || true)"
     incus delete --force "$1"
     log "Deleted $1"
+    if [[ -n "$_egress" ]]; then
+      # Its proxy goes too; its port isn't handed out again.
+      ( SCRIPT_DIR="$SCRIPT_DIR"
+        warn() { echo -e "${YELLOW}[!]${NC} $1" >&2; }
+        source "$SCRIPT_DIR/incus.net"; source "$SCRIPT_DIR/incus.egress"
+        egress_forget "$1" "$_egress" )
+    fi
     ;;
   -k|kill)
     shift

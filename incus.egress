@@ -28,31 +28,34 @@ egress_name() {
   echo "$INCS_EGRESS_DEFAULT-$group"
 }
 
-# A hostname as incs stores it, or a failure: lowercased, any trailing dot
-# removed, punycode only, no IP address or port, and a wildcard only as a
-# leading "*.".
+# Hostnames incs accepts, once lowercased with any trailing dot removed:
+# punycode only, no IP address (the last label starts with a letter) or port,
+# and a wildcard only as a leading "*.".
+EGRESS_HOST_RE='(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?'
+
+# A hostname as incs stores it, or a failure.
 # Usage: egress_host <hostname>
 egress_host() {
   local h
   h="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
   h="${h%.}"
-  [[ ${#h} -le 253 && "$h" =~ ^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]] || return 1
+  [[ ${#h} -le 253 && "$h" =~ ^$EGRESS_HOST_RE$ ]] || return 1
   echo "$h"
 }
 
 # The hosts in a list file, one per line, checked. "#" starts a comment.
+# One awk pass normalizes, one grep finds the first bad line.
 # Usage: egress_read_hosts <file>
 egress_read_hosts() {
-  local file="$1" line h n=0
+  local file="$1" norm bad
   [[ -f "$file" ]] || return 0
-  while IFS= read -r line || [[ -n "$line" ]]; do
-    n=$((n + 1))
-    line="${line%%#*}"
-    line="$(printf '%s' "$line" | tr -d ' \t\r')"
-    [[ -z "$line" ]] && continue
-    h="$(egress_host "$line")" || error "$file line $n: not a hostname incs accepts: $line"
-    echo "$h"
-  done < "$file"
+  norm="$(awk '{ sub(/#.*/, ""); sub(/^[ \t\r]+/, ""); sub(/[ \t\r]+$/, ""); if ($0 == "") next
+                 $0 = tolower($0); sub(/\.$/, ""); if (length($0) > 253) $0 = "!" $0
+                 print NR "\t" $0 }' "$file")"
+  [[ -n "$norm" ]] || return 0
+  bad="$(grep -vE "^[0-9]+	$EGRESS_HOST_RE\$" <<< "$norm" | head -1 || true)"
+  [[ -z "$bad" ]] || error "$file line ${bad%%	*}: not a hostname incs accepts: ${bad#*	}"
+  cut -f2 <<< "$norm"
 }
 
 # The hosts in a comma-separated config value.
@@ -181,7 +184,7 @@ egress_ensure() {
       security.acls.default.egress.action=reject security.acls.default.ingress.action=drop >/dev/null ||
       error "Could not set $egress's network rules"
     # It starts on its own, before the agents.
-    incus config set "$egress" user.managed-by=agent-incus user.incs.role=egress \
+    incus config set "$egress" user.managed-by=agent-incus user.incs.role=egress user.incs.net=isolated \
       boot.autostart=true boot.autostart.priority=100 >/dev/null
   fi
   [[ "$(incus config get "$egress" user.incs.egress.ready 2>/dev/null)" == "1" ]] && { egress_start "$egress"; return 0; }
@@ -292,4 +295,231 @@ egress_forget() {
   egress_ctl "$egress" remove "$agent" </dev/null >/dev/null 2>&1 ||
     warn "Could not remove $agent's proxy from $egress"
   egress_sync_acl "$egress"
+}
+
+# --- An agent's network card and proxy settings ------------------------------
+
+# The agent's own rules: out only to its proxy port, in only from the host.
+# ACL names stop at 63 characters, so a long agent name is cut and hashed.
+egress_agent_acl() {
+  local n="incs-a-$1"
+  if (( ${#n} > 63 )); then n="incs-a-${1:0:46}-$(printf '%s' "$1" | egress_sha256 | cut -c1-8)"; fi
+  echo "$n"
+}
+
+egress_agent_acl_yaml() {
+  local agent="$1" egress_ip="$2" port="$3" gw="$4"
+  cat <<YAML
+description: $agent may reach only its proxy. Managed by incs; edits are overwritten.
+egress:
+- action: allow
+  protocol: tcp
+  destination: $egress_ip/32
+  destination_port: "$port"
+  description: its proxy
+  state: enabled
+ingress:
+- action: allow
+  source: $gw/32
+  description: the host
+  state: enabled
+YAML
+}
+
+egress_ip() { incus config device get "$1" eth0 ipv4.address 2>/dev/null; }
+
+# Locks the agent's card to its proxy: outbound default reject, so blocked
+# connections fail at once. Takes effect live for new connections; Incus lets
+# established ones through, which is why tightening from off restarts.
+egress_nic_restrict() {
+  local agent="$1" egress port acl gw
+  egress="$(incus config get "$agent" user.incs.egress.container)"
+  port="$(incus config get "$agent" user.incs.egress.port)"
+  acl="$(egress_agent_acl "$agent")"
+  gw="$(incus network get "$INCS_NET" ipv4.address)"; gw="${gw%/*}"
+  if ! incus network acl show "$acl" &>/dev/null; then
+    incus network acl create "$acl" >/dev/null 2>&1 || incus network acl show "$acl" &>/dev/null ||
+      error "Could not create network ACL: $acl"
+  fi
+  egress_agent_acl_yaml "$agent" "$(egress_ip "$egress")" "$port" "$gw" | incus network acl edit "$acl" ||
+    error "Could not set the rules in network ACL: $acl"
+  incus config device set "$agent" eth0 security.acls="$acl" \
+    security.acls.default.egress.action=reject security.acls.default.ingress.action=drop >/dev/null ||
+    error "Could not lock $agent's network card"
+}
+
+# Back to the isolated bridge's rules: the internet, but nothing private.
+egress_nic_open() {
+  incus config device set "$1" eth0 security.acls="$INCS_NET_ACL" \
+    security.acls.default.egress.action=allow security.acls.default.ingress.action=drop >/dev/null ||
+    error "Could not open $1's network card"
+}
+
+egress_nic_is_restricted() {
+  [[ "$(incus config device get "$1" eth0 security.acls.default.egress.action 2>/dev/null)" == "reject" ]]
+}
+
+# Proxy settings everywhere processes read them, the same in every mode, so a
+# mode change never leaves a process with stale settings: the Incus
+# environment (incus exec sessions), /etc/environment (login shells), every
+# systemd service, and apt. NO_PROXY keeps local dev servers and OAuth
+# callbacks off the proxy.
+EGRESS_NO_PROXY="localhost,127.0.0.1,::1"
+egress_proxy_url() {
+  local egress
+  egress="$(incus config get "$1" user.incs.egress.container)"
+  echo "http://$(egress_ip "$egress"):$(incus config get "$1" user.incs.egress.port)"
+}
+
+egress_write_proxy_env() {
+  local agent="$1" url
+  url="$(egress_proxy_url "$agent")"
+  [[ "$url" =~ ^http://[0-9.]+:[0-9]+$ ]] || error "Could not work out $agent's proxy address"
+  incus config set "$agent" "environment.HTTP_PROXY=$url" "environment.HTTPS_PROXY=$url" \
+    "environment.http_proxy=$url" "environment.https_proxy=$url" \
+    "environment.NO_PROXY=$EGRESS_NO_PROXY" "environment.no_proxy=$EGRESS_NO_PROXY" \
+    environment.NODE_USE_ENV_PROXY=1 >/dev/null || error "Could not set $agent's proxy environment"
+  incus exec "$agent" -- sh -s -- "$url" "$EGRESS_NO_PROXY" <<'SH' || error "Could not write $agent's proxy settings"
+set -e
+url="$1" np="$2"
+vars() {
+  for k in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do echo "$k=$url"; done
+  echo "NO_PROXY=$np"; echo "no_proxy=$np"; echo "NODE_USE_ENV_PROXY=1"
+}
+touch /etc/environment
+sed -i '/^# incs proxy: begin$/,/^# incs proxy: end$/d' /etc/environment
+{ echo "# incs proxy: begin"; vars; echo "# incs proxy: end"; } >> /etc/environment
+printf 'Acquire::http::Proxy "%s/";\nAcquire::https::Proxy "%s/";\n' "$url" "$url" > /etc/apt/apt.conf.d/95incs-proxy
+mkdir -p /etc/systemd/system.conf.d
+{ echo "[Manager]"; printf 'DefaultEnvironment='; vars | sed 's/.*/"&"/' | tr '\n' ' '; echo; } > /etc/systemd/system.conf.d/incs-proxy.conf
+systemctl daemon-reexec 2>/dev/null || true
+SH
+}
+
+# --- Tightening from off -------------------------------------------------------
+# Incus lets established connections through before any rule, and the host's
+# connection tracking outlives a restart, so an open container is locked by
+# stopping it, locking its card and proxy, and moving it to an address no old
+# connection knows. A boot barrier keeps it from starting until the change
+# commits. Any step can be repeated; recovery replays them in order.
+
+egress_running() { [[ "$(incus list "^${1}$" --format csv --columns s 2>/dev/null)" == "RUNNING" ]]; }
+
+# The transition, as "<mode>:<address>", or empty.
+egress_transition() {
+  local t
+  t="$(incus config get "$1" user.incs.egress.transition 2>/dev/null)"
+  [[ "$t" == "none" ]] && t=""
+  echo "$t"
+}
+
+# Usage: egress_lockdown <agent>   (its desired mode is enforce or report)
+egress_lockdown() {
+  local agent="$1" mode t ip saved orig egress
+  mode="$(incus config get "$agent" user.incs.egress)"
+  [[ "$mode" == enforce || "$mode" == report ]] || error "egress_lockdown: $agent's mode is $mode"
+  egress="$(incus config get "$agent" user.incs.egress.container)"
+  t="$(egress_transition "$agent")"
+  if [[ -n "$t" ]]; then ip="${t#*:}"; else ip="$(net_next_address)"; fi
+
+  # 1. The boot barrier, in one write. The original autostart is captured
+  #    only when nothing is saved, so a retry keeps the first one.
+  saved="$(incus config get "$agent" user.incs.egress.autostart-saved 2>/dev/null)"
+  if [[ -z "$saved" || "$saved" == none ]]; then
+    orig="$(incus config get "$agent" boot.autostart 2>/dev/null)"
+    saved="${orig:-unset}"
+  fi
+  incus config set "$agent" "user.incs.egress.transition=$mode:$ip" \
+    "user.incs.egress.autostart-saved=$saved" boot.autostart=false >/dev/null ||
+    error "Could not set $agent's boot barrier; nothing changed"
+
+  # 2. Stopped, and confirmed.
+  if egress_running "$agent"; then
+    log "Stopping $agent to end its open connections..."
+    incus stop "$agent" --timeout 30 >/dev/null 2>&1 || incus stop "$agent" --force >/dev/null 2>&1 || true
+  fi
+  egress_running "$agent" &&
+    error "Could not confirm $agent stopped. It isn't locked yet; it won't start on its own. Retry: incs egress refresh $agent"
+
+  # 3. The restrictive card rules. 4. No old proxy generation left.
+  egress_nic_restrict "$agent"
+  egress_start "$egress"
+  egress_ctl "$egress" stop "$agent" </dev/null || error "Could not end $agent's old proxies; $agent stays stopped"
+
+  # 5. A fresh address, and the egress container's rule for it.
+  incus config device set "$agent" eth0 "ipv4.address=$ip" >/dev/null ||
+    error "Could not move $agent to $ip; it stays stopped"
+  egress_sync_acl "$egress"
+
+  # 6. A verified proxy under the new policy.
+  egress_apply "$agent" >/dev/null || error "Could not start $agent's proxy; it stays stopped"
+
+  # 7. Start. 8. Commit.
+  incus start "$agent" >/dev/null || error "Could not start $agent; it's locked and stopped"
+  egress_commit "$agent"
+}
+
+# Restores autostart, then clears the barrier. A stop between the two leaves
+# a locked, verified container that recovery commits.
+egress_commit() {
+  local agent="$1" saved
+  saved="$(incus config get "$agent" user.incs.egress.autostart-saved 2>/dev/null)"
+  case "$saved" in
+    unset) incus config unset "$agent" boot.autostart >/dev/null 2>&1 || true ;;
+    "" | none) ;;
+    *) incus config set "$agent" "boot.autostart=$saved" >/dev/null || error "Could not restore $agent's autostart" ;;
+  esac
+  incus config set "$agent" user.incs.egress.transition=none user.incs.egress.autostart-saved=none >/dev/null ||
+    error "Could not finish locking $agent. Retry: incs egress refresh $agent"
+}
+
+# Finishes an interrupted lockdown. A running container whose card, address
+# and proxy already match the target is committed; anything else is replayed
+# from the start, which stops it first.
+egress_recover() {
+  local agent="$1" t mode ip egress st
+  t="$(egress_transition "$agent")"
+  [[ -n "$t" ]] || return 0
+  mode="${t%%:*}" ip="${t#*:}"
+  egress="$(incus config get "$agent" user.incs.egress.container)"
+  if egress_running "$agent" && egress_nic_is_restricted "$agent" && [[ "$(egress_ip "$agent")" == "$ip" ]]; then
+    st="$(egress_ctl "$egress" status "$agent" </dev/null 2>/dev/null)" || st=""
+    if [[ "$(cut -f5 <<< "$st")" == "$mode" && "$(cut -f6 <<< "$st")" == "yes" &&
+          "$(cut -f4 <<< "$st")" == "$(egress_hosts "$agent" | egress_policy_id "$mode")" ]]; then
+      log "$agent is locked and its proxy is verified; finishing"
+      egress_commit "$agent"
+      return 0
+    fi
+  fi
+  log "Resuming $agent's lockdown"
+  egress_lockdown "$agent"
+}
+
+# Brings an agent's card and proxy in line with its desired mode and hosts.
+# Prints what it did. Run under incs_lock.
+egress_converge() {
+  local agent="$1" force="${2:-}" mode
+  mode="$(incus config get "$agent" user.incs.egress 2>/dev/null)"
+  mode="${mode:-enforce}"
+  if [[ -n "$(egress_transition "$agent")" ]]; then
+    egress_recover "$agent"
+    echo "locked"
+    return 0
+  fi
+  case "$mode" in
+    off)
+      egress_apply "$agent" "$force" || return 1
+      egress_nic_open "$agent"
+      ;;
+    enforce | report)
+      if egress_nic_is_restricted "$agent"; then
+        egress_apply "$agent" "$force" || return 1
+      else
+        incus config set "$agent" user.incs.egress="$mode" >/dev/null
+        egress_lockdown "$agent"
+        echo "locked"
+      fi
+      ;;
+    *) error "$agent has an unknown egress mode: $mode" ;;
+  esac
 }

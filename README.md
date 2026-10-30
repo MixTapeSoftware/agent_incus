@@ -23,6 +23,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [Expose Container Ports](#expose-container-ports)
   - [Snapshots](#snapshots)
   - [Network Isolation](#network-isolation)
+  - [Egress Allowlist](#egress-allowlist)
 - [Runtime Management](#runtime-management)
 - [Linux Gotchas](#linux-gotchas)
 
@@ -639,6 +640,30 @@ Instances created before this keep the default bridge. What changes for new ones
 
 - A container can no longer connect to another container, or to a database or other service running on the host. Run it in the same container, or reach it from the host side.
 - Tailscale inside a container can't make direct LAN connections, so it relays (DERP). It's a little slower and still works.
+
+### Egress Allowlist
+
+`incs egress` limits which internet hosts a container on `incsbr0` can reach. Its traffic goes through its own [smokescreen](https://github.com/stripe/smokescreen) proxy in an egress container (`incs-egress`), and its network card lets it reach nothing but that proxy. Nothing is decrypted: the proxy sees only the hostname each connection asks for.
+
+```bash
+incs egress mode my-project enforce      # only listed hosts (restarts it the first time)
+incs egress log my-project               # what it tried to reach, blocked first
+incs egress allow my-project docs.rs     # open connections keep running
+incs egress rm my-project docs.rs        # its open connections through the proxy end
+incs egress mode my-project report       # allow all public web traffic, log what enforce would block
+incs egress mode my-project off          # no allowlist
+incs egress ls [my-project]              # modes, proxies, and where each host comes from
+incs egress refresh [my-project|--all]   # finish an interrupted change, review a baseline update
+```
+
+- **Hosts** are hostnames for ports 80 and 443. A leading `*.` matches any subdomain, not the name itself.
+- **The list** is the approved baseline (`~/.config/incs/egress-approved-baseline.txt`, AI APIs, package managers, code hosts and registries; copied from [`egress/baseline.txt`](egress/baseline.txt) on first use), your additions for every container (`incs egress allow --all`, kept in `~/.config/incs/egress-baseline.txt`), and the container's own hosts. When an update changes the shipped baseline, nothing uses it until `incs egress refresh` shows you the difference and you approve it.
+- **Turning it on** for an open container stops it, locks its card, ends its old proxies, moves it to a fresh address so no old connection survives, and starts it again. Until that finishes it won't start on its own, and `incs` won't start it; `incs egress refresh` finishes an interrupted one.
+- **Proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, a narrow `NO_PROXY`, `NODE_USE_ENV_PROXY=1`) go into the Incus environment, `/etc/environment`, every systemd service, and apt. A tool that ignores them fails rather than getting around the proxy. Node's built-in `fetch` needs Node 22.21 or 24 or later for this.
+- **Without DNS**: an allowlisted container can't look names up itself; the proxy does it.
+- **Separate egress containers** (`--egress-container <name>` on `incs egress mode`, making `incs-egress-<name>`) keep groups of containers, such as different clients' work, from reaching each other's proxies. Each egress container is one security boundary.
+
+What an allowlist doesn't stop: data sent to an allowed host (a gist, a package upload), and anything reachable through an allowed shared front end such as a CDN. Hosts in the baseline that accept uploads from anyone with an account are marked `upload:` in the file.
 
 ## Runtime Management
 

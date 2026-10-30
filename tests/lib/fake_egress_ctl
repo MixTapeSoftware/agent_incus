@@ -37,5 +37,7 @@ case "$1" in
     else printf '%s\t%s\t%s\t%s\t%s\tyes\t%s\n' "$2" "$(cat "$d/$2/port")" "$c" "$(cat "$d/$2/gens/$c/policy")" "$(cat "$d/$2/gens/$c/mode")" "$c"; fi
     ;;
   hosts) c="$(cur "$2")"; [[ "$c" == none ]] || cat "$d/$2/gens/$c/hosts" ;;
+  # Decision records a test wrote to <agent>/log, as the real ctl prints them.
+  log) cat "$d/$2/log" 2>/dev/null || true ;;
   *) echo "fake_egress_ctl: unsupported: $*" >&2; exit 1 ;;
 esac
