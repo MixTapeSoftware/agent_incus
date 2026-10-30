@@ -60,6 +60,12 @@ plugin_install() {
 
   incus exec "$CONTAINER_NAME" -- systemctl enable --now tailscaled
 
+  # A stored pref, so it survives restarts. 'tailscale up' has no
+  # --auto-update flag and doesn't check it, so a later 'up --operator=...'
+  # won't complain that the setting is missing.
+  incus exec "$CONTAINER_NAME" -- tailscale set --auto-update || \
+    warn "Could not turn on Tailscale auto-updates; run 'incs shell --with-sudo $CONTAINER_NAME \"sudo tailscale set --auto-update\"'"
+
   if [[ -n "${TS_AUTH_KEY:-}" ]]; then
     log "Bringing tailscale up with provided auth key..."
     incus exec "$CONTAINER_NAME" -- tailscale up \
