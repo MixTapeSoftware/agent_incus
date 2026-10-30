@@ -51,7 +51,7 @@ case "$1" in
     printf '2026-10-30T10:04:00Z\tevil\033]0;pwned\007.example\t443\tblocked\tdefault rule policy used\t3\n'
     ;;
   ls) printf 'api.anthropic.com\tbaseline\nown.example\tbox\n' ;;
-  *) echo "$*" >> "$STUB/egress-calls"; echo "[+] box: done" ;;
+  *) echo "$*" >> "$STUB/egress-calls"; [[ "$*" == "mode box off" ]] || echo "[+] box: done" ;;
 esac
 EOF
 chmod +x "$S/bin/incus" "$S/repo/incs.egress"
@@ -133,6 +133,9 @@ out=$(keys '\t' m | tui) || true
 assert_contains "m offers the modes" "Mode for box: e enforce · r report · o off" "$(plain <<<"$out")"
 out=$(keys '\t' m r | tui) || true
 assert_eq "r sets report" "mode box report" "$(cat "$S/egress-calls" 2>/dev/null)"
+out=$(keys '\t' m o '' l | tui) || true
+assert_eq "a job that prints nothing runs" "mode box off" "$(cat "$S/egress-calls" 2>/dev/null)"
+assert_contains "and the view still answers keys after it" "DECISION" "$(last_frame "$out" | plain)"
 out=$(keys j j ' ' | tui) || true
 assert_eq "space won't start a container behind the barrier" "" "$(cat "$S/calls" 2>/dev/null)"
 assert_contains "and says how to finish" "finish it: incs egress refresh stuck" "$(last_frame "$out" | plain)"

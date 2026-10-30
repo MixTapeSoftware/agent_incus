@@ -665,7 +665,8 @@ status_interactive() {
         fi
         if [[ "$p_verb" == egress ]]; then
           # The last line says what happened (incs egress logs one per change).
-          err=$(sed $'s/\033\\[[0-9;]*m//g' "$p_log" | grep -v '^$' | tail -n 1 | tr -d '[:cntrl:]')
+          # sed alone, so an empty log can't fail the pipeline (pipefail).
+          err=$(sed -e $'s/\033\\[[0-9;]*m//g' -e '/^$/d' "$p_log" | tail -n 1 | tr -d '[:cntrl:]')
           if [[ "$(cat "$p_log.rc")" == 0 ]]; then line="${err#\[+\] }"; else line="Failed: $(head -n 1 "$p_log.desc"): ${err#\[ERROR\] }"; fi
           msg=$(status_note "$msg" "$line")
         elif [[ "$(cat "$p_log.rc")" == 0 ]]; then
