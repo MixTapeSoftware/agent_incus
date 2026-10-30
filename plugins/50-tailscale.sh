@@ -64,7 +64,7 @@ plugin_install() {
   # --auto-update flag and doesn't check it, so a later 'up --operator=...'
   # won't complain that the setting is missing.
   incus exec "$CONTAINER_NAME" -- tailscale set --auto-update || \
-    warn "Could not turn on Tailscale auto-updates; run 'sudo tailscale set --auto-update' in the container"
+    warn "Could not turn on Tailscale auto-updates; run 'incs shell --with-sudo $CONTAINER_NAME \"sudo tailscale set --auto-update\"'"
 
   if [[ -n "${TS_AUTH_KEY:-}" ]]; then
     log "Bringing tailscale up with provided auth key..."
