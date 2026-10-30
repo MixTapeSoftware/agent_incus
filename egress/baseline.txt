@@ -1,0 +1,247 @@
+# egress/baseline.txt
+# The hosts every allowlisted container may reach, on ports 80 and 443.
+# Drafted from Docker sbx's "balanced" local policy (2026-10-27), with:
+#   - sbx's "**." written as smokescreen's "*.", which matches any subdomain
+#     but not the name itself; the name is listed on its own where it's needed;
+#   - wildcards over storage anyone can create a bucket in left out
+#     (*.amazonaws.com, *.blob.core.windows.net, *.googleapis.com,
+#     *.googleusercontent.com, *.public.blob.vercel-storage.com): any agent
+#     could write to an attacker's bucket through them. Allow the exact
+#     bucket a project needs with `incs egress allow`;
+#   - "crl*.digicert.com", which smokescreen can't match, written out.
+#
+# Every wildcard says why it's needed. Hosts marked "upload:" accept data from
+# anyone with an account there; that's the accepted limit of an allowlist
+# that names hosts, not accounts.
+#
+# incs never reads this file to build a policy. `incs egress refresh` shows
+# how it differs from your approved copy
+# (~/.config/incs/egress-approved-baseline.txt) and copies it only when you
+# confirm. One host per line; "#" starts a comment.
+
+# --- Coding agents and AI APIs ---------------------------------------------
+api.anthropic.com
+claude.ai
+claude.com
+platform.claude.com
+console.anthropic.com
+downloads.claude.ai
+statsig.anthropic.com
+mcp-proxy.anthropic.com
+# Claude's remote-control relay.
+bridge.claudeusercontent.com
+# Codex and ChatGPT sign-in, API and assets: OpenAI serves them from many
+# subdomains.
+openai.com
+*.openai.com
+chatgpt.com
+*.chatgpt.com
+*.oaistatic.com
+*.oaiusercontent.com
+cdn.openaimerge.com
+x.ai
+api.x.ai
+cursor.com
+# Cursor's API and update servers.
+*.cursor.sh
+factory.ai
+# Factory's API and app.
+*.factory.ai
+api.perplexity.ai
+api.workos.com
+gemini.google.com
+generativelanguage.googleapis.com
+models.dev
+
+# --- Package managers and language toolchains ------------------------------
+registry.npmjs.org
+npmjs.org
+npmjs.com
+# Yarn's registry and repo mirrors.
+yarnpkg.com
+*.yarnpkg.com
+nodejs.org
+deb.nodesource.com
+npm.duckdb.org
+bun.sh
+# Bun's install and release hosts.
+*.bun.sh
+deno.land
+jsdelivr.net
+unpkg.com
+pypi.org
+pypi.python.org
+files.pythonhosted.org
+pythonhosted.org
+bootstrap.pypa.io
+pypa.io
+astral.sh
+rubygems.org
+ruby-lang.org
+rubyonrails.org
+rvm.io
+crates.io
+index.crates.io
+static.crates.io
+static.rust-lang.org
+rustup.rs
+sh.rustup.rs
+proxy.golang.org
+sum.golang.org
+golang.org
+pkg.go.dev
+goproxy.io
+hex.pm
+packagist.org
+packagist.com
+# Packagist's repo and metadata mirrors.
+*.packagist.org
+maven.org
+repo.maven.apache.org
+apache.org
+gradle.org
+# Gradle's plugin portal and distribution servers.
+*.gradle.org
+spring.io
+java.com
+java.net
+eclipse.org
+nuget.org
+dot.net
+dotnet.microsoft.com
+cocoapods.org
+cpan.org
+metacpan.org
+haskell.org
+pub.dev
+swift.org
+ziglang.org
+mise.run
+mise-versions.jdx.dev
+binaries.prisma.sh
+cdn.playwright.dev
+playwright.azureedge.net
+tuf-repo-cdn.sigstore.dev
+json-schema.org
+json.schemastore.org
+
+# --- Code hosts --------------------------------------------------------------
+# upload: repositories, gists and releases.
+github.com
+# API, codeload and the GitHub services gh uses.
+*.github.com
+# Raw files, release assets and avatars. upload: anyone's repository content.
+*.githubusercontent.com
+ghcr.io
+*.githubcopilot.com
+# upload.
+gitlab.com
+*.gitlab.com
+# upload.
+bitbucket.org
+# upload: Azure DevOps repositories.
+dev.azure.com
+# upload.
+sourceforge.net
+
+# --- Container registries ----------------------------------------------------
+# upload: images.
+docker.io
+docker.com
+# Docker Hub's registry, auth and layer CDNs.
+*.docker.io
+*.docker.com
+docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
+dhi.io
+# upload: images.
+gcr.io
+# Regional Google Container Registry hosts.
+*.gcr.io
+quay.io
+public.ecr.aws
+mcr.microsoft.com
+# Microsoft Container Registry's layer CDN.
+*.data.mcr.microsoft.com
+registry.k8s.io
+k8s.io
+
+# --- Editors and vendor tools ------------------------------------------------
+code.visualstudio.com
+vscode.dev
+vscode.download.prss.microsoft.com
+visualstudio.com
+# Marketplace and update hosts. upload: <org>.visualstudio.com is Azure
+# DevOps.
+*.visualstudio.com
+packages.microsoft.com
+login.microsoftonline.com
+azure.com
+hashicorp.com
+# Releases and checkpoint servers.
+*.hashicorp.com
+dl.google.com
+# Google's static content and Chrome component updates.
+*.gstatic.com
+*.gvt1.com
+apis.google.com
+play.google.com
+play.googleapis.com
+www.google.com
+csp.withgoogle.com
+challenges.cloudflare.com
+fastly.com
+# upload: hosted apps and storage.
+vercel.com
+# upload: hosted databases and storage.
+supabase.com
+mcp.supabase.com
+clerk.com
+figma.com
+app.daytona.io
+
+# --- Operating system packages ----------------------------------------------
+archive.ubuntu.com
+security.ubuntu.com
+ports.ubuntu.com
+ubuntu.com
+launchpad.net
+ppa.launchpad.net
+debian.org
+# Debian's mirrors, security and snapshot archives.
+*.debian.org
+apt.llvm.org
+alpinelinux.org
+dl-cdn.alpinelinux.org
+archlinux.org
+fedoraproject.org
+centos.org
+packagecloud.io
+
+# --- Certificate status (OCSP and CRLs, mostly port 80) ----------------------
+# Certificate authorities serve these from many numbered hosts.
+*.amazontrust.com
+*.lencr.org
+*.pki.goog
+*.pki.microsoft.com
+*.one.digicert.com
+*.one.au.digicert.com
+*.one.ch.digicert.com
+*.one.digicert.co.jp
+*.one.nl.digicert.com
+cacerts.digicert.com
+crl.digicert.com
+crl3.digicert.com
+crl4.digicert.com
+ocsp.digicert.com
+crl.comodoca.com
+ocsp.comodoca.com
+crl.globalsign.com
+crl.globalsign.net
+ocsp.globalsign.com
+ocsp2.globalsign.com
+crl.sectigo.com
+crt.sectigo.com
+ocsp.sectigo.com
+crl.usertrust.com
+ocsp.usertrust.com
+isrg.trustid.ocsp.identrust.com

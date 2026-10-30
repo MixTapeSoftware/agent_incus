@@ -29,6 +29,7 @@
 #   FAKE_INCUS_NEXT_IP     address handed to the next created instance
 #   FAKE_INCUS_FAIL_CALL   regex; any invocation whose argv matches exits 1
 #   FAKE_INCUS_VERSION     what `incus version` reports (default 6.19)
+#   FAKE_EGRESS_CTL        a stand-in run for `exec <egress> -- /usr/local/sbin/incs-egress-ctl ...`
 #   FAKE_INCUS_IMAGE_TYPE  the Type `incus image info` reports (default container)
 #   FAKE_INCUS_FIREWALL    the firewall driver `incus info` reports (default nftables)
 #   FAKE_INCUS_EXTENSIONS  API extensions `incus info` lists
@@ -200,9 +201,11 @@ case "$cmd" in
       set)
         name="$1"; shift
         need_inst "$name"
-        if [[ $# -eq 1 ]]; then key="${1%%=*}"; val="${1#*=}"
-        else key="$1"; val="$2"; fi
-        printf '%s' "$val" > "$(inst_dir "$name")/config/$key"
+        if [[ "$1" == *=* ]]; then
+          for kv in "$@"; do printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/${kv%%=*}"; done
+        else
+          printf '%s' "$2" > "$(inst_dir "$name")/config/$1"
+        fi
         ;;
       show)
         need_inst "$1"
@@ -228,9 +231,15 @@ case "$cmd" in
         op="$1"; name="$2"; dev="$3"; shift 3
         need_inst "$name"
         case "$op" in
-          override)
-            kv="${1:-}"
-            printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+          override|set)
+            for kv in "$@"; do
+              printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+            done
+            ;;
+          get)
+            f="$(inst_dir "$name")/config/devices.$dev.$1"
+            [[ -f "$f" ]] && cat "$f"
+            echo
             ;;
           add)
             [[ -f "$(inst_dir "$name")/config/devices.$dev.type" ]] && die "Device already exists: $dev"
@@ -340,6 +349,12 @@ case "$cmd" in
 
     if [[ -n "${FAKE_INCUS_FAIL_EXEC:-}" && "$command_line" =~ $FAKE_INCUS_FAIL_EXEC ]]; then
       exit 1
+    fi
+
+    if [[ "${1:-}" == "/usr/local/sbin/incs-egress-ctl" && -n "${FAKE_EGRESS_CTL:-}" ]]; then
+      shift
+      stdin_file="$S/exec-stdin/$n"; [[ -f "$stdin_file" ]] || stdin_file=/dev/null
+      exec "$FAKE_EGRESS_CTL" "$S/ctl/$name" "$@" < "$stdin_file"
     fi
 
     root="$(inst_dir "$name")/root"

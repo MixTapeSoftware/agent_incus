@@ -1,0 +1,42 @@
+#!/bin/bash
+# egress/incs-proxy-run
+# Starts one smokescreen generation for an agent, inside an egress container.
+# smokescreen with no allowlist allows everything, so this refuses unless the
+# generation's config and allowlist exist and the allowlist's default policy
+# matches the generation's mode. It execs smokescreen, so smokescreen's parent
+# stays systemd (PID 1), which its einhorn socket handoff checks.
+#
+# With INCS_PROBE_PORT set, it runs a check copy on that loopback port
+# instead of the agent's shared socket.
+set -euo pipefail
+
+agent="$1" gen="$2"
+dir="/etc/incs-egress/agents/$agent/gens/$gen"
+acl="$dir/acl.yaml" cfg="$dir/config.yaml"
+refuse() { echo "incs-proxy-run: refusing to start $agent generation $gen: $1" >&2; exit 64; }
+
+[[ -s "$cfg" ]] || refuse "no config"
+[[ -s "$acl" ]] || refuse "no allowlist"
+mode="$(cat "$dir/mode" 2>/dev/null || true)"
+action="$(awk '/^default:/ {d=1; next} d && /^[^ ]/ {d=0} d && $1 == "action:" {print $2}' "$acl")"
+case "$mode" in
+  enforce | report) [[ "$action" == "$mode" ]] ;;
+  off) [[ "$action" == "open" ]] ;;
+  *) false ;;
+esac || refuse "default action '$action' doesn't match mode '$mode'"
+
+args=(--config-file "$cfg" --egress-acl-file "$acl")
+if [[ -n "${INCS_PROBE_PORT:-}" ]]; then
+  unset EINHORN_MASTER_PID EINHORN_FD_COUNT EINHORN_FD_0 EINHORN_SOCK_PATH
+  args+=(--listen-ip 127.0.0.1 --listen-port "$INCS_PROBE_PORT")
+fi
+# smokescreen's error text can quote the request or the upstream's reply, and
+# the journal must never hold URLs, headers or bodies. Its logs go through a
+# filter that drops that text. The filter runs as smokescreen's child; ctl
+# signals draining generations with --kill-whom=main so it outlives them.
+exec 2> >(exec jq -R -c --unbuffered '
+  (fromjson? // {msg: "unparsed log line"})
+  | del(.error)
+  | if (.msg | type) == "string" and (.msg | startswith("An unexpected error occurred"))
+    then .msg = "An unexpected error occurred" else . end' >&2)
+exec /usr/local/libexec/incs/smokescreen "${args[@]}"
