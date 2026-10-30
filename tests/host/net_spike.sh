@@ -2,13 +2,16 @@
 # tests/host/net_spike.sh
 # Spike for the network lockdown plan (N1). Before incs builds on Incus
 # network ACLs, address sets and IP/MAC filtering, check on a real host that
-# they do what the plan assumes. Run it on a machine with Incus:
+# they do what the plan assumes. The bridge is the one the egress design
+# settled on: a /16 with no DNS server, public resolvers handed out by DHCP,
+# and addresses set by incs at launch. Run it on a machine with Incus:
 #
 #   bash tests/host/net_spike.sh              # about 3 minutes
 #   bash tests/host/net_spike.sh --restart    # also restarts Incus (sudo) and re-checks
 #
 # It creates only throwaway objects named incs-spike*, refuses to start if any
-# already exist, and deletes them all on exit. Nothing else is touched.
+# already exist, and deletes them all on exit. If ufw is active, it adds narrow
+# rules for its bridge with sudo and removes them on exit.
 # Prints PASS/FAIL for what the plan relies on and INFO for what it needs to
 # know. Paste the whole output back.
 
@@ -29,6 +32,7 @@ ACL_AGENT=incs-spike-agent      # agent: ingress from the host only, no egress t
 IMAGE=images:alpine/3.24
 HOST_PORT=47999                 # host side of the proxy-device check
 HOST_SVC_PORT=47998             # a host service on the bridge address
+RESOLVERS=1.1.1.1,9.9.9.9       # what DHCP hands out instead of the bridge
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); echo "PASS $1"; }
@@ -38,8 +42,19 @@ check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected: $2, go
 section() { echo ""; echo "== $1"; }
 
 HOST_PY_PID=""
+UFW_ADDED=0
+# ufw denies incoming and routed traffic by default, which drops DHCP on a new
+# bridge. These open what incs will (DHCP in, forwarding out) plus the host
+# service, so the ACL is what blocks it rather than ufw. No DNS (53).
+ufw_rules() {
+  local verb="$1"
+  sudo ufw $verb allow in on "$NET" to any port 67 proto udp &&
+  sudo ufw $verb allow in on "$NET" to any port "$HOST_SVC_PORT" proto tcp &&
+  sudo ufw route $verb allow in on "$NET"
+}
 cleanup() {
   echo ""; echo "== cleanup"
+  [[ "$UFW_ADDED" == "1" ]] && ufw_rules delete >/dev/null 2>&1
   [[ -n "$HOST_PY_PID" ]] && kill "$HOST_PY_PID" 2>/dev/null
   for i in "$A" "$B" "$P"; do incus delete --force "$i" >/dev/null 2>&1; done
   for acl in "$ACL_P" "$ACL_PREC" "$ACL_AGENT"; do incus network acl delete "$acl" >/dev/null 2>&1; done
@@ -68,6 +83,12 @@ for set in "$SET" $(for n in 63 64 71; do printf 's%.0s' $(seq 1 "$n"); echo; do
   incus network address-set show "$set" >/dev/null 2>&1 && { echo "Address set $set already exists; refusing to run."; exit 1; }
 done
 trap cleanup EXIT
+info "br_netfilter loaded: $(lsmod 2>/dev/null | grep -q '^br_netfilter' && echo yes || echo no) (yes means ufw also filters traffic between containers on one bridge)"
+if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+  info "ufw is active; adding narrow rules for $NET (sudo; removed on exit)"
+  UFW_ADDED=1
+  ufw_rules "" >/dev/null || { fail "add the ufw rules for $NET"; exit 1; }
+fi
 
 server_version="$(incus version 2>/dev/null | awk -F': *' '/^Server version/ {print $2}')"
 info "server version: ${server_version:-unknown}"
@@ -94,23 +115,48 @@ done
 
 # --- bridge, profile, instances --------------------------------------------
 section "bridge and instances"
-incus network create "$NET" ipv4.address=auto ipv4.nat=true ipv6.address=none >/dev/null || { fail "create bridge $NET"; exit 1; }
+# A /16 no route on the host already covers, like incs picks.
+OCT=""
+for o in $(seq 230 250); do
+  ip -4 route 2>/dev/null | grep -q "^10\.$o\." && continue
+  incus network list --format csv 2>/dev/null | grep -q ",10\.$o\." && continue
+  OCT="$o"; break
+done
+[[ -n "$OCT" ]] || { fail "find a free 10.x.0.0/16"; exit 1; }
+if incus network create "$NET" "ipv4.address=10.$OCT.0.1/16" ipv4.nat=true ipv6.address=none \
+     "ipv4.dhcp.ranges=10.$OCT.255.10-10.$OCT.255.250" \
+     "raw.dnsmasq=$(printf 'port=0\ndhcp-option=option:dns-server,%s' "$RESOLVERS")" >/dev/null 2>/tmp/incs-spike-err.$$; then
+  pass "create a /16 bridge with no DNS and public resolvers over DHCP"
+else
+  fail "create the bridge: $(cat /tmp/incs-spike-err.$$)"; rm -f /tmp/incs-spike-err.$$; exit 1
+fi
+rm -f /tmp/incs-spike-err.$$
 GW_CIDR="$(incus network get "$NET" ipv4.address)"; GW="${GW_CIDR%/*}"
-info "bridge $NET: $GW_CIDR, IPv6 off"
+info "bridge $NET: $GW_CIDR, IPv6 off, DHCP pool 10.$OCT.255.10-250"
 incus profile create "$PROFILE" >/dev/null
 incus profile device add "$PROFILE" eth0 nic network="$NET" \
   security.ipv4_filtering=true security.mac_filtering=true >/dev/null || { fail "profile NIC with filtering"; exit 1; }
 
-for i in "$A" "$B" "$P"; do
-  incus launch "$IMAGE" "$i" -p default -p "$PROFILE" >/dev/null || { fail "launch $i"; exit 1; }
-done
+# incs sets each address at launch, outside the DHCP pool. P takes a pool
+# address, as a control for DHCP itself.
+A_WANT="10.$OCT.0.10"; B_WANT="10.$OCT.0.11"
+incus launch "$IMAGE" "$A" -p default -p "$PROFILE" -d "eth0,ipv4.address=$A_WANT" >/dev/null || { fail "launch $A with a set address"; exit 1; }
+incus launch "$IMAGE" "$B" -p default -p "$PROFILE" -d "eth0,ipv4.address=$B_WANT" >/dev/null || { fail "launch $B with a set address"; exit 1; }
+incus launch "$IMAGE" "$P" -p default -p "$PROFILE" >/dev/null || { fail "launch $P"; exit 1; }
 ip_of() { incus list "^$1\$" -c 4 --format csv | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1; }
 for i in "$A" "$B" "$P"; do
   for _ in $(seq 1 60); do [[ -n "$(ip_of "$i")" ]] && break; sleep 1; done
 done
 A_IP="$(ip_of "$A")"; B_IP="$(ip_of "$B")"; P_IP="$(ip_of "$P")"
 info "A=$A_IP  B=$B_IP  P=$P_IP"
+check "A gets the address set at launch" "$A_WANT" "$A_IP"
+check "a launch-time address keeps the profile's ipv4_filtering" "true" "$(incus config device get "$A" eth0 security.ipv4_filtering 2>/dev/null)"
+case "$P_IP" in 10.$OCT.255.*) pass "P gets a pool address ($P_IP)" ;; *) fail "P gets a pool address (got: ${P_IP:-none})" ;; esac
 check "the profile's eth0 replaces the default profile's (A is on $NET)" "$NET" "$(incus config show "$A" --expanded | awk '/^  eth0:/ {d=1} d && /network:/ {print $2; exit}')"
+resolv="$(incus exec "$A" -- cat /etc/resolv.conf 2>/dev/null)"
+info "A's resolv.conf from DHCP: $(tr '\n' ';' <<< "$resolv")"
+check "DHCP hands out the public resolvers" "yes" "$(grep -q "nameserver ${RESOLVERS%%,*}" <<< "$resolv" && echo yes || echo no)"
+check "DHCP doesn't hand out the bridge as a resolver" "no" "$(grep -q "nameserver $GW" <<< "$resolv" && echo yes || echo no)"
 
 for i in "$A" "$B" "$P"; do
   incus exec "$i" -- sh -c 'apk add --no-cache -q socat iproute2 curl iputils-arping >/dev/null 2>&1 || apk add --no-cache -q socat iproute2 curl iputils >/dev/null 2>&1' \
@@ -204,9 +250,15 @@ incus config device override "$A" eth0 security.acls="$ACL_AGENT" \
 sleep 2
 check "B cannot reach A:8080" "no" "$(connects "$B" "$A_IP" 8080)"
 check "the host reaches A:8080" "yes" "$(host_connects "$A_IP" 8080)"
-[[ -n "$HOST_PY_PID" ]] && check "A cannot reach the host service on $GW" "no" "$(connects "$A" "$GW" "$HOST_SVC_PORT")"
-check "A still resolves names (DNS to the bridge is baseline)" "yes" \
+if [[ -n "$HOST_PY_PID" ]]; then
+  t0="$(date +%s%N)"
+  check "A cannot reach the host service on $GW" "no" "$(connects "$A" "$GW" "$HOST_SVC_PORT")"
+  info "the rejected connection failed after $(( ($(date +%s%N) - t0) / 1000000 )) ms (a reject should fail at once; a drop waits for the 5 s timeout)"
+fi
+check "A still resolves names through the public resolvers" "yes" \
   "$(incus exec "$A" -- timeout 10 nslookup example.com >/dev/null 2>&1 && echo yes || echo no)"
+check "nothing answers DNS on the bridge" "no" \
+  "$(incus exec "$A" -- timeout 8 nslookup example.com "$GW" >/dev/null 2>&1 && echo yes || echo no)"
 check "A still reaches the internet" "yes" \
   "$(incus exec "$A" -- timeout 15 curl -s -o /dev/null https://example.com && echo yes || echo no)"
 check "A, with its own ACL, still reaches P:443" "yes" "$(connects "$A" "$P_IP" 443)"
