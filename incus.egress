@@ -501,25 +501,29 @@ egress_converge() {
   local agent="$1" force="${2:-}" mode
   mode="$(incus config get "$agent" user.incs.egress 2>/dev/null)"
   mode="${mode:-enforce}"
+  # An interrupted lockdown finishes first; then the container converges on
+  # its mode as it is now, which may have changed since the lockdown began.
+  local was_locked=0
   if [[ -n "$(egress_transition "$agent")" ]]; then
     egress_recover "$agent"
-    echo "locked"
-    return 0
+    was_locked=1
   fi
+  local r=""
   case "$mode" in
     off)
-      egress_apply "$agent" "$force" || return 1
+      r="$(egress_apply "$agent" "$force")" || return 1
       egress_nic_open "$agent"
       ;;
     enforce | report)
       if egress_nic_is_restricted "$agent"; then
-        egress_apply "$agent" "$force" || return 1
+        r="$(egress_apply "$agent" "$force")" || return 1
       else
-        incus config set "$agent" user.incs.egress="$mode" >/dev/null
         egress_lockdown "$agent"
-        echo "locked"
+        r=locked
       fi
       ;;
     *) error "$agent has an unknown egress mode: $mode" ;;
   esac
+  if [[ "$was_locked" == 1 && "$r" == unchanged ]]; then r=locked; fi
+  echo "$r"
 }

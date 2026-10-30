@@ -161,6 +161,28 @@ assert_eq "no stop" "" "$(calls_since "$before" | grep '^stop box' || true)"
 assert_eq "the barrier is cleared" "none" "$(cfg box user.incs.egress.transition)"
 assert_eq "autostart is restored" "true" "$(cfg box boot.autostart)"
 
+echo "a mode change while a lockdown is unfinished"
+run mode box report
+addr="$(cfg box devices.eth0.ipv4.address)"
+incus config set box "user.incs.egress.transition=report:$addr" user.incs.egress.autostart-saved=true boot.autostart=false
+run mode box enforce
+assert_eq "it succeeds" "0" "$RC"
+assert_eq "the unfinished lockdown is committed" "none" "$(cfg box user.incs.egress.transition)"
+assert_eq "and the new mode is applied, not the old one" "enforce" "$(gen_file box mode)"
+assert_contains "the active state is enforce" "enforce:" "$(cfg box user.incs.egress.active)"
+
+echo "other ways to start a container behind the barrier"
+incus stop box
+incus config set box user.incs.egress.transition=enforce:10.201.0.99
+before="$(ncalls)"
+ua="$(bash "$SANDBOX/repo/incs" -ua 2>&1 || true)"
+assert_contains "incs -ua skips it" "Skipping box: it's partway through" "$ua"
+assert_eq "and doesn't start it" "" "$(calls_since "$before" | grep '^start box' || true)"
+envout="$(bash "$SANDBOX/repo/incs" -e box SOME_VAR 2>&1 || true)"
+assert_contains "incs -e won't start it" "partway through turning its allowlist on" "$envout"
+incus config set box user.incs.egress.transition=none
+incus start box
+
 echo "--all"
 run allow --all extra.example
 assert_eq "--all needs a yes without a terminal" "1" "$RC"

@@ -84,6 +84,14 @@ EOF
   exit 0
 }
 
+# A lockdown that didn't finish keeps the container stopped until it does
+# (incs egress refresh). Nothing in incs starts it before then.
+behind_barrier() {
+  local t
+  t="$(incus config get "$1" user.incs.egress.transition 2>/dev/null)" || return 0
+  [[ -n "$t" && "$t" != "none" ]]
+}
+
 is_debian() {
   local container="$1"
   incus exec "$container" -- sh -c 'test -f /etc/debian_version' </dev/null &>/dev/null
@@ -146,6 +154,10 @@ cmd_update_all() {
     local was_running=0
     if [[ "$status" == "RUNNING" ]]; then
       was_running=1
+    elif behind_barrier "$name"; then
+      echo "  ⚠️  Skipping $name: it's partway through turning its allowlist on. Finish it: incs egress refresh $name" >&2
+      failed+=("$name")
+      continue
     else
       log "Starting $name..."
       incus start "$name"
@@ -214,6 +226,8 @@ cmd_set_env() {
   local status
   status=$(incus list "^${container}$" --format csv --columns s 2>/dev/null)
   if [[ "$status" != "RUNNING" ]]; then
+    behind_barrier "$container" &&
+      error "$container is partway through turning its allowlist on, so it stays stopped. Finish it: incs egress refresh $container"
     log "Starting $container..."
     incus start "$container"
     local attempts=0
@@ -824,11 +838,14 @@ case "$1" in
     incus delete --force "$1"
     log "Deleted $1"
     if [[ -n "$_egress" ]]; then
-      # Its proxy goes too; its port isn't handed out again.
+      # Its proxy goes too, under the lock that guards the egress
+      # container's rules; its port isn't handed out again.
       ( SCRIPT_DIR="$SCRIPT_DIR"
         warn() { echo -e "${YELLOW}[!]${NC} $1" >&2; }
         source "$SCRIPT_DIR/incus.net"; source "$SCRIPT_DIR/incus.egress"
-        egress_forget "$1" "$_egress" )
+        incs_lock
+        egress_forget "$1" "$_egress"
+        incs_unlock )
     fi
     ;;
   -k|kill)
