@@ -4,6 +4,8 @@ PLUGIN_DESC="Password manager CLI"
 PLUGIN_DEFAULT=0
 PLUGIN_CLI_FLAGS="--1pass"
 PLUGIN_NEEDS_PROMPT=1
+# The op download, and 1Password's API under an allowlist.
+PLUGIN_EGRESS_ALLOW="cache.agilebits.com *.1password.com"
 
 plugin_prompt() {
   echo ""

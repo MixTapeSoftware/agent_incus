@@ -162,7 +162,9 @@ echo "incus.init"
 # is provisioned.
 mkdir -p "$SANDBOX/repo"
 cp "$REPO_ROOT"/incus.* "$SANDBOX/repo/"
-init() { bash "$SANDBOX/repo/incus.init" "$@" --from base --no-tui --no-copy >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
+cp -R "$REPO_ROOT/egress" "$SANDBOX/repo/egress"
+# The allowlist is tests/egress_init_test.sh's; these check the network alone.
+init() { bash "$SANDBOX/repo/incus.init" "$@" --from base --no-tui --no-copy --egress off >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
 template() { mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"; }
 inst() { cat "$FAKE_INCUS_STATE/instances/$1/$2" 2>/dev/null; }
 
@@ -200,7 +202,7 @@ assert_eq "an old Incus stops the build" "1" "$RC"
 assert_eq "nothing is created on an old Incus" "no" "$([[ -d "$FAKE_INCUS_STATE/instances/old" ]] && echo yes || echo no)"
 
 fresh; template
-bash "$SANDBOX/repo/incus.init" dry --from base --no-tui --no-copy --dry-run >"$SANDBOX/out" 2>&1 || true
+bash "$SANDBOX/repo/incus.init" dry --from base --no-tui --no-copy --egress off --dry-run >"$SANDBOX/out" 2>&1 || true
 assert_contains "--dry-run names the network" "Network:     incsbr0, isolated" "$(cat "$SANDBOX/out")"
 
 echo ""

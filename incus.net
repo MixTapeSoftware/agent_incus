@@ -279,8 +279,9 @@ incs_lock() {
       rm -rf "$INCS_LOCK_DIR"
       continue
     fi
-    (( waited++ < 120 )) ||
-      error "Another incs command has held $INCS_LOCK_DIR for 2 minutes. If none is running, remove it."
+    # Creating an egress container builds smokescreen under the lock.
+    (( waited++ < 900 )) ||
+      error "Another incs command has held $INCS_LOCK_DIR for 15 minutes. If none is running, remove it."
     sleep 1
   done
   echo "$$" > "$INCS_LOCK_DIR/pid"

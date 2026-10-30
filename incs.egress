@@ -272,6 +272,7 @@ status_line() {
   active="$(incus config get "$c" user.incs.egress.active 2>/dev/null)"
   port="$(incus config get "$c" user.incs.egress.port 2>/dev/null)"
   [[ -n "$(egress_transition "$c")" ]] && notes+="change interrupted: incs egress refresh $c; "
+  egress_build_abandoned "$c" && notes+="build abandoned ($(incus config get "$c" user.incs.egress.build)): rebuild or delete it; "
   if [[ "${active%%:*}" != "$mode" ]]; then
     notes+="wants $mode: incs egress refresh $c; "
   elif [[ "${active#*:}" != "$(egress_hosts "$c" | egress_policy_id "$mode")" ]]; then
@@ -358,6 +359,11 @@ cmd_refresh() {
   incs_lock
   for c in $cs; do
     [[ -n "$(incus config get "$c" user.incs.egress.container 2>/dev/null)" ]] || { warn "$c has no allowlist"; continue; }
+    if egress_build_abandoned "$c"; then
+      egress_running "$c" && incus stop "$c" --force >/dev/null 2>&1
+      warn "$c's build was abandoned ($(incus config get "$c" user.incs.egress.build)); it's stopped. Rebuild it, or delete it: incs -d $c"
+      continue
+    fi
     converge_one "$c"
   done
   incs_unlock

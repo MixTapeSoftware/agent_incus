@@ -42,6 +42,10 @@ Commands:
   -n, net <container> [ports...] Manage port proxies
   egress <command> [args...]     Which internet hosts a container may reach
                                  (incs egress -h)
+  serve <container> [<port>[:<target>] | --off <port>]
+                                 Tailscale serve mappings, set from the host:
+                                 list them, map tailnet HTTPS <port> to the
+                                 app's <target> (default: the same), or remove
   -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)
   -d, delete <container>          Force delete a container
   -k, kill <container>           Stop a container
@@ -741,6 +745,31 @@ status_interactive() {
 }
 
 # ---------------------------------------------------------------------------
+# Tailscale serve, from the host. Under an allowlist the agent isn't
+# Tailscale's operator, so mappings change here, as root in the container.
+# ---------------------------------------------------------------------------
+cmd_serve() {
+  local container="${1:-}" spec="${2:-}" port target
+  [[ -n "$container" ]] || error "Usage: incs serve <container> [<port>[:<target>] | --off <port>]"
+  incus info "$container" &>/dev/null || error "Container not found: $container"
+  if [[ -z "$spec" ]]; then
+    incus exec "$container" -- tailscale serve status
+  elif [[ "$spec" == "--off" ]]; then
+    port="${3:-}"
+    [[ "$port" =~ ^[0-9]+$ ]] || error "Usage: incs serve <container> --off <port>"
+    incus exec "$container" -- tailscale serve --https="$port" off
+    log "Removed tailnet port $port on $container"
+  else
+    port="${spec%%:*}" target="${spec#*:}"
+    [[ "$spec" == *:* ]] || target="$port"
+    [[ "$port" =~ ^[0-9]+$ && "$target" =~ ^[0-9]+$ ]] ||
+      error "Ports are numbers: incs serve <container> <port>[:<target>]"
+    incus exec "$container" -- tailscale serve --bg --https="$port" "http://127.0.0.1:$target"
+    log "Tailnet https port $port on $container serves its port $target"
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Cron management
 # ---------------------------------------------------------------------------
 CRON_TAG="# incs-update-all"
@@ -826,6 +855,10 @@ case "$1" in
   egress)
     shift
     exec "$SCRIPT_DIR/incs.egress" "$@"
+    ;;
+  serve)
+    shift
+    cmd_serve "$@"
     ;;
   -e|env)
     shift

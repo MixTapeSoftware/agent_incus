@@ -141,6 +141,8 @@ Options:
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 Start with an empty workspace instead of copying the host directory
   --insecure-network        Use the default bridge: no isolation from other instances or the host
+  --egress MODE             Internet allowlist: enforce (default), report or off
+  --egress-container NAME   Run the container's proxy in incs-egress-NAME
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
@@ -281,6 +283,8 @@ Optional extras:
 - `PLUGIN_CLI_FLAGS="--my-tool"` — adds a CLI flag to pre-select without the TUI
 - `PLUGIN_NEEDS_PROMPT=1` + `plugin_prompt()` — collect user input before install
 - `PLUGIN_RUN_ON_LAUNCH=1` + `plugin_on_launch()` — re-run setup when launching from a template (for symlinks, config that doesn't survive snapshots)
+- `PLUGIN_EGRESS_ALLOW="host *.example.com"` — hosts the plugin needs under the [egress allowlist](#egress-allowlist), recorded on the container when it's created
+- `PLUGIN_PHASE=open|locked` — when it installs under an allowlist: `open`, before the container is locked, or `locked`, after, with the workspace. Plugins that prompt (they usually take a credential) default to `locked`, others to `open`
 - `PLUGIN_REQUIRES="other-id ..."` — auto-select these plugins whenever this one is selected (single level: a required plugin's own requirements aren't chased)
 
 **Overriding a built-in:** define a plugin in your user dir with the same `PLUGIN_ID` as a built-in. You'll see a `[!] Plugin 'foo' from ... overrides ...` warning at discovery time.
@@ -478,6 +482,16 @@ If you skipped the auth key, join later with:
 incs shell --with-sudo project-dev "sudo tailscale up --operator=$USER"
 ```
 
+**Under the [egress allowlist](#egress-allowlist)** (the default for new containers), Tailscale relays through the container's proxy, and `*.tailscale.com` is on its list. The agent isn't Tailscale's operator, so it can't turn on an exit node (a way around the allowlist) or Funnel. Join as root from the host instead (`incus exec project-dev -- tailscale up --hostname=project-dev`), and change served ports from the host with `incs serve`:
+
+```bash
+incs serve project-dev            # list the mappings
+incs serve project-dev 443:5173   # tailnet https :443 -> the app on 5173
+incs serve project-dev --off 443  # remove one
+```
+
+Give the container's tag no tailnet privileges: no outbound grants, exit nodes or Funnel. Any process in the container can reach whatever devices the tag is allowed to reach, and incs can't check the policy. Containers with Tailscale aren't confined against a determined agent: with `*.tailscale.com` allowed, a script could start its own Tailscale and join someone else's tailnet. `incs egress ls` marks them.
+
 To add or change served ports after the fact, run `tailscale serve` inside the container (no sudo needed, since your user is the Tailscale operator):
 
 ```bash
@@ -658,6 +672,7 @@ incs egress refresh [my-project|--all]   # finish an interrupted change, review 
 
 - **Hosts** are hostnames for ports 80 and 443. A leading `*.` matches any subdomain, not the name itself.
 - **The list** is the approved baseline (`~/.config/incs/egress-approved-baseline.txt`, AI APIs, package managers, code hosts and registries; copied from [`egress/baseline.txt`](egress/baseline.txt) on first use), your additions for every container (`incs egress allow --all`, kept in `~/.config/incs/egress-baseline.txt`), and the container's own hosts. When an update changes the shipped baseline, nothing uses it until `incs egress refresh` shows you the difference and you approve it.
+- **New containers** (`incs -i`) are built on the allowlist (`--egress enforce`; `--egress off` for none). Plugins that take no credentials install first, with the internet open; then the container is locked, and only then do the workspace and the plugins that take credentials go in. A container from a template is locked before its first start, since a template may hold logins or startup services.
 - **Turning it on** for an open container stops it, locks its card, ends its old proxies, moves it to a fresh address so no old connection survives, and starts it again. Until that finishes it won't start on its own, and `incs` won't start it; `incs egress refresh` finishes an interrupted one.
 - **Proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, a narrow `NO_PROXY`, `NODE_USE_ENV_PROXY=1`) go into the Incus environment, `/etc/environment`, every systemd service, and apt. A tool that ignores them fails rather than getting around the proxy. Node's built-in `fetch` needs Node 22.21 or 24 or later for this.
 - **Without DNS**: an allowlisted container can't look names up itself; the proxy does it.

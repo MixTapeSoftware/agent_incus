@@ -527,3 +527,92 @@ egress_converge() {
   if [[ "$was_locked" == 1 && "$r" == unchanged ]]; then r=locked; fi
   echo "$r"
 }
+
+# --- New containers ----------------------------------------------------------
+
+egress_boot_id() {
+  cat /proc/sys/kernel/random/boot_id 2>/dev/null || sysctl -n kern.boottime 2>/dev/null | tr -cd '0-9' || echo unknown
+}
+
+# A build is abandoned when the incs -i that started it has exited or the
+# host has rebooted since, so a status check never stops a healthy one.
+egress_build_abandoned() {
+  local build b pid
+  build="$(incus config get "$1" user.incs.egress.build 2>/dev/null)"
+  [[ -n "$build" && "$build" != done ]] || return 1
+  b="$(incus config get "$1" user.incs.egress.builder 2>/dev/null)"
+  pid="${b%%@*}"
+  [[ "${b#*@}" != "$(egress_boot_id)" ]] && return 0
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+# Records the hosts the selected plugins need, as the container's plugin
+# additions, so they come from the container's config and not from the plugin
+# files read later.
+# Usage: egress_record_plugin_hosts <agent> <host>...
+egress_record_plugin_hosts() {
+  local agent="$1" h out=()
+  shift
+  for h in "$@"; do
+    out+=("$(egress_host "$h")") || error "A plugin asks for a host incs doesn't accept: $h"
+  done
+  incus config set "$agent" "user.incs.egress.plugin-allow=$(printf '%s\n' ${out[@]+"${out[@]}"} | LC_ALL=C sort -u | sed '/^$/d' | tr '\n' ',' | sed 's/,$//')" >/dev/null
+}
+
+# A container that has never started (from a template, a copy or a restore)
+# gets its locked card and a verified proxy before its first start, so it
+# never has an open moment. Run under incs_lock.
+# Usage: egress_prepare_unstarted <agent> <egress> <mode>
+egress_prepare_unstarted() {
+  local agent="$1" egress="$2" mode="$3"
+  egress_ensure "$egress"
+  egress_register "$agent" "$egress"
+  incus config set "$agent" "user.incs.egress=$mode" >/dev/null
+  egress_nic_restrict "$agent"
+  egress_apply "$agent" >/dev/null || error "Could not start $agent's proxy"
+  incus config set "$agent" "user.incs.egress.active=$mode:$(egress_hosts "$agent" | egress_policy_id "$mode")" >/dev/null
+}
+
+# What the user and the agent see in a locked container: a login banner and a
+# note in the coding agents' instructions. Off removes both.
+# Usage: egress_write_notices <agent> <user>
+egress_write_notices() {
+  local agent="$1" user="$2" mode
+  mode="$(incus config get "$agent" user.incs.egress 2>/dev/null)"
+  incus exec "$agent" -- su - "$user" -s /bin/sh -c 'sh -s' <<SH || warn "Could not write the allowlist notices in $agent"
+set -e
+begin='<!-- incs egress: begin -->'; end='<!-- incs egress: end -->'
+for f in "\$HOME/.claude/CLAUDE.md" "\$HOME/.codex/AGENTS.md"; do
+  [ -f "\$f" ] || { [ "$mode" = off ] && continue; mkdir -p "\$(dirname "\$f")"; touch "\$f"; }
+  sed -i "/^\$begin\$/,/^\$end\$/d" "\$f"
+  [ "$mode" = off ] && continue
+  cat >> "\$f" <<'NOTE'
+<!-- incs egress: begin -->
+## Network allowlist
+
+This container can reach only the internet hosts on its allowlist, through a
+proxy (HTTP_PROXY and HTTPS_PROXY are set). Anything else is refused,
+including DNS lookups of your own and connections that skip the proxy. When a
+request fails because a host is blocked, don't look for a way around it: tell
+the user the exact host and ask them to run, on their own machine:
+
+    incs egress allow $agent <host>
+
+They can see what was blocked with: incs egress log $agent
+<!-- incs egress: end -->
+NOTE
+done
+rc="\$HOME/.zshrc"
+[ -f "\$rc" ] && ! grep -q 'incs egress banner' "\$rc" &&
+  printf '\n# incs egress banner\n[ -f /etc/incs/egress-banner ] && cat /etc/incs/egress-banner\n' >> "\$rc"
+exit 0
+SH
+  if [[ "$mode" == off ]]; then
+    incus exec "$agent" -- rm -f /etc/incs/egress-banner </dev/null >/dev/null 2>&1 || true
+  else
+    printf 'This container is on an allowlist (%s): it reaches only listed hosts.\n  On the host: incs egress log %s     what was blocked\n               incs egress allow %s <host>\n               incs egress mode %s off   turn it off\n' \
+      "$mode" "$agent" "$agent" "$agent" |
+      incus exec "$agent" -- sh -c 'mkdir -p /etc/incs && cat > /etc/incs/egress-banner' ||
+      warn "Could not write the login banner in $agent"
+  fi
+}

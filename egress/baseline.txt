@@ -116,6 +116,8 @@ haskell.org
 pub.dev
 swift.org
 ziglang.org
+# mise: incs installs it from its apt repository.
+mise.jdx.dev
 mise.run
 mise-versions.jdx.dev
 binaries.prisma.sh

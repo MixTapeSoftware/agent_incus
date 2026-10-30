@@ -2,6 +2,8 @@ PLUGIN_ID="glow"
 PLUGIN_NAME="Glow"
 PLUGIN_DESC="Terminal markdown viewer"
 PLUGIN_DEFAULT=0
+# Its apt repository, for updates under an allowlist.
+PLUGIN_EGRESS_ALLOW="repo.charm.sh"
 
 plugin_is_installed() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'command -v glow' &>/dev/null
