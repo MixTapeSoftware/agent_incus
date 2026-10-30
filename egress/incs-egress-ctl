@@ -283,6 +283,14 @@ cmd_check() {
   return 1
 }
 
+# Starting a generation that already runs is a no-op, so no ack would come,
+# and the cleanup after a missing ack would stop the live generation.
+refuse_active() {
+  if gens_active "$1" | grep -qx "$2"; then
+    die "$1/$2 is already running; write a new generation with gen"
+  fi
+}
+
 # The generation's ack, matched to its main PID, means it's accepting.
 wait_ack() {
   local u="$1" cur="$2" pid i
@@ -300,6 +308,7 @@ cmd_widen() {
   local agent="$1" gen="$2" force="${3:-}" old draining cur g
   valid_agent "$agent"; valid_gen "$gen"
   lock
+  refuse_active "$agent" "$gen"
   old="$(gens_active "$agent" | grep -vx "$gen" || true)"
   draining="$(grep -vx "$(current "$agent")" <<<"$old" | grep -c . || true)"
   if (( draining >= MAX_DRAINING )); then
@@ -328,6 +337,7 @@ cmd_tighten() {
   local agent="$1" gen="$2" old cur g left
   valid_agent "$agent"; valid_gen "$gen"
   lock
+  refuse_active "$agent" "$gen"
   cmd_check "$agent" "$gen" || die "tighten $agent/$gen: the check failed; nothing changed"
   old="$(gens_active "$agent" | grep -vx "$gen" || true)"
   # Old generations stop accepting at once; new connections wait in the

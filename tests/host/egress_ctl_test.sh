@@ -99,6 +99,9 @@ ctl widen a "$g1" && pass "the first generation starts" || fail "the first gener
 check "it's current" "$g1" "$(cur_gen)"
 check "an allowed host connects" "ok" "$(once h1.proto.test)"
 check "a host off the list is denied" "denied407" "$(once h2.proto.test)"
+out="$(ctl widen a "$g1" 2>&1)"; contains "widening to the running generation is refused" "already running" "$out"
+out="$(ctl tighten a "$g1" 2>&1)"; contains "so is tightening to it" "already running" "$out"
+check "and it keeps serving" "ok" "$(once h1.proto.test)"
 
 section "widening keeps open streams"
 cd "$HERE/proxy_swap"
