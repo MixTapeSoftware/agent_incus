@@ -117,6 +117,11 @@ assert_eq "--egress off builds" "0" "$RC"
 assert_eq "--egress off launches as before" "launch" "$(grep -m1 -E '^(launch|init) .* obox' "$FAKE_INCUS_STATE/calls.log" | cut -d' ' -f1)"
 assert_eq "--egress off makes no egress container" "no" "$([[ -d "$FAKE_INCUS_STATE/instances/incs-egress" ]] && echo yes || echo no)"
 assert_eq "--egress off has no build state" "" "$(cfg obox user.incs.egress.build)"
+assert_contains "an off launch from a template clears its old proxy settings" "rm -f /etc/apt/apt.conf.d/95incs-proxy" "$(cat "$FAKE_INCUS_STATE/exec.log")"
+fresh
+mkdir -p "$SANDBOX/globdir"; touch "$SANDBOX/globdir/x.api.locked.example"
+(cd "$SANDBOX/globdir" && init gl --from base)
+assert_eq "a plugin wildcard isn't expanded against files in the current directory" "*.api.locked.example,locked.example" "$(cfg gl user.incs.egress.plugin-allow)"
 fresh
 init rbox --egress report --from base
 assert_eq "--egress report builds" "0" "$RC"

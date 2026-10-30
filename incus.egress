@@ -396,6 +396,19 @@ systemctl daemon-reexec 2>/dev/null || true
 SH
 }
 
+# Removes the proxy settings, banner and agent note a template may carry from
+# a container that was on an allowlist.
+egress_clear_proxy_env() {
+  incus exec "$1" -- sh -c '
+    sed -i "/^# incs proxy: begin\$/,/^# incs proxy: end\$/d" /etc/environment 2>/dev/null
+    rm -f /etc/apt/apt.conf.d/95incs-proxy /etc/systemd/system.conf.d/incs-proxy.conf /etc/incs/egress-banner
+    for f in /home/*/.claude/CLAUDE.md /home/*/.codex/AGENTS.md; do
+      [ -f "$f" ] && sed -i "/^<!-- incs egress: begin -->\$/,/^<!-- incs egress: end -->\$/d" "$f"
+    done
+    systemctl daemon-reexec 2>/dev/null
+    true' </dev/null || warn "Could not clear old proxy settings in $1"
+}
+
 # --- Tightening from off -------------------------------------------------------
 # Incus lets established connections through before any rule, and the host's
 # connection tracking outlives a restart, so an open container is locked by

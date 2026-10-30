@@ -3,9 +3,6 @@ PLUGIN_NAME="rtk"
 PLUGIN_DESC="AI coding agent toolkit"
 PLUGIN_DEFAULT=0
 PLUGIN_NEEDS_PROMPT=1
-# Its prompt picks an agent; it takes no credential, so it installs before
-# an allowlist locks the container.
-PLUGIN_PHASE=open
 
 plugin_prompt() {
   echo ""

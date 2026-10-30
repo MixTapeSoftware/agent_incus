@@ -1080,8 +1080,10 @@ if [[ "$LOCKED_BUILD" == "1" ]]; then
   incus config set "$CONTAINER_NAME" boot.autostart=false user.incs.egress.autostart-saved=unset \
     "user.incs.egress=$EGRESS_MODE" "user.incs.egress.builder=$$@$(egress_boot_id)" \
     "user.incs.egress.build=$([[ "$FROM_BASE_IMAGE" == "1" ]] && echo locked || echo open)"
-  # shellcheck disable=SC2046
-  egress_record_plugin_hosts "$CONTAINER_NAME" $(_selected_plugin_hosts)
+  # read -a splits on spaces without pathname expansion, so a wildcard such
+  # as *.tailscale.com can't match files in the current directory.
+  read -r -a _plugin_hosts <<< "$(_selected_plugin_hosts | tr '\n' ' ')"
+  egress_record_plugin_hosts "$CONTAINER_NAME" ${_plugin_hosts[@]+"${_plugin_hosts[@]}"}
   if [[ "$FROM_BASE_IMAGE" == "1" ]]; then
     # A template may hold logins, credential files or startup services, so it
     # never runs open: locked card and a verified proxy before its first start.
@@ -1094,6 +1096,11 @@ if [[ "$LOCKED_BUILD" == "1" ]]; then
   incus start "$CONTAINER_NAME"
   wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
   [[ "$FROM_BASE_IMAGE" == "1" ]] && egress_write_proxy_env "$CONTAINER_NAME"
+elif [[ "$FROM_BASE_IMAGE" == "1" ]]; then
+  # A template built under an allowlist carries proxy settings for a proxy
+  # this container doesn't have.
+  wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
+  egress_clear_proxy_env "$CONTAINER_NAME"
 fi
 
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
