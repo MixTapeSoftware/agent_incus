@@ -42,6 +42,7 @@ check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected: $2, go
 section() { echo ""; echo "== $1"; }
 
 HOST_PY_PID=""
+SVC_DIR=""
 UFW_ADDED=0
 # ufw denies incoming and routed traffic by default, which drops DHCP on a new
 # bridge. These open what incs will (DHCP in, forwarding out) plus the host
@@ -56,6 +57,7 @@ cleanup() {
   echo ""; echo "== cleanup"
   [[ "$UFW_ADDED" == "1" ]] && ufw_rules delete >/dev/null 2>&1
   [[ -n "$HOST_PY_PID" ]] && kill "$HOST_PY_PID" 2>/dev/null
+  [[ -n "$SVC_DIR" ]] && rmdir "$SVC_DIR" 2>/dev/null
   for i in "$A" "$B" "$P"; do incus delete --force "$i" >/dev/null 2>&1; done
   for acl in "$ACL_P" "$ACL_PREC" "$ACL_AGENT"; do incus network acl delete "$acl" >/dev/null 2>&1; done
   incus network address-set delete "$SET" >/dev/null 2>&1
@@ -235,7 +237,10 @@ incus config device set "$P" eth0 security.acls="$ACL_P" >/dev/null
 # --- an agent's own ACL ------------------------------------------------------
 section "agent: inbound from the host only, nothing to the host"
 if command -v python3 >/dev/null; then
-  python3 -m http.server "$HOST_SVC_PORT" --bind "$GW" >/dev/null 2>&1 & HOST_PY_PID=$!
+  # From an empty directory: the bridge can reach this port, so it must not
+  # serve the directory the spike was started from.
+  SVC_DIR="$(mktemp -d)"
+  python3 -m http.server "$HOST_SVC_PORT" --bind "$GW" --directory "$SVC_DIR" >/dev/null 2>&1 & HOST_PY_PID=$!
   sleep 1
   check "control: A reaches a host service on $GW before the ACL" "yes" "$(connects "$A" "$GW" "$HOST_SVC_PORT")"
 else
