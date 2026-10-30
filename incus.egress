@@ -89,9 +89,12 @@ egress_sha256() {
 
 # The policy identity: a hash of every input that shapes the proxy.
 # Usage: egress_policy_id <mode> < hosts
+# Off allows every public host, so its hosts aren't part of it: changing the
+# list while off makes no new generation.
 egress_policy_id() {
   { echo "incs-egress-policy v1"; echo "mode $1"; echo "resolver $(egress_resolver)"
-    echo "deny $(egress_deny_ranges)"; cat; } | egress_sha256 | cut -c1-16
+    echo "deny $(egress_deny_ranges)"
+    if [[ "$1" == off ]]; then cat >/dev/null; else cat; fi; } | egress_sha256 | cut -c1-16
 }
 
 # smokescreen takes one resolver: the first of INCS_RESOLVERS.

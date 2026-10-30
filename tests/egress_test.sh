@@ -108,6 +108,8 @@ assert_eq "the policy id is 16 hex digits" "yes" "$([[ "$id1" =~ ^[0-9a-f]{16}$ 
 [[ "$id1" != "$(eg '{ egress_hosts box; echo more.example; } | egress_policy_id enforce')" ]] && { PASS=$((PASS+1)); echo "  ok  a host changes the id"; } ||
   { FAIL=$((FAIL+1)); echo "  FAIL a host changes the id"; }
 
+assert_eq "off ignores the hosts" "$(eg 'echo a.example | egress_policy_id off')" "$(eg 'echo b.example | egress_policy_id off')"
+
 echo "the egress container"
 fresh
 eg 'ensure_net; egress_ensure incs-egress' 2>/dev/null
