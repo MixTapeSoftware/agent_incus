@@ -249,6 +249,12 @@ all_hosts() {
 
 cmd_ls() {
   local c="${1:-}" egress mode active port h
+  if [[ "${2:-}" == "--tsv" ]]; then
+    # For the TUI: host, tab, sources.
+    need_container "$c"
+    hosts_with_sources "$c"
+    return 0
+  fi
   if [[ -n "$c" ]]; then
     need_container "$c"
     egress="$(incus config get "$c" user.incs.egress.container 2>/dev/null)"
