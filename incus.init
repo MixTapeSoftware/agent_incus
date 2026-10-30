@@ -50,6 +50,8 @@ Options:
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
   --no-tui                  Skip interactive plugin selector, use defaults
+  --insecure-network        Use the default bridge: no isolation from other
+                            instances or the host (also INCS_INSECURE_NETWORK=1)
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
 
@@ -201,6 +203,7 @@ VM_DISK="20GiB"
 VM_MEMORY="4GiB"
 VM_CPUS="4"
 READY_TIMEOUT=30
+INSECURE_NETWORK="${INCS_INSECURE_NETWORK:-0}"
 
 # ---------------------------------------------------------------------------
 # Plugin discovery — reads built-in plugins/*.sh plus user plugins from
@@ -707,6 +710,7 @@ while [[ $# -gt 0 ]]; do
     --ack-env)       ACK_ENV=1; shift ;;
     --agent)         [[ $# -lt 2 ]] && error "$1 requires an argument"; select_agent "$2"; shift 2 ;;
     --no-tui)        NO_TUI=1; shift ;;
+    --insecure-network) INSECURE_NETWORK=1; shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
     -*)
@@ -731,6 +735,8 @@ source "$SCRIPT_DIR/incus.envscan"
 source "$SCRIPT_DIR/incus.prompt"
 # shellcheck source=incus.profile
 source "$SCRIPT_DIR/incus.profile"
+# shellcheck source=incus.net
+source "$SCRIPT_DIR/incus.net"
 
 # ---------------------------------------------------------------------------
 # Validate
@@ -861,6 +867,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "Type:        container"
   fi
+  if [[ "$INSECURE_NETWORK" == "1" ]]; then
+    echo "Network:     default bridge, not isolated (--insecure-network)"
+  else
+    echo "Network:     $INCS_NET, isolated from other instances and the host"
+  fi
   if [[ "$SAVE_TEMPLATE" == "1" ]]; then
     echo "Workspace:   empty (template base)"
   elif [[ "$NO_COPY" == "1" ]]; then
@@ -907,19 +918,39 @@ trap 'exit 129' HUP
 
 ensure_profile
 
+# The isolated bridge, and this instance's address on it (incus.net).
+NET_ARGS=()
+if [[ "$INSECURE_NETWORK" == "1" ]]; then
+  warn "--insecure-network: $CONTAINER_NAME goes on the default bridge, where instances can reach each other and the host"
+else
+  net_preflight
+  incs_lock
+  ensure_net
+  NET_IP="$(net_next_address)"
+  incs_unlock
+  NET_ARGS=(-p "$INCS_NET_PROFILE" -d "eth0,ipv4.address=$NET_IP")
+fi
+
 # ---------------------------------------------------------------------------
 # Create container
 # ---------------------------------------------------------------------------
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
 if [[ "$IS_VM" == "1" ]]; then
+  # Naming any profile replaces the implicit default, so name it too.
   incus launch "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
+    ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
     -c limits.memory="$VM_MEMORY" \
     -c limits.cpu="$VM_CPUS" \
     -d root,size="$VM_DISK"
 else
-  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE"
+  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
 fi
 incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
+if [[ "$INSECURE_NETWORK" == "1" ]]; then
+  incus config set "$CONTAINER_NAME" user.incs.net=open
+else
+  incus config set "$CONTAINER_NAME" user.incs.net=isolated
+fi
 # incus.shell starts sessions here.
 incus config set "$CONTAINER_NAME" user.agent-incus.workspace="$CONTAINER_WORKSPACE"
 

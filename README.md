@@ -22,6 +22,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [Tailscale](#tailscale)
   - [Expose Container Ports](#expose-container-ports)
   - [Snapshots](#snapshots)
+  - [Network Isolation](#network-isolation)
 - [Runtime Management](#runtime-management)
 - [Linux Gotchas](#linux-gotchas)
 
@@ -138,6 +139,7 @@ Options:
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 Start with an empty workspace instead of copying the host directory
+  --insecure-network        Use the default bridge: no isolation from other instances or the host
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
@@ -149,7 +151,7 @@ Options:
 
 ### What incus.init does
 
-1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits
+1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits. It joins the `incsbr0` bridge, isolated from other instances and the host (see [Network Isolation](#network-isolation))
 2. Installs build tools, dev libraries, Python, and Node.js
 3. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
 4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
@@ -620,6 +622,24 @@ incus restore project-dev before-refactor
 incus info project-dev   # list snapshots
 ```
 
+### Network Isolation
+
+New containers and VMs join `incsbr0`, a bridge incs creates on first use with the `incs-net` profile and the `incs-base` rules:
+
+- Instances can't reach each other, services on the host, or private and LAN addresses (including tailnet and cloud metadata ranges). Rejected connections fail at once rather than hanging.
+- The internet stays open, and the host can reach every instance: a dev server opens at the instance's IP, and `incs -n` port forwarding works as before.
+- No instance can take another's IP or MAC address.
+- The bridge serves no DNS. DHCP hands out public resolvers instead (`1.1.1.1` and `9.9.9.9`; set `INCS_RESOLVERS` to change them before the bridge is created).
+- IPv6 is off on the bridge.
+- incs assigns each instance its address, recorded on the instance's `eth0`.
+
+It needs Incus 7.5.1 or later with the nftables firewall. On an older Incus, `incs -i` refuses and explains. `--insecure-network` (or `INCS_INSECURE_NETWORK=1`) puts an instance on the default bridge with no isolation instead. The bridge's subnet is a free `10.x.0.0/16`; set `INCS_NET_SUBNET` (for example `10.201.0.1/16`) before the first `incs -i` to choose it.
+
+Instances created before this keep the default bridge. What changes for new ones:
+
+- A container can no longer connect to another container, or to a database or other service running on the host. Run it in the same container, or reach it from the host side.
+- Tailscale inside a container can't make direct LAN connections, so it relays (DERP). It's a little slower and still works.
+
 ## Runtime Management
 
 Containers come with [mise](https://mise.jdx.dev/) pre-installed. Install runtimes per-project:
@@ -635,7 +655,9 @@ Or add a `mise.toml` to your project — `incus.init` runs `mise install` automa
 
 ### Firewall (UFW)
 
-If UFW is enabled on the host, its default DROP policy will block traffic on the Incus bridge. See the [Incus firewall documentation](https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge) for setup instructions. The things you'll need to allow:
+For `incsbr0`, incs adds what it needs when it creates the bridge (it asks for sudo): DHCP in on the bridge, and forwarding out of it. It opens no DNS, because the bridge serves none.
+
+For the default bridge (`--insecure-network` and older instances): if UFW is enabled on the host, its default DROP policy will block traffic on the Incus bridge. See the [Incus firewall documentation](https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge) for setup instructions. The things you'll need to allow:
 
 - **DHCP + DNS** — containers need these to get an IP address and resolve names
 - **Outbound forwarding** — containers need a route through the host to reach the internet. Optionally, if you use `--proxy`, the proxy port on the host must also accept connections from the bridge
