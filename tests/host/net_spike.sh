@@ -184,7 +184,8 @@ listen() {
     incus exec "$1" -- ss -ltn 2>/dev/null | grep -q "[:.]$2 " && return 0
     sleep 0.2
   done
-  fail "a listener on $1:$2 started"
+  # The block checks after this would pass with nothing to block.
+  fail "start a listener on $1:$2"; exit 1
 }
 listen "$P" 443; listen "$P" 8443; listen "$A" 8080; listen "$A" 8081
 # 0 when a TCP connection opens, nonzero when it is dropped or refused.
