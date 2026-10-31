@@ -1090,6 +1090,11 @@ for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
   source "${_P_FILE[$_i]}"
   for _req in $PLUGIN_REQUIRES; do
     [[ "$(selected_get "$_req")" == "1" ]] && continue
+    # An agent can't come in as a requirement: it would be a second agent, or
+    # one the container isn't named for.
+    if _req_slot="$(_plugin_slot "$_req")" && [[ -n "${_P_AGENT_COMMAND[$_req_slot]}" ]]; then
+      error "${_P_NAME[$_i]} needs the agent $(agent_label "$_req_slot"), but this container's is $(agent_label "$AGENT_SLOT"). One agent per container: choose it with --agent ${_P_AGENT_COMMAND[$_req_slot]}."
+    fi
     if selected_set "$_req" 1; then
       log "Auto-selected '$_req' (required by ${_P_NAME[$_i]})"
     else
@@ -1097,7 +1102,7 @@ for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
     fi
   done
 done
-unset _req
+unset _req _req_slot
 
 # Echo the final selection before acting on it. In the TUI, space toggles and
 # Enter launches — a mis-keyed toggle otherwise fails silently: the plugin's

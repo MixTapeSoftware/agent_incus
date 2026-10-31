@@ -86,6 +86,17 @@ assert_eq "and in its label" "fakeagent" "$(cfg chad-fakeagent-web user.boxen.ag
 build web --agent fakeagent --agent shell
 assert_eq "two agents are refused" "1" "$RC"
 assert_contains "and it says why" "One agent per container" "$(cat "$SANDBOX/out")"
+cat > "$SANDBOX/repo/plugins/20-needs-agent.sh" <<'EOF'
+PLUGIN_ID="needs-agent"; PLUGIN_NAME="Needs Agent"; PLUGIN_DESC="requires the agent"; PLUGIN_DEFAULT=0
+PLUGIN_CLI_FLAGS="--needs-agent"; PLUGIN_REQUIRES="fake-agent"
+plugin_install() { :; }
+EOF
+build web --needs-agent
+assert_eq "a plugin can't bring in an agent the container isn't for" "1" "$RC"
+assert_contains "and it says which" "Needs Agent needs the agent Fake Agent" "$(cat "$SANDBOX/out")"
+build needs --needs-agent --agent fakeagent
+assert_eq "it can require the container's own agent" "yes" "$(exists chad-fakeagent-needs)"
+rm -f "$SANDBOX/repo/plugins/20-needs-agent.sh"
 build anything --name exact-one
 assert_eq "--name is used as given" "yes" "$(exists exact-one)"
 assert_eq "still labelled" "1" "$(cfg exact-one user.boxen)"
