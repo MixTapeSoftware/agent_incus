@@ -43,6 +43,7 @@ section() { echo ""; echo "== $1"; }
 
 HOST_PY_PID=""
 SVC_DIR=""
+TMP=""
 UFW_ADDED=0
 # ufw denies incoming and routed traffic by default, which drops DHCP on a new
 # bridge. These open what incs will (DHCP in, forwarding out) plus the host
@@ -58,6 +59,7 @@ cleanup() {
   [[ "$UFW_ADDED" == "1" ]] && ufw_rules delete >/dev/null 2>&1
   [[ -n "$HOST_PY_PID" ]] && kill "$HOST_PY_PID" 2>/dev/null
   [[ -n "$SVC_DIR" ]] && rmdir "$SVC_DIR" 2>/dev/null
+  [[ -n "$TMP" ]] && rm -rf "$TMP"
   for i in "$A" "$B" "$P"; do incus delete --force "$i" >/dev/null 2>&1; done
   for acl in "$ACL_P" "$ACL_PREC" "$ACL_AGENT"; do incus network acl delete "$acl" >/dev/null 2>&1; done
   incus network address-set delete "$SET" >/dev/null 2>&1
@@ -85,6 +87,7 @@ for set in "$SET" $(for n in 63 64 71; do printf 's%.0s' $(seq 1 "$n"); echo; do
   incus network address-set show "$set" >/dev/null 2>&1 && { echo "Address set $set already exists; refusing to run."; exit 1; }
 done
 trap cleanup EXIT
+TMP="$(mktemp -d)"
 info "br_netfilter loaded: $(lsmod 2>/dev/null | grep -q '^br_netfilter' && echo yes || echo no) (yes means ufw also filters traffic between containers on one bridge)"
 if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
   info "ufw is active; adding narrow rules for $NET (sudo; removed on exit)"
@@ -164,12 +167,38 @@ for i in "$A" "$B" "$P"; do
   incus exec "$i" -- sh -c 'apk add --no-cache -q socat iproute2 curl iputils-arping >/dev/null 2>&1 || apk add --no-cache -q socat iproute2 curl iputils >/dev/null 2>&1' \
     || fail "install tools in $i (needs internet through $NET)"
 done
+incus exec "$P" -- apk add --no-cache -q tcpdump >/dev/null 2>&1 \
+  || { fail "install tcpdump in $P"; exit 1; }
 listen() { incus exec "$1" -- sh -c "setsid socat TCP-LISTEN:$2,fork,reuseaddr SYSTEM:'echo ok' </dev/null >/dev/null 2>&1 &"; }
 listen "$P" 443; listen "$P" 8443; listen "$A" 8080; listen "$A" 8081
 sleep 1
 # 0 when a TCP connection opens, nonzero when it is dropped or refused.
 connects() { incus exec "$1" -- timeout 7 socat -u /dev/null "TCP:$2:$3,connect-timeout=5${4:+,bind=$4}" >/dev/null 2>&1 && echo yes || echo no; }
 host_connects() { timeout 7 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1 && echo yes || echo no; }
+# Observe arrival at P, independently of where a spoofed SYN's reply goes.
+# Report capture errors separately: they must never count as a filtered packet.
+sees_syn() {
+  local source="$1" address="$2" capture_pid ready=0 rc=0 attempt
+  incus exec "$P" -- timeout 8 tcpdump -l -n -i eth0 -c 1 \
+    "src host $address and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" \
+    >"$TMP/syn.out" 2>"$TMP/syn.err" &
+  capture_pid=$!
+  for attempt in $(seq 1 50); do
+    if grep -q 'listening on eth0' "$TMP/syn.err"; then ready=1; break; fi
+    kill -0 "$capture_pid" 2>/dev/null || break
+    sleep 0.1
+  done
+  if [[ "$ready" == 1 ]]; then
+    connects "$source" "$P_IP" 443 "$address" >/dev/null
+  fi
+  wait "$capture_pid" || rc=$?
+  if [[ "$ready" != 1 ]]; then echo error; return; fi
+  case "$rc" in
+    0) echo yes ;;
+    124) echo no ;;
+    *) echo error ;;
+  esac
+}
 
 check "control, no ACLs yet: B reaches P:443" "yes" "$(connects "$B" "$P_IP" 443)"
 check "control, no ACLs yet: B reaches A:8080" "yes" "$(connects "$B" "$A_IP" 8080)"
@@ -216,7 +245,13 @@ check "removing B from the set closes it again, live" "no" "$(connects "$B" "$P_
 section "spoofing"
 B_MAC="$(incus config get "$B" volatile.eth0.hwaddr)"; A_MAC="$(incus config get "$A" volatile.eth0.hwaddr)"
 incus exec "$B" -- ip addr add "$A_IP/32" dev eth0 2>/dev/null
-check "B using A's address cannot reach P:443" "no" "$(connects "$B" "$P_IP" 443 "$A_IP")"
+syn_control="$(sees_syn "$A" "$A_IP")"
+check "control: P observes A's SYN to port 443" "yes" "$syn_control"
+if [[ "$syn_control" == yes ]]; then
+  check "P never receives B's SYN using A's address" "no" "$(sees_syn "$B" "$A_IP")"
+else
+  fail "spoofing check inconclusive: the receiver capture did not pass its positive control"
+fi
 incus exec "$B" -- sh -c "arping -U -c 3 -I eth0 -s $A_IP $A_IP >/dev/null 2>&1 || arping -A -c 3 -I eth0 $A_IP >/dev/null 2>&1"
 host_mac="$(ip neigh show "$A_IP" 2>/dev/null | awk '{for (i=1;i<=NF;i++) if ($i=="lladdr") print $(i+1)}')"
 if [[ "$host_mac" == "$B_MAC" ]]; then fail "gratuitous ARP from B made the host map A's address to B ($B_MAC)"
