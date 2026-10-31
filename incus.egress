@@ -240,7 +240,7 @@ egress_register() {
 }
 
 # The agent's proxy as it runs now: mode and hosts, from the egress container.
-egress_active_hosts() { egress_ctl "$2" hosts "$1" </dev/null 2>/dev/null; }
+egress_active_hosts() { egress_ctl "$2" hosts "$1" </dev/null; }
 
 mode_rank() { case "$1" in enforce) echo 0 ;; report) echo 1 ;; off) echo 2 ;; *) echo -1 ;; esac; }
 
@@ -267,7 +267,8 @@ egress_apply() {
   how=tighten
   cur_mode="$(cut -f5 <<< "$cur")"
   if [[ "$(cut -f6 <<< "$cur")" == "yes" && "$(mode_rank "$mode")" -ge "$(mode_rank "$cur_mode")" ]]; then
-    cur_hosts="$(egress_active_hosts "$agent" "$egress")"
+    cur_hosts="$(egress_active_hosts "$agent" "$egress")" ||
+      error "Could not read $agent's current hosts in $egress"
     # Every host allowed now stays allowed (off allows them all).
     if [[ "$mode" == "off" ]] ||
        [[ -z "$(LC_ALL=C comm -23 <(printf '%s\n' "$cur_hosts" | sed '/^$/d' | LC_ALL=C sort -u) <(printf '%s\n' "$hosts"))" ]]; then
