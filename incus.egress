@@ -65,7 +65,8 @@ egress_ensure_approved() {
   mkdir -p "$INCS_CONFIG_DIR"
   cp "$EGRESS_SHIPPED" "$EGRESS_APPROVED.new" && mv "$EGRESS_APPROVED.new" "$EGRESS_APPROVED" ||
     error "Could not write $EGRESS_APPROVED"
-  log "Approved the shipped egress baseline: $EGRESS_APPROVED"
+  # To stderr: egress_hosts calls this, and its stdout is the host list.
+  log "Approved the shipped egress baseline: $EGRESS_APPROVED" >&2
 }
 
 # Every host an agent may reach, sorted: the approved baseline, the user's

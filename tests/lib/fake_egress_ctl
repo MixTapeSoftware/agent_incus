@@ -25,6 +25,11 @@ case "$1" in
     n=$(( $(ls "$d/$2/gens" | sort -n | tail -1 || echo 0) + 1 ))
     mkdir -p "$d/$2/gens/$n"
     echo "$3" > "$d/$2/gens/$n/mode"; echo "$4" > "$d/$2/gens/$n/policy"; cat > "$d/$2/gens/$n/hosts"
+    # As the real one: every line must be a hostname.
+    while IFS= read -r h; do
+      [[ -z "$h" || ( ${#h} -le 253 && "$h" =~ ^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ) ]] ||
+        { echo "incs-egress-ctl: bad hostname: $h" >&2; rm -rf "${d:?}/$2/gens/$n"; exit 1; }
+    done < "$d/$2/gens/$n/hosts"
     echo "$n"
     ;;
   check) : ;;
