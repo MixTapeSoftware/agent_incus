@@ -292,7 +292,7 @@ old_ok="$([[ "$(seen_since "$t2" udp "$OLD_SPORT")" -gt 0 ]] && echo yes || echo
 new_ok="$([[ "$(seen_since "$t2" udp "$NEW_SPORT")" -gt 0 ]] && echo yes || echo no)"
 check "control: a fresh UDP flow after the restart is blocked" "no" "$new_ok"
 # Either answer is about the host, not a defect: incs moves the container to a
-# new address on lock either way, and the next section checks that.
+# new address on lock either way, and the next section checks that, always.
 info "the old UDP flow after the restart: $([[ "$old_ok" == yes ]] && echo "still gets through" || echo blocked)"
 if [[ "$old_ok" == yes ]]; then
   info "RESULT: the host's connection tracking outlives the restart. incs must clear it, or give the container a new IP."
@@ -304,63 +304,61 @@ fi
 # The fix incs would use: lock = a new address. The host's old entries are
 # keyed on the old address, and IPv4 filtering should stop the container from
 # sending from an address it no longer holds, even as root inside it.
-if [[ "$old_ok" == yes ]]; then
-  section "a new IP on lock"
-  NEW_IP="${GW%.*}.200"
-  info "moving $X from $X_IP to $NEW_IP and restarting"
-  incus config device set "$X" eth0 ipv4.address="$NEW_IP" >/dev/null 2>"$TMP/err" \
-    || { fail "set a static address on eth0: $(cat "$TMP/err")"; }
-  incus restart "$X" >/dev/null
-  for _ in $(seq 1 60); do [[ "$(ip_of "$X")" == "$NEW_IP" ]] && break; sleep 1; done
-  check "the container gets the new address" "$NEW_IP" "$(ip_of "$X")"
-  # UDP lines from one address and source port since a time.
-  seen_from() { awk -v t="$1" -v ip="$2" -v sp="$3" '$1 >= t && $2 == "udp" && $3 == ip && $4 == sp' "$TMP/seen.log" | wc -l | tr -d ' '; }
+section "a new IP on lock"
+NEW_IP="${GW%.*}.200"
+info "moving $X from $X_IP to $NEW_IP and restarting"
+incus config device set "$X" eth0 ipv4.address="$NEW_IP" >/dev/null 2>"$TMP/err" \
+  || { fail "set a static address on eth0: $(cat "$TMP/err")"; }
+incus restart "$X" >/dev/null
+for _ in $(seq 1 60); do [[ "$(ip_of "$X")" == "$NEW_IP" ]] && break; sleep 1; done
+check "the container gets the new address" "$NEW_IP" "$(ip_of "$X")"
+# UDP lines from one address and source port since a time.
+seen_from() { awk -v t="$1" -v ip="$2" -v sp="$3" '$1 >= t && $2 == "udp" && $3 == ip && $4 == sp' "$TMP/seen.log" | wc -l | tr -d ' '; }
 
-  t3="$(now)"
-  for _ in 1 2 3; do send_from "$OLD_SPORT"; sleep 0.5; done
-  sleep 1
-  check "from the new IP, the old source port is blocked" "0" "$(seen_from "$t3" "$NEW_IP" "$OLD_SPORT")"
+t3="$(now)"
+for _ in 1 2 3; do send_from "$OLD_SPORT"; sleep 0.5; done
+sleep 1
+check "from the new IP, the old source port is blocked" "0" "$(seen_from "$t3" "$NEW_IP" "$OLD_SPORT")"
 
-  # As root inside the container, take the old address back and resend the
-  # old flow from exactly its old address and port.
-  # A 0 only counts once the spoofed packets were sent: the address added,
-  # socat sending from it, and, with tcpdump on the host, the frames seen on
-  # the container's port before the bridge filters them.
-  if incus exec "$X" -- ip addr add "$X_IP/${GW_CIDR#*/}" dev eth0 >/dev/null 2>"$TMP/err"; then
-    info "added $X_IP back to eth0 inside $X"
-    hv="$(incus config get "$X" volatile.eth0.host_name 2>/dev/null)"; cap_pid=""
-    # sudo -n: a capture in the background can't ask for a password.
-    if command -v tcpdump >/dev/null && [[ -n "$hv" ]] && sudo -n true 2>/dev/null; then
-      sudo -n timeout 8 tcpdump -l -n -i "$hv" -c 3 "udp and src host $X_IP and src port $OLD_SPORT" \
-        >"$TMP/spoof.cap" 2>"$TMP/spoof.err" & cap_pid=$!
-      for _ in $(seq 1 50); do grep -q 'listening on' "$TMP/spoof.err" 2>/dev/null && break; sleep 0.1; done
-    fi
-    t4="$(now)"; sent=0
-    for _ in 1 2 3; do
-      incus exec "$X" -- sh -c "echo spoof | timeout 3 socat -u - UDP:$HOST_IP:$UDP_PORT,bind=$X_IP:$OLD_SPORT" \
-        >/dev/null 2>"$TMP/sender.err" && sent=$((sent+1))
-      sleep 0.5
-    done
-    sleep 1
-    [[ -n "$cap_pid" ]] && wait "$cap_pid"
-    spoof_seen="$(seen_from "$t4" "$X_IP" "$OLD_SPORT")"
-    frames=""; [[ -n "$cap_pid" ]] && frames="$(grep -c " $X_IP\.$OLD_SPORT > " "$TMP/spoof.cap")"
-    if [[ "$sent" == 0 ]]; then
-      fail "spoof check inconclusive: socat couldn't send from $X_IP:$OLD_SPORT ($(tail -1 "$TMP/sender.err"))"
-    elif [[ -n "$cap_pid" && "$frames" == 0 ]]; then
-      fail "spoof check inconclusive: no spoofed frame reached $X's port $hv ($(tail -1 "$TMP/spoof.err"))"
-    else
-      info "spoofed packets sent: $sent; frames on $X's port: ${frames:-not captured (needs tcpdump and sudo on the host)}"
-      check "sending from the old IP as root doesn't revive the old flow" "0" "$spoof_seen"
-      if [[ "$spoof_seen" == "0" ]]; then
-        info "RESULT: a new IP on lock ends old flows without root on the host."
-      else
-        info "RESULT: IPv4 filtering didn't stop the old address. A new IP isn't enough; incs needs to clear connection tracking."
-      fi
-    fi
-  else
-    fail "spoof setup: add $X_IP back inside $X: $(cat "$TMP/err")"
+# As root inside the container, take the old address back and resend the
+# old flow from exactly its old address and port.
+# A 0 only counts once the spoofed packets were sent: the address added,
+# socat sending from it, and, with tcpdump on the host, the frames seen on
+# the container's port before the bridge filters them.
+if incus exec "$X" -- ip addr add "$X_IP/${GW_CIDR#*/}" dev eth0 >/dev/null 2>"$TMP/err"; then
+  info "added $X_IP back to eth0 inside $X"
+  hv="$(incus config get "$X" volatile.eth0.host_name 2>/dev/null)"; cap_pid=""
+  # sudo -n: a capture in the background can't ask for a password.
+  if command -v tcpdump >/dev/null && [[ -n "$hv" ]] && sudo -n true 2>/dev/null; then
+    sudo -n timeout 8 tcpdump -l -n -i "$hv" -c 3 "udp and src host $X_IP and src port $OLD_SPORT" \
+      >"$TMP/spoof.cap" 2>"$TMP/spoof.err" & cap_pid=$!
+    for _ in $(seq 1 50); do grep -q 'listening on' "$TMP/spoof.err" 2>/dev/null && break; sleep 0.1; done
   fi
+  t4="$(now)"; sent=0
+  for _ in 1 2 3; do
+    incus exec "$X" -- sh -c "echo spoof | timeout 3 socat -u - UDP:$HOST_IP:$UDP_PORT,bind=$X_IP:$OLD_SPORT" \
+      >/dev/null 2>"$TMP/sender.err" && sent=$((sent+1))
+    sleep 0.5
+  done
+  sleep 1
+  [[ -n "$cap_pid" ]] && wait "$cap_pid"
+  spoof_seen="$(seen_from "$t4" "$X_IP" "$OLD_SPORT")"
+  frames=""; [[ -n "$cap_pid" ]] && frames="$(grep -c " $X_IP\.$OLD_SPORT > " "$TMP/spoof.cap")"
+  if [[ "$sent" == 0 ]]; then
+    fail "spoof check inconclusive: socat couldn't send from $X_IP:$OLD_SPORT ($(tail -1 "$TMP/sender.err"))"
+  elif [[ -n "$cap_pid" && "$frames" == 0 ]]; then
+    fail "spoof check inconclusive: no spoofed frame reached $X's port $hv ($(tail -1 "$TMP/spoof.err"))"
+  else
+    info "spoofed packets sent: $sent; frames on $X's port: ${frames:-not captured (needs tcpdump and sudo on the host)}"
+    check "sending from the old IP as root doesn't revive the old flow" "0" "$spoof_seen"
+    if [[ "$spoof_seen" == "0" ]]; then
+      info "RESULT: a new IP on lock ends old flows without root on the host."
+    else
+      info "RESULT: IPv4 filtering didn't stop the old address. A new IP isn't enough; incs needs to clear connection tracking."
+    fi
+  fi
+else
+  fail "spoof setup: add $X_IP back inside $X: $(cat "$TMP/err")"
 fi
 
 echo ""
