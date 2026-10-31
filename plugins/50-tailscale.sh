@@ -105,7 +105,7 @@ plugin_install() {
   elif [[ "${EGRESS_MODE:-off}" == "off" ]]; then
     echo ""
     echo "  To join the tailnet, run:"
-    echo "    bxn -s $CONTAINER_NAME \"sudo tailscale up --operator=$HOST_USER\""
+    echo "    bxn shell --with-sudo $CONTAINER_NAME \"sudo tailscale up --operator=$HOST_USER\""
   else
     echo ""
     echo "  To join the tailnet, run (as root; the agent can't control Tailscale):"
