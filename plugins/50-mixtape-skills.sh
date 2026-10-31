@@ -34,6 +34,14 @@ plugin_install() {
         backup="$(mktemp -d "$dir.backup.XXXXXX")"
         rmdir "$backup"
         mv "$dir" "$backup"
+        # Links into the old checkout follow it, so they keep what they had.
+        for target in "$HOME/.agents/skills" "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/skills"; do
+          for link in "$target"/*; do
+            [ -L "$link" ] || continue
+            old="$(readlink "$link")"
+            case "$old" in "$dir"/*) ln -sfn "$backup/${old#"$dir"/}" "$link" ;; esac
+          done
+        done
       fi
       mv "$new" "$dir"
     fi

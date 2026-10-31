@@ -103,6 +103,11 @@ assert_eq "and replaced with ours" "https://github.com/MixTapeSoftware/skills.gi
 mv "$CO" "$CO.ours"; mkdir -p "$CO/.git"; echo "https://example.com/other.git" > "$CO/.git/origin"; echo second > "$CO/file"
 out="$(run)"
 assert_eq "a second backup in the same second gets its own name" "2" "$(ls -d "$CO".backup.* | wc -l | tr -d ' ')"
+rm -rf "$H"; mkdir -p "$CO/.git" "$CO/botfight" "$H/.claude/skills"; echo "https://example.com/other.git" > "$CO/.git/origin"
+echo theirs > "$CO/botfight/SKILL.md"; ln -s "$CO/botfight" "$H/.claude/skills/botfight"
+out="$(run)"
+assert_eq "a link into a replaced checkout follows it to the backup" "theirs" "$(cat "$H/.claude/skills/botfight/SKILL.md")"
+assert_contains "and is left alone with a warning" "isn't from MixTape Skills; left it alone" "$out"
 rm -rf "$H"; mkdir -p "$CO/.git"; echo "https://example.com/other.git" > "$CO/.git/origin"; echo keep > "$CO/file"; touch "$H/.fail-clone"
 out="$(run)" && rc=0 || rc=$?
 assert_eq "a failed download fails the install" "1" "$rc"
