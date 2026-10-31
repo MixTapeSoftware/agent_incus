@@ -81,7 +81,7 @@ EOF
 
 tui() {
   rm -f "$S/calls" "$S/egress-calls"
-  STUB="$S" PATH="$S/bin:$PATH" TERM=xterm script -qec "stty rows 30 cols 140; bash '$S/repo/incs' status" /dev/null
+  STUB="$S" PATH="$S/bin:$PATH" TERM=xterm script -qfec "stty rows 30 cols 140; tty > '$S/tty'; bash '$S/repo/incs' status" "${TUI_TRANSCRIPT:-/dev/null}"
 }
 last_frame() { local f=${1##*$'\033[H'}; printf '%s\n' "${f%%$'\033[J'*}"; }
 plain() { sed $'s/\033\\[[0-9;?]*[A-Za-z]//g; s/\r//g'; }
@@ -132,6 +132,32 @@ assert_contains "an unreadable confirmation directs to the CLI" "Host and scope 
 assert_eq "y cannot allow a host whose confirmation is clipped" "" "$(cat "$S/egress-calls" 2>/dev/null)"
 out=$(keys '\t' l A y | tui) || true
 assert_eq "y cannot allow a clipped host everywhere" "" "$(cat "$S/egress-calls" 2>/dev/null)"
+
+# Wait for an initially readable confirmation, then shrink the terminal
+# while read is waiting for the answer. No redraw may be needed before y.
+long_host="docs.rs.$(printf '%063d' 0).attacker.example"
+printf '%s\n' "$long_host" > "$S/long-host"
+export TUI_TRANSCRIPT="$S/resize-transcript"
+resize_keys() {
+  sleep 1.5; printf '\t'; sleep 0.6; printf l; sleep 0.6; printf a
+  local tries
+  for ((tries = 0; tries < 200; tries++)); do
+    if grep -Fq "Allow $long_host for box? y/n" "$TUI_TRANSCRIPT" 2>/dev/null; then
+      stty cols 80 < "$(cat "$S/tty")"
+      touch "$S/resized"
+      printf y
+      break
+    fi
+    sleep 0.02
+  done
+  sleep 1; printf q; sleep 0.4; printf q; sleep 0.5
+}
+out=$(resize_keys | tui) || true
+unset TUI_TRANSCRIPT
+[[ -f "$S/resized" ]] && resized=yes || resized=no
+assert_eq "the terminal shrinks while confirmation is waiting" yes "$resized"
+assert_eq "y after a resize cannot approve a now-clipped host" "" "$(cat "$S/egress-calls" 2>/dev/null)"
+assert_contains "the resized confirmation directs to the CLI" "Host and scope do not fit; use incs egress allow." "$(plain <<<"$out")"
 rm "$S/long-host"
 
 echo "the Rules tab"

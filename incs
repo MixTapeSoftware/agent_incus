@@ -827,7 +827,19 @@ status_interactive() {
       name=${names[$sel]}
       case "$ask" in
         confirm)
-          if [[ "$key" == y || "$key" == Y ]]; then status_egress_job "${ask_args[@]}"; else msg=$(status_note "$msg" "Nothing changed"); fi
+          if [[ "$key" == y || "$key" == Y ]]; then
+            # The terminal can shrink while read waits for this answer.
+            # Check again at approval time, before starting any change.
+            size=$(stty size 2>/dev/null) || size=""
+            term_cols=${size##* }
+            if [[ "$term_cols" =~ ^[0-9]+$ ]] && ((${#ask_desc} < term_cols)); then
+              status_egress_job "${ask_args[@]}"
+            else
+              msg=$(status_note "$msg" "Host and scope do not fit; use incs egress allow.")
+            fi
+          else
+            msg=$(status_note "$msg" "Nothing changed")
+          fi
           ;;
         mode)
           case "$key" in
