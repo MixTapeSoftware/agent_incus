@@ -389,9 +389,6 @@ vars() {
   echo "NO_PROXY=$np"; echo "no_proxy=$np"; echo "NODE_USE_ENV_PROXY=1"
 }
 touch /etc/environment
-# Before the rename to bxn they were incs-named; a template may still carry them.
-sed -i '/^# incs proxy: begin$/,/^# incs proxy: end$/d' /etc/environment
-rm -f /etc/apt/apt.conf.d/95incs-proxy /etc/systemd/system.conf.d/incs-proxy.conf
 sed -i '/^# bxn proxy: begin$/,/^# bxn proxy: end$/d' /etc/environment
 { echo "# bxn proxy: begin"; vars; echo "# bxn proxy: end"; } >> /etc/environment
 printf 'Acquire::http::Proxy "%s/";\nAcquire::https::Proxy "%s/";\n' "$url" "$url" > /etc/apt/apt.conf.d/95boxen-proxy
@@ -404,20 +401,13 @@ SH
 }
 
 # Removes the proxy settings, banner and agent note a template may carry from
-# a container that was on an allowlist, under the names from before the rename
-# to bxn (incs) too.
+# a container that was on an allowlist.
 egress_clear_proxy_env() {
   incus exec "$1" -- sh -c '
-    for t in bxn incs; do
-      sed -i "/^# $t proxy: begin\$/,/^# $t proxy: end\$/d" /etc/environment 2>/dev/null
-    done
-    rm -f /etc/apt/apt.conf.d/95boxen-proxy /etc/systemd/system.conf.d/boxen-proxy.conf /etc/boxen/egress-banner \
-      /etc/apt/apt.conf.d/95incs-proxy /etc/systemd/system.conf.d/incs-proxy.conf /etc/incs/egress-banner
+    sed -i "/^# bxn proxy: begin\$/,/^# bxn proxy: end\$/d" /etc/environment 2>/dev/null
+    rm -f /etc/apt/apt.conf.d/95boxen-proxy /etc/systemd/system.conf.d/boxen-proxy.conf /etc/boxen/egress-banner
     for f in /home/*/.claude/CLAUDE.md /home/*/.codex/AGENTS.md; do
-      [ -f "$f" ] || continue
-      for t in bxn incs; do
-        sed -i "/^<!-- $t egress: begin -->\$/,/^<!-- $t egress: end -->\$/d" "$f"
-      done
+      [ -f "$f" ] && sed -i "/^<!-- bxn egress: begin -->\$/,/^<!-- bxn egress: end -->\$/d" "$f"
     done
     systemctl daemon-reexec 2>/dev/null
     true' </dev/null || warn "Could not clear old proxy settings in $1"
@@ -620,8 +610,6 @@ begin='<!-- bxn egress: begin -->'; end='<!-- bxn egress: end -->'
 for f in "\$HOME/.claude/CLAUDE.md" "\$HOME/.codex/AGENTS.md"; do
   [ -f "\$f" ] || { [ "$mode" = off ] && continue; mkdir -p "\$(dirname "\$f")"; touch "\$f"; }
   sed -i "/^\$begin\$/,/^\$end\$/d" "\$f"
-  # The note from before the rename to bxn, which a template may carry.
-  sed -i '/^<!-- incs egress: begin -->\$/,/^<!-- incs egress: end -->\$/d' "\$f"
   [ "$mode" = off ] && continue
   cat >> "\$f" <<'NOTE'
 <!-- bxn egress: begin -->
