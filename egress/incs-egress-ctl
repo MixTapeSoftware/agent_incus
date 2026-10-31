@@ -48,6 +48,7 @@ agent_dir() { echo "$ETC/agents/$1"; }
 gen_dir() { echo "$ETC/agents/$1/gens/$2"; }
 gen_unit() { echo "incs-gen_$1@$2.service"; }
 check_unit() { echo "incs-check_$1@$2.service"; }
+agent_slice() { printf 'incs-agent_%s.slice\n' "$(systemd-escape "$1")"; }
 current() { cat "$(agent_dir "$1")/current" 2>/dev/null || echo none; }
 set_current() { echo "$2" > "$(agent_dir "$1")/current.new" && mv "$(agent_dir "$1")/current.new" "$(agent_dir "$1")/current"; }
 
@@ -111,7 +112,7 @@ EOF
 }
 
 cmd_add() {
-  local agent="$1" port="$2" d have
+  local agent="$1" port="$2" d have slice
   valid_agent "$agent"
   [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1024 && port <= 65535 )) || die "bad port: $port"
   d="$(agent_dir "$agent")"
@@ -120,8 +121,9 @@ cmd_add() {
   install -d -m 755 "$d/gens"
   echo "$port" > "$d/port"
   [[ -f "$d/current" ]] || set_current "$agent" none
-  # A slice caps all of the agent's generations together.
-  cat > "$UNITS/incs-agent_$agent.slice" <<EOF
+  # Escape dashes so every agent gets a sibling slice with its own cap.
+  slice="$(agent_slice "$agent")"
+  cat > "$UNITS/$slice" <<EOF
 [Unit]
 Description=incs egress: every proxy generation for $agent
 
@@ -153,7 +155,7 @@ EOF
   local common
   common="EnvironmentFile=-$ETC/agents/$agent/gens/%i/env
 ExecStart=$LIB/incs-proxy-run $agent %i
-Slice=incs-agent_$agent.slice
+Slice=$slice
 DynamicUser=yes
 ProtectSystem=strict
 ProtectHome=yes
@@ -383,7 +385,7 @@ cmd_remove() {
   cmd_stop "$agent"
   systemctl disable --now "incs-proxy_$agent.socket" >/dev/null 2>&1 || true
   systemctl stop "incs-hold_$agent.service" 2>/dev/null || true
-  rm -f "$UNITS/incs-agent_$agent.slice" "$UNITS/incs-proxy_$agent.socket" "$UNITS/incs-hold_$agent.service" \
+  rm -f "$UNITS/$(agent_slice "$agent")" "$UNITS/incs-proxy_$agent.socket" "$UNITS/incs-hold_$agent.service" \
     "$UNITS/incs-gen_$agent@.service" "$UNITS/incs-check_$agent@.service"
   systemctl daemon-reload
   rm -rf "$(agent_dir "$agent")"

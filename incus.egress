@@ -240,7 +240,7 @@ egress_register() {
 }
 
 # The agent's proxy as it runs now: mode and hosts, from the egress container.
-egress_active_hosts() { egress_ctl "$2" hosts "$1" </dev/null 2>/dev/null; }
+egress_active_hosts() { egress_ctl "$2" hosts "$1" </dev/null; }
 
 mode_rank() { case "$1" in enforce) echo 0 ;; report) echo 1 ;; off) echo 2 ;; *) echo -1 ;; esac; }
 
@@ -267,7 +267,8 @@ egress_apply() {
   how=tighten
   cur_mode="$(cut -f5 <<< "$cur")"
   if [[ "$(cut -f6 <<< "$cur")" == "yes" && "$(mode_rank "$mode")" -ge "$(mode_rank "$cur_mode")" ]]; then
-    cur_hosts="$(egress_active_hosts "$agent" "$egress")"
+    cur_hosts="$(egress_active_hosts "$agent" "$egress")" ||
+      error "Could not read $agent's current hosts in $egress"
     # Every host allowed now stays allowed (off allows them all).
     if [[ "$mode" == "off" ]] ||
        [[ -z "$(LC_ALL=C comm -23 <(printf '%s\n' "$cur_hosts" | sed '/^$/d' | LC_ALL=C sort -u) <(printf '%s\n' "$hosts"))" ]]; then
@@ -394,6 +395,8 @@ mkdir -p /etc/systemd/system.conf.d
 { echo "[Manager]"; printf 'DefaultEnvironment='; vars | sed 's/.*/"&"/' | tr '\n' ' '; echo; } > /etc/systemd/system.conf.d/incs-proxy.conf
 systemctl daemon-reexec 2>/dev/null || true
 SH
+  incus config set "$agent" "user.incs.egress.env=$url" >/dev/null ||
+    error "Could not record $agent's proxy settings"
 }
 
 # Removes the proxy settings, banner and agent note a template may carry from
@@ -517,7 +520,7 @@ egress_converge() {
   # An interrupted lockdown finishes first; then the container converges on
   # its mode as it is now, which may have changed since the lockdown began.
   local was_locked=0
-  if [[ -n "$(egress_transition "$agent")" ]]; then
+  if [[ "$mode" != off && -n "$(egress_transition "$agent")" ]]; then
     egress_recover "$agent"
     was_locked=1
   fi
@@ -526,6 +529,8 @@ egress_converge() {
     off)
       r="$(egress_apply "$agent" "$force")" || return 1
       egress_nic_open "$agent"
+      # Off abandons a pending lockdown after its open policy is applied.
+      if [[ -n "$(egress_transition "$agent")" ]]; then egress_commit "$agent"; fi
       ;;
     enforce | report)
       if egress_nic_is_restricted "$agent"; then
@@ -537,6 +542,12 @@ egress_converge() {
       ;;
     *) error "$agent has an unknown egress mode: $mode" ;;
   esac
+  # Registration can outlive a failed first boot or settings write. Retry
+  # once the container is running, including when refresh finishes lockdown.
+  if egress_running "$agent" &&
+     [[ "$(incus config get "$agent" user.incs.egress.env 2>/dev/null)" != "$(egress_proxy_url "$agent")" ]]; then
+    egress_write_proxy_env "$agent"
+  fi
   if [[ "$was_locked" == 1 && "$r" == unchanged ]]; then r=locked; fi
   echo "$r"
 }

@@ -166,7 +166,7 @@ template_cleanup_on_exit() {
 
 # An EXIT trap, not ERR: error() calls exit directly, which ERR never sees.
 cleanup_on_exit() {
-  local rc=$? reply=""
+  local rc=$? reply="" egress=""
   trap - EXIT INT TERM HUP
   set +e
   if [[ -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
@@ -181,8 +181,20 @@ cleanup_on_exit() {
       # No answer (stdin closed) keeps the container: never delete unasked.
       read -rp "Delete it? [Y/n] " reply || reply="n"
       if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+        egress="$(incus config get "$CONTAINER_NAME" user.incs.egress.container 2>/dev/null)" || egress=""
         if incus delete --force "$CONTAINER_NAME"; then
           log "Deleted $CONTAINER_NAME"
+          if [[ -n "$egress" ]]; then
+            # A build can fail while holding the network lock. Reuse our own
+            # lock, and isolate error() so cleanup preserves the build's status.
+            (
+              if [[ "$(cat "$INCS_LOCK_DIR/pid" 2>/dev/null)" != "$$" ]]; then
+                incs_lock || exit 1
+              fi
+              trap incs_unlock EXIT
+              egress_forget "$CONTAINER_NAME" "$egress"
+            ) || warn "Could not remove $CONTAINER_NAME's proxy from $egress"
+          fi
         else
           warn "Could not delete '$CONTAINER_NAME'"
         fi

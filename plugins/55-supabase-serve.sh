@@ -7,6 +7,8 @@ PLUGIN_DESC="Serve app + Supabase ports over tailnet HTTPS"
 PLUGIN_DEFAULT=0
 PLUGIN_CLI_FLAGS="--supabase-serve"
 PLUGIN_REQUIRES="tailscale"
+# Tailscale joins during the locked phase; apply its preset afterwards.
+PLUGIN_PHASE=locked
 
 # HTTPS port on the tailnet -> localhost target inside the instance.
 #   443  -> 3000   app dev server        4410 -> 3010   secondary app
