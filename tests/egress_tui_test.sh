@@ -213,7 +213,7 @@ out=$( { sleep 1.5; for k in j j j D; do printf '%s' "$k"; sleep 0.6; done
          echo '[]' > "$S/instances.json"; sleep 1.5; printf y; sleep 1; printf q; sleep 0.4; printf q; sleep 0.5; } | tui ) || true
 mv "$S/instances.saved" "$S/instances.json"
 assert_eq "an answer after the list empties doesn't crash the view" "no" "$([[ "$out" == *"unbound variable"* ]] && echo yes || echo no)"
-assert_contains "and deletes the container it asked about" "Deleting plain" "$(plain <<<"$out")"
+assert_eq "and deletes the container it asked about" "delete --force plain" "$(cat "$S/calls" 2>/dev/null)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
