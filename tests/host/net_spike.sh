@@ -193,7 +193,7 @@ host_connects() { timeout 7 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1 && echo ye
 # Observe arrival at P, independently of where a spoofed SYN's reply goes.
 # Report capture errors separately: they must never count as a filtered packet.
 sees_syn() {
-  local source="$1" address="$2" capture_pid ready=0 rc=0 sender_rc=0 attempt
+  local source="$1" address="$2" capture_pid ready=0 rc=0 sender_rc=0 attempt seen
   incus exec "$P" -- env LC_ALL=C timeout 8 tcpdump -l -n -e -i eth0 -c 1 \
     "src host $address and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" \
     >"$TMP/syn.out" 2>"$TMP/syn.err" &
@@ -219,9 +219,14 @@ sees_syn() {
   # while GNU timeout returns 124. Inspect capture evidence in either case.
   case "$rc" in
     0|124|143)
-      if [[ -s "$TMP/syn.out" ]]; then echo yes; echo "INFO P saw: $(head -1 "$TMP/syn.out")" >&2
+      # A packet line, not just bytes: the output can be a bare newline.
+      seen="$(grep -E -m1 " ${address//./\\.}\.[0-9]+ > ${P_IP//./\\.}\.443: Flags \[S" "$TMP/syn.out")"
+      if [[ -n "$seen" ]]; then echo yes; echo "INFO P saw: $seen" >&2
       elif grep -q '^0 packets captured$' "$TMP/syn.err"; then echo no
-      else echo error; fi ;;
+      else
+        echo error
+        echo "INFO capture output: $(od -c "$TMP/syn.out" | head -2 | tr -s ' \n' ' '); stderr: $(tail -3 "$TMP/syn.err" | tr '\n' ';')" >&2
+      fi ;;
     *) echo error ;;
   esac
 }
@@ -297,7 +302,20 @@ incus start "$P" >/dev/null; sleep 3
 check "the override keeps ipv4_filtering" "true" "$(incus config device get "$P" eth0 security.ipv4_filtering 2>/dev/null)"
 check "the override keeps mac_filtering" "true" "$(incus config device get "$P" eth0 security.mac_filtering 2>/dev/null)"
 listen "$P" 443; listen "$P" 8443
-check "attached client A reaches P:443" "yes" "$(connects "$A" "$P_IP" 443)"
+# P has just restarted with its ACL. Allow it a few seconds to settle, and say
+# when it needed them: incs would see the same after starting a proxy.
+connects_settled() {
+  local n
+  for n in 1 2 3 4 5; do
+    if [[ "$(connects "$@")" == yes ]]; then
+      [[ "$n" -gt 1 ]] && echo "INFO $1 reached $2:$3 on attempt $n, 2 s apart" >&2
+      echo yes; return
+    fi
+    sleep 2
+  done
+  echo no
+}
+check "attached client A reaches P:443" "yes" "$(connects_settled "$A" "$P_IP" 443)"
 check "unattached B cannot reach P:443" "no" "$(connects "$B" "$P_IP" 443)"
 check "A cannot reach P on another port (8443)" "no" "$(connects "$A" "$P_IP" 8443)"
 check "the host cannot reach P:443" "no" "$(host_connects "$P_IP" 443)"
