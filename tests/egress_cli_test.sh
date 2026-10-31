@@ -193,6 +193,56 @@ assert_contains "box's proxy allows it" "extra.example" "$(gen_file box hosts)"
 run rm --all extra.example --yes
 assert_not_contains "rm --all takes it out" "extra.example" "$(cat "$INCS_CONFIG_DIR/egress-baseline.txt")"
 
+echo "turning off an interrupted lockdown"
+make_box cancelbox 10.201.0.70
+incus config set cancelbox boot.autostart=true
+FAKE_INCUS_FAIL_CALL='^config device set cancelbox eth0 ipv4.address' run mode cancelbox enforce
+assert_eq "the lockdown is interrupted" "1" "$RC"
+run mode cancelbox off
+assert_eq "off cancels the unfinished lockdown" "0" "$RC"
+assert_eq "off clears its barrier" "none" "$(cfg cancelbox user.incs.egress.transition)"
+assert_eq "off restores its original autostart" "true" "$(cfg cancelbox boot.autostart)"
+assert_eq "off opens its card" "incs-base" "$(cfg cancelbox devices.eth0.security.acls)"
+run mode cancelbox enforce  # keep the remaining scenarios independent
+
+echo "retrying incomplete proxy settings"
+make_box retrybox 10.201.0.71
+FAKE_INCUS_FAIL_CALL='^exec retrybox -- sh -s' run mode retrybox enforce
+assert_eq "the initial settings write fails" "1" "$RC"
+assert_eq "failed settings are not marked complete" "" "$(cfg retrybox user.incs.egress.env)"
+before="$(ncalls)"
+run mode retrybox enforce
+assert_eq "retry succeeds" "0" "$RC"
+assert_contains "retry writes the settings again" "exec retrybox -- sh -s" "$(calls_since "$before")"
+assert_eq "only complete settings are recorded" "$(cfg retrybox environment.HTTPS_PROXY)" "$(cfg retrybox user.incs.egress.env)"
+incus config unset retrybox user.incs.egress.env
+before="$(ncalls)"
+run refresh retrybox
+assert_eq "refresh repairs missing settings" "0" "$RC"
+assert_contains "refresh rewrites the settings" "exec retrybox -- sh -s" "$(calls_since "$before")"
+
+echo "bulk changes continue after failures"
+make_box abox 10.201.0.72
+make_box zbox 10.201.0.73
+run mode abox enforce
+run mode zbox enforce
+run allow --all bulk.example --yes
+assert_eq "bulk setup succeeds" "0" "$RC"
+assert_contains "the later container initially allows the host" "bulk.example" "$(gen_file zbox hosts)"
+FAKE_EGRESS_CTL_FAIL='^status abox$' run rm --all bulk.example --yes
+assert_eq "bulk removal reports failure" "1" "$RC"
+assert_contains "bulk removal names the failed container" "abox" "$OUT"
+assert_not_contains "bulk removal still narrows a later container" "bulk.example" "$(gen_file zbox hosts)"
+assert_eq "bulk removal releases its lock" "no" "$([[ -d "$INCS_LOCK_DIR" ]] && echo yes || echo no)"
+FAKE_EGRESS_CTL_FAIL='^status abox$' run allow --all bulk.example --yes
+assert_eq "bulk allowance reports failure" "1" "$RC"
+assert_contains "bulk allowance still updates a later container" "bulk.example" "$(gen_file zbox hosts)"
+before="$(ncalls)"
+FAKE_EGRESS_CTL_FAIL='^status abox$' run refresh --all
+assert_eq "bulk refresh reports failure" "1" "$RC"
+assert_contains "bulk refresh reaches a later container" "status zbox" "$(calls_since "$before")"
+assert_eq "bulk refresh releases its lock" "no" "$([[ -d "$INCS_LOCK_DIR" ]] && echo yes || echo no)"
+
 echo "ls and log"
 run ls
 assert_contains "ls lists box" "box" "$OUT"
