@@ -178,7 +178,7 @@ host_connects() { timeout 7 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1 && echo ye
 # Observe arrival at P, independently of where a spoofed SYN's reply goes.
 # Report capture errors separately: they must never count as a filtered packet.
 sees_syn() {
-  local source="$1" address="$2" capture_pid ready=0 rc=0 attempt
+  local source="$1" address="$2" capture_pid ready=0 rc=0 sender_rc=0 attempt
   incus exec "$P" -- env LC_ALL=C timeout 8 tcpdump -l -n -i eth0 -c 1 \
     "src host $address and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" \
     >"$TMP/syn.out" 2>"$TMP/syn.err" &
@@ -189,10 +189,17 @@ sees_syn() {
     sleep 0.1
   done
   if [[ "$ready" == 1 ]]; then
-    connects "$source" "$P_IP" 443 "$address" >/dev/null
+    incus exec "$source" -- env LC_ALL=C timeout 7 socat -u /dev/null \
+      "TCP:$P_IP:443,connect-timeout=5,bind=$address" >/dev/null 2>"$TMP/sender.err" || sender_rc=$?
   fi
   wait "$capture_pid" || rc=$?
   if [[ "$ready" != 1 ]]; then echo error; return; fi
+  # A refused/timed-out connect attempted the SYN. Bind, missing-tool, and
+  # other sender failures cannot establish that a packet was sent.
+  if [[ "$sender_rc" != 0 ]] && \
+     ! grep -Eq ': (Connection timed out|Operation timed out|Connection refused)$' "$TMP/sender.err"; then
+    echo error; return
+  fi
   # BusyBox timeout preserves tcpdump's exit status (often 0 after TERM),
   # while GNU timeout returns 124. Inspect capture evidence in either case.
   case "$rc" in
@@ -248,7 +255,8 @@ check "removing B from the set closes it again, live" "no" "$(connects "$B" "$P_
 # --- spoofing ----------------------------------------------------------------
 section "spoofing"
 B_MAC="$(incus config get "$B" volatile.eth0.hwaddr)"; A_MAC="$(incus config get "$A" volatile.eth0.hwaddr)"
-incus exec "$B" -- ip addr add "$A_IP/32" dev eth0 2>/dev/null
+incus exec "$B" -- ip addr add "$A_IP/32" dev eth0 2>/dev/null \
+  || { fail "spoofing setup: could not assign A's address to B"; exit 1; }
 syn_control="$(sees_syn "$A" "$A_IP")"
 check "control: P observes A's SYN to port 443" "yes" "$syn_control"
 if [[ "$syn_control" == yes ]]; then

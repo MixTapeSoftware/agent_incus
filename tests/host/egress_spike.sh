@@ -77,6 +77,7 @@ cleanup() {
 section "preflight"
 command -v incus >/dev/null || { echo "incus not found"; exit 1; }
 command -v python3 >/dev/null || { echo "python3 not found on the host"; exit 1; }
+command -v ss >/dev/null || { echo "ss not found on the host (install iproute2)"; exit 1; }
 incus info "$X" >/dev/null 2>&1 && { echo "Instance $X already exists; refusing to run."; exit 1; }
 incus network show "$NET" >/dev/null 2>&1 && { echo "Network $NET already exists; refusing to run."; exit 1; }
 incus profile show "$PROFILE" >/dev/null 2>&1 && { echo "Profile $PROFILE already exists; refusing to run."; exit 1; }
