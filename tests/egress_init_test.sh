@@ -166,6 +166,74 @@ assert_contains "the plugin brings Tailscale up" "tailscale up" "$out"
 assert_eq "under an allowlist, the agent isn't Tailscale's operator" "no" "$(grep -q -- '--operator' <<< "$out" && echo yes || echo no)"
 assert_eq "with no allowlist it still is" "yes" "$(ts_up off | grep -q -- '--operator=dev' && echo yes || echo no)"
 
+echo "failed build proxy cleanup"
+# The fake exec consumes non-terminal stdin. Run the real exit trap again with
+# an answer available, after the failed build has returned with stdin closed.
+cat > "$SANDBOX/cleanup.sh" <<'EOF'
+set -euo pipefail
+SCRIPT_DIR="$1"
+log() { :; }; warn() { echo "$1"; }; error() { echo "$1" >&2; exit 1; }
+source "$SCRIPT_DIR/incus.net"
+source "$SCRIPT_DIR/incus.egress"
+for name in revoke_build_sudo restore_tailscale_state cleanup_on_exit; do
+  eval "$(awk -v name="$name" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$SCRIPT_DIR/incus.init")"
+done
+CONTAINER_NAME=failed HOST_USER=dev BUILD_SUDO_GRANTED=0 TS_STATE_BACKUP=""
+trap cleanup_on_exit EXIT
+[[ "${2:-}" != owned ]] || incs_lock
+exit 1
+EOF
+cleanup_failed() { bash "$SANDBOX/cleanup.sh" "$SANDBOX/repo" "${1:-}" <<< "" > "$SANDBOX/cleanup-out" 2>&1 && RC=0 || RC=$?; }
+fresh
+export FAKE_INCUS_FAIL_EXEC='^tar --no-same-owner -C /workspace'
+init failed
+unset FAKE_INCUS_FAIL_EXEC
+cleanup_failed
+assert_eq "a failure after locking keeps its error status" "1" "$RC"
+assert_eq "confirmed deletion removes the failed container" "no" "$([[ -d "$FAKE_INCUS_STATE/instances/failed" ]] && echo yes || echo no)"
+assert_contains "confirmed deletion removes its proxy" "remove failed" "$(cat "$FAKE_INCUS_STATE/ctl/incs-egress/calls.log")"
+assert_eq "its proxy registration is gone" "no" "$([[ -d "$FAKE_INCUS_STATE/ctl/incs-egress/failed" ]] && echo yes || echo no)"
+init failed
+assert_eq "the same name can be built again" "0" "$RC"
+
+fresh
+export FAKE_EGRESS_CTL_FAIL='^tighten failed '
+init failed
+unset FAKE_EGRESS_CTL_FAIL
+cleanup_failed owned
+assert_eq "failure inside the lock keeps its error status" "1" "$RC"
+assert_contains "cleanup reuses a lock held by the failed builder" "remove failed" "$(cat "$FAKE_INCUS_STATE/ctl/incs-egress/calls.log")"
+assert_eq "cleanup releases the builder's lock" "no" "$([[ -d "$INCS_LOCK_DIR" ]] && echo yes || echo no)"
+
+fresh
+export FAKE_INCUS_FAIL_EXEC='^tar --no-same-owner -C /workspace'
+export FAKE_INCUS_FAIL_CALL='^delete --force failed$'
+init failed
+cleanup_failed
+unset FAKE_INCUS_FAIL_EXEC FAKE_INCUS_FAIL_CALL
+assert_eq "failed deletion keeps the container" "yes" "$([[ -d "$FAKE_INCUS_STATE/instances/failed" ]] && echo yes || echo no)"
+assert_eq "failed deletion keeps its proxy registration" "yes" "$([[ -d "$FAKE_INCUS_STATE/ctl/incs-egress/failed" ]] && echo yes || echo no)"
+
+echo "Supabase preset follows Tailscale in both allowlist modes"
+cp "$REPO_ROOT/plugins/55-supabase-serve.sh" "$SANDBOX/repo/plugins/55-supabase-serve.sh"
+cat > "$SANDBOX/repo/plugins/50-tailscale.sh" <<'EOF'
+PLUGIN_ID="tailscale"; PLUGIN_NAME="Tailscale"; PLUGIN_DESC="fixture"; PLUGIN_DEFAULT=0
+PLUGIN_CLI_FLAGS="--tailscale"; PLUGIN_NEEDS_PROMPT=1
+plugin_prompt() { :; }
+plugin_install() {
+  mkdir -p "$FAKE_INCUS_STATE/instances/$CONTAINER_NAME/root/usr/bin"
+  touch "$FAKE_INCUS_STATE/instances/$CONTAINER_NAME/root/usr/bin/tailscale"
+  incus exec "$CONTAINER_NAME" -- tailscale up
+}
+EOF
+for mode in enforce report; do
+  fresh
+  init sbox --egress "$mode" --supabase-serve
+  assert_eq "$mode: preset build succeeds" "0" "$RC"
+  assert_before "$mode: Tailscale joins before the preset" '^exec sbox -- tailscale up' '^exec sbox -- tailscale serve'
+  assert_eq "$mode: all seven mappings are applied" "7" "$(grep -c '^exec sbox -- tailscale serve' "$FAKE_INCUS_STATE/calls.log" || true)"
+done
+
 echo ""
 echo "passed: $PASS  failed: $FAIL"
 [[ "$FAIL" -eq 0 ]]
