@@ -234,7 +234,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
-| [Matt Pocock Skills](https://github.com/mattpocock/skills) | Engineering and productivity skills for Claude Code, Codex, and Grok (enabled by default) |
+| [Matt Pocock Skills](https://github.com/mattpocock/skills) | Engineering and productivity skills for Claude Code, Codex, and Grok |
 | [mermaid-ascii](https://github.com/AlexanderGrooff/mermaid-ascii) | Render mermaid diagrams as ASCII art |
 | [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
@@ -247,7 +247,7 @@ Chadmux clones the `main` branch into `~/.config/tmux` and links `~/.tmux.conf` 
 
 Installation preserves an existing config directory or unrelated Git checkout in a sibling `tmux.backup.*` directory after the download succeeds. An existing legacy `~/.tmux.conf` is also preserved in a sibling `.tmux.conf.backup.*` directory before linking the new config. Only a checkout with the Chadmux upstream as its origin is updated in place.
 
-Matt Pocock Skills installs the full collection globally for the instance user. Codex and Grok discover the shared `~/.agents/skills` directory, and Claude Code receives its own discovery links, so the same collection is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
+Matt Pocock Skills is opt-in: tick it in the menu or pass `--matt-pocock-skills`. It installs the full collection, from the repository's main branch, globally for the instance user. Codex and Grok discover the shared `~/.agents/skills` directory, and Claude Code receives its own discovery links, so the same collection is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
 
 ### Adding Custom Plugins
 
