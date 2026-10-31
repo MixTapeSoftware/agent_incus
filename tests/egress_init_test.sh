@@ -93,6 +93,7 @@ assert_eq "autostart is back to unset" "" "$(cfg box boot.autostart)"
 assert_contains "the proxy is in its environment" "http://10.201.0.11:10000" "$(cfg box environment.HTTPS_PROXY)"
 assert_contains "github remotes use HTTPS" 'insteadOf "git@github.com:"' "$(stdin_all)"
 assert_contains "the agents get a note" "## Network allowlist" "$(stdin_all)"
+assert_contains "the note from before the rename to bxn is removed" "/^<!-- incs egress: begin -->\$/,/^<!-- incs egress: end -->\$/d" "$(stdin_all)"
 assert_contains "the note names the allow command" "bxn egress allow box <host>" "$(stdin_all)"
 assert_contains "the login banner" "This container is on an allowlist (enforce)" "$(stdin_all)"
 assert_contains "networking is checked through the proxy after the lock" "curl -fsS -o /dev/null --max-time 5 https://github.com" "$(cat "$FAKE_INCUS_STATE/exec.log")"
@@ -118,6 +119,7 @@ assert_eq "--egress off launches as before" "launch" "$(grep -m1 -E '^(launch|in
 assert_eq "--egress off makes no egress container" "no" "$([[ -d "$FAKE_INCUS_STATE/instances/boxen-egress" ]] && echo yes || echo no)"
 assert_eq "--egress off has no build state" "" "$(cfg obox user.boxen.egress.build)"
 assert_contains "an off launch from a template clears its old proxy settings" "rm -f /etc/apt/apt.conf.d/95boxen-proxy" "$(cat "$FAKE_INCUS_STATE/exec.log")"
+assert_contains "and the ones from before the rename to bxn" "/etc/apt/apt.conf.d/95incs-proxy /etc/systemd/system.conf.d/incs-proxy.conf /etc/incs/egress-banner" "$(cat "$FAKE_INCUS_STATE/exec.log")"
 fresh
 mkdir -p "$SANDBOX/globdir"; touch "$SANDBOX/globdir/x.api.locked.example"
 (cd "$SANDBOX/globdir" && init gl --from base)
