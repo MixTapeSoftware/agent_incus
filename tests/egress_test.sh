@@ -161,6 +161,13 @@ incus config set box user.incs.egress.allow=docs.rs
 assert_eq "adding a host widens" "widened" "$(apply)"
 assert_contains "the new generation allows it" "docs.rs" "$(cat "$FAKE_INCUS_STATE/ctl/$e/box/gens/2/hosts")"
 incus config set box user.incs.egress.allow=
+active="$(cfg box user.incs.egress.active)"
+current="$(cat "$FAKE_INCUS_STATE/ctl/$e/box/current")"
+FAKE_EGRESS_CTL_FAIL='^hosts' eg 'if egress_apply box; then exit 0; else exit 1; fi' > "$SANDBOX/hosts-failure.out" 2>&1 && rc=0 || rc=1
+assert_eq "a failed current-host read aborts the change" "1" "$rc"
+assert_contains "the failed read explains why" "Could not read box's current hosts" "$(cat "$SANDBOX/hosts-failure.out")"
+assert_eq "a failed host read keeps the current generation" "$current" "$(cat "$FAKE_INCUS_STATE/ctl/$e/box/current")"
+assert_eq "a failed host read keeps the active state" "$active" "$(cfg box user.incs.egress.active)"
 assert_eq "removing a host tightens" "tightened" "$(apply)"
 incus config set box user.incs.egress=report
 assert_eq "enforce to report widens" "widened" "$(apply)"
