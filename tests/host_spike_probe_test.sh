@@ -56,12 +56,15 @@ incus() {
     echo "$SENDER_ERROR" >&2
     return "$SENDER_RESULT"
   fi
-  [[ "$*" == "exec receiver -- env LC_ALL=C timeout 8 tcpdump -l -n -i eth0 -c 1 src host $A_IP and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" ]] || return 1
+  [[ "$*" == "exec receiver -- env LC_ALL=C timeout 8 tcpdump -l -n -e -i eth0 -c 1 src host $A_IP and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" ]] || return 1
   echo 'listening on eth0, link-type EN10MB (Ethernet)' >&2
   sleep 0.1
   if [[ "$PROBE_CAPTURED" == 1 ]]; then
-    echo 'IP 10.230.0.10.40000 > 10.230.0.20.443: Flags [S]'
+    echo '18:02:34.556605 10:66:6a:d1:fa:b1 > 10:66:6a:08:ba:1f, ethertype IPv4 (0x0800), length 74: 10.230.0.10.40000 > 10.230.0.20.443: Flags [S], seq 1, length 0'
     echo '1 packet captured' >&2
+  elif [[ "$PROBE_CAPTURED" == blank ]]; then
+    echo ''
+    echo "$PROBE_STATS" >&2
   else
     echo '0 packets captured' >&2
   fi
@@ -76,6 +79,14 @@ for PROBE_RESULT in 0 124 143; do
   [[ "$(sees_syn "$A" "$A_IP")" == no ]]
 done
 echo 'ok BusyBox and GNU timeout results report no packet from capture evidence'
+PROBE_RESULT=0
+PROBE_CAPTURED=blank
+PROBE_STATS='0 packets captured'
+[[ "$(sees_syn "$A" "$A_IP" 2>/dev/null)" == no ]]
+PROBE_STATS='1 packet captured'
+[[ "$(sees_syn "$A" "$A_IP" 2>/dev/null)" == error ]]
+echo 'ok a bare newline from the capture is not a packet'
+PROBE_CAPTURED=0
 SENDER_ERROR='socat[42] E bind(5, AF=2 10.230.0.10:0, 16): Address not available'
 [[ "$(sees_syn "$A" "$A_IP")" == error ]]
 echo 'ok a failed source bind cannot pass as filtered traffic'
