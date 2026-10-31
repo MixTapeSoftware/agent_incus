@@ -63,6 +63,13 @@ plugin_install() {
 
   incus exec "$CONTAINER_NAME" -- systemctl enable --now tailscaled
 
+  # A stored pref, so it survives restarts. 'tailscale up' has no
+  # --auto-update flag and doesn't check it, so a later 'up --operator=...'
+  # won't complain that the setting is missing. Under an allowlist the
+  # packages come from pkgs.tailscale.com, which *.tailscale.com covers.
+  incus exec "$CONTAINER_NAME" -- tailscale set --auto-update || \
+    warn "Could not turn on Tailscale auto-updates; run 'incus exec $CONTAINER_NAME -- tailscale set --auto-update'"
+
   # Under an allowlist the agent mustn't control Tailscale: an operator could
   # turn on an exit node (around the allowlist) or Funnel. Serve mappings are
   # changed from the host instead (incs serve).
