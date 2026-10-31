@@ -686,13 +686,15 @@ copy_workspace() {
 # ---------------------------------------------------------------------------
 GIT_NAME="" GIT_EMAIL="" GIT_ID_SOURCE=""
 
+# Global lookups follow include.path, as git does, but run from / so that no
+# includeIf for the current folder counts as global.
 # Usage: _host_git_config <key>
 _host_git_config() {
   local v=""
   if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" && -d "$WORKSPACE_PATH" ]]; then
     v="$(git -C "$WORKSPACE_PATH" config --get "$1" 2>/dev/null)" || v=""
   fi
-  [[ -n "$v" ]] || v="$(git config --global --get "$1" 2>/dev/null)" || v=""
+  [[ -n "$v" ]] || v="$(git -C / config --global --includes --get "$1" 2>/dev/null)" || v=""
   printf '%s' "$v"
 }
 
@@ -706,8 +708,8 @@ capture_git_identity() {
   if [[ -n "$name" && -n "$email" ]]; then
     GIT_NAME="$name" GIT_EMAIL="$email"
     if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] &&
-       [[ "$(git -C "$WORKSPACE_PATH" config --global --get user.email 2>/dev/null)" != "$email" ||
-          "$(git -C "$WORKSPACE_PATH" config --global --get user.name 2>/dev/null)" != "$name" ]]; then
+       [[ "$(git -C / config --global --includes --get user.email 2>/dev/null)" != "$email" ||
+          "$(git -C / config --global --includes --get user.name 2>/dev/null)" != "$name" ]]; then
       GIT_ID_SOURCE="$WORKSPACE_PATH's git config"
     else
       GIT_ID_SOURCE="your global git config"

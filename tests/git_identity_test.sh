@@ -64,6 +64,16 @@ NO_COPY=1 capture "$SANDBOX/mine"
 assert_eq "with nothing copied, the global identity" "global@example.com" "$GIT_EMAIL"
 NO_COPY=0
 
+# An identity kept in a file the global config includes, as dotfiles often do.
+mv "$HOME/.gitconfig" "$HOME/.gitconfig.main"
+git config --file "$HOME/.gitconfig" include.path "$HOME/.gitconfig.main"
+NO_COPY=1 capture "$SANDBOX/plain"
+assert_eq "a global identity in an included file is found" "Global Person <global@example.com>" "$GIT_NAME <$GIT_EMAIL>"
+capture "$SANDBOX/plain"
+assert_eq "and still called global" "your global git config" "$GIT_ID_SOURCE"
+mv "$HOME/.gitconfig.main" "$HOME/.gitconfig"
+NO_COPY=0
+
 echo "write"
 capture "$SANDBOX/plain"
 GIT_NAME="Zoë O'Brien; rm -rf ~" GIT_EMAIL='z@example.com'
