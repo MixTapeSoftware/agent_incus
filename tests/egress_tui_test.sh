@@ -207,6 +207,13 @@ assert_contains "and says why" "runs other containers' proxies" "$(last_frame "$
 out=$(keys j j j j j D y | tui) || true
 assert_eq "an instance incs didn't make isn't deleted" "" "$(cat "$S/calls" 2>/dev/null)"
 assert_contains "and says so" "wasn't made by incs" "$(last_frame "$out" | plain)"
+# The list empties while the question is open: answering mustn't end the view.
+cp "$S/instances.json" "$S/instances.saved"
+out=$( { sleep 1.5; for k in j j j D; do printf '%s' "$k"; sleep 0.6; done
+         echo '[]' > "$S/instances.json"; sleep 1.5; printf y; sleep 1; printf q; sleep 0.4; printf q; sleep 0.5; } | tui ) || true
+mv "$S/instances.saved" "$S/instances.json"
+assert_eq "an answer after the list empties doesn't crash the view" "no" "$([[ "$out" == *"unbound variable"* ]] && echo yes || echo no)"
+assert_contains "and deletes the container it asked about" "Deleting plain" "$(plain <<<"$out")"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

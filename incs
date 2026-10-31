@@ -817,9 +817,9 @@ status_interactive() {
       elif [[ $tab == rules ]]; then
         keys="j/k select · d remove · m mode · h/l tabs · tab list · q quit"
       elif [[ $wide == true ]]; then
-        keys="↑/↓ or j/k scroll · tab list · space start/stop · q quit"
+        keys="↑/↓ or j/k scroll · tab list · space start/stop · D delete · q quit"
       else
-        keys="↑/↓ or j/k scroll · esc back · space start/stop · q quit"
+        keys="↑/↓ or j/k scroll · esc back · space start/stop · D delete · q quit"
       fi
       if ((tabs_n > 1)) && [[ $focus == info && $tab == info ]]; then keys="${keys/ · q quit/ · h/l tabs · m mode · q quit}"; fi
     fi
@@ -856,7 +856,8 @@ status_interactive() {
       esac
     fi
     if [[ -n "$ask" && -n "$key" ]]; then
-      name=${names[$sel]}
+      # The list may be empty by now; a delete uses the name it asked about.
+      name=${names[$sel]:-}
       case "$ask" in
         confirm)
           if [[ "$key" == y || "$key" == Y ]]; then

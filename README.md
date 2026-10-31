@@ -120,10 +120,11 @@ In a terminal, `incs status` is a live view that refreshes every second. On a te
 | `Tab` | Move the keys between the list and the details |
 | `Enter` | Give the keys to the details; on a narrow terminal, open them full screen |
 | `space` | Stop the highlighted instance if it is running, otherwise start it |
+| `D` | Delete the highlighted instance, after a `y`/`n` question; any other key cancels. Instances incs didn't create and the egress container are refused |
 | `Esc` | Back to the list from the details, otherwise quit |
 | `q` | Quit |
 
-Start and stop run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. `incs` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
+Start, stop and delete run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. `incs` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
 
 ## incus.init Options
 
