@@ -3,8 +3,8 @@
 # The MixTape Skills plugin is opt-in, clones the repository as the instance
 # user, links each skill for Claude Code and for Codex and Grok, updates its
 # own checkout on a rerun, and leaves skills and checkouts it doesn't own
-# alone. Runs the script the plugin sends into the container, with git
-# stubbed so nothing is downloaded.
+# alone, even when the download fails. Runs the script the plugin sends into
+# the container, with git stubbed so nothing is downloaded.
 # Run: bash tests/mixtape_skills_test.sh
 
 set -euo pipefail
@@ -32,6 +32,7 @@ mkdir -p "$SANDBOX/bin"
 cat > "$SANDBOX/bin/git" <<'EOF'
 #!/bin/bash
 if [[ "$1" == clone ]]; then
+  [[ -f "$HOME/.fail-clone" ]] && { echo "fatal: unable to access" >&2; exit 128; }
   url="${@: -2:1}"; dst="${@: -1}"
   mkdir -p "$dst/.git" "$dst/botfight" "$dst/notes"
   echo "$url" > "$dst/.git/origin"; echo "# botfight" > "$dst/botfight/SKILL.md"
@@ -51,10 +52,14 @@ EOF
 chmod +x "$SANDBOX/bin/git"
 
 log() { :; }
+# The plugin's commands as the instance user: the install script is kept to
+# run below, the installed check runs now.
 incus() {
-  [[ "$*" == "exec box -- su - dev -c bash -s" ]] || return 1
-  cat > "$SANDBOX/script"
+  [[ "$1 $2 $3 $4 $5 $6 $7" == "exec box -- su - dev -c" ]] || return 1
+  if [[ "$8" == "bash -s" ]]; then cat > "$SANDBOX/script"
+  else env -i HOME="$H" PATH="$SANDBOX/bin:/usr/bin:/bin" bash -c "$8"; fi
 }
+installed() { plugin_is_installed && echo yes || echo no; }
 # shellcheck source=../plugins/50-mixtape-skills.sh
 source "$REPO_ROOT/plugins/50-mixtape-skills.sh"
 CONTAINER_NAME=box HOST_USER=dev
@@ -68,7 +73,9 @@ run() { plugin_install; env -i HOME="$H" PATH="$SANDBOX/bin:/usr/bin:/bin" bash 
 CO="$H/.local/share/mixtape-skills"
 
 echo "a fresh install"
+assert_eq "it isn't installed yet" "no" "$(installed)"
 out="$(run)"
+assert_eq "then it is" "yes" "$(installed)"
 assert_eq "it clones the MixTape skills repository" "https://github.com/MixTapeSoftware/skills.git" "$(cat "$CO/.git/origin")"
 assert_eq "Codex and Grok get the skill" "$CO/botfight" "$(readlink "$H/.agents/skills/botfight")"
 assert_eq "Claude Code gets the skill" "$CO/botfight" "$(readlink "$H/.claude/skills/botfight")"
@@ -84,6 +91,7 @@ echo "what it doesn't own"
 rm -rf "$H"; mkdir -p "$H/.claude/skills/botfight" "$H/.agents/skills"
 echo mine > "$H/.claude/skills/botfight/SKILL.md"
 ln -s /elsewhere "$H/.agents/skills/botfight"
+assert_eq "a botfight of the user's doesn't count as installed" "no" "$(installed)"
 out="$(run)"
 assert_eq "a skill folder of the user's is left alone" "mine" "$(cat "$H/.claude/skills/botfight/SKILL.md")"
 assert_eq "a link to somewhere else is left alone" "/elsewhere" "$(readlink "$H/.agents/skills/botfight")"
@@ -92,6 +100,14 @@ rm -rf "$H"; mkdir -p "$CO/.git"; echo "https://example.com/other.git" > "$CO/.g
 out="$(run)"
 assert_eq "another checkout at the path is moved aside" "keep" "$(cat "$CO".backup.*/file)"
 assert_eq "and replaced with ours" "https://github.com/MixTapeSoftware/skills.git" "$(cat "$CO/.git/origin")"
+mv "$CO" "$CO.ours"; mkdir -p "$CO/.git"; echo "https://example.com/other.git" > "$CO/.git/origin"; echo second > "$CO/file"
+out="$(run)"
+assert_eq "a second backup in the same second gets its own name" "2" "$(ls -d "$CO".backup.* | wc -l | tr -d ' ')"
+rm -rf "$H"; mkdir -p "$CO/.git"; echo "https://example.com/other.git" > "$CO/.git/origin"; echo keep > "$CO/file"; touch "$H/.fail-clone"
+out="$(run)" && rc=0 || rc=$?
+assert_eq "a failed download fails the install" "1" "$rc"
+assert_eq "and leaves the checkout that was there" "keep" "$(cat "$CO/file")"
+assert_eq "with nothing left behind" "" "$(ls -d "$CO".* 2>/dev/null)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
