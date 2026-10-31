@@ -45,6 +45,10 @@ cat > "$S/repo/incs.egress" <<'EOF'
 case "$1" in
   log)
     printf 'TIME\tHOST\tPORT\tDECISION\tREASON\tGEN\n'
+    if [[ -f "$STUB/long-host" ]]; then
+      printf '2026-10-30T10:01:00Z\t%s\t443\tblocked\tdefault rule policy used\t3\n' "$(cat "$STUB/long-host")"
+      exit
+    fi
     printf '2026-10-30T10:01:00Z\tapi.anthropic.com\t443\tallowed\tmatched\t3\n'
     printf '2026-10-30T10:02:00Z\tdocs.rs\t443\tblocked\tdefault rule policy used\t3\n'
     printf '2026-10-30T10:03:00Z\tdocs.rs\t443\tblocked\tdefault rule policy used\t3\n'
@@ -118,6 +122,17 @@ out=$(keys '\t' l A | tui) || true
 assert_contains "A asks about every container" "Allow docs.rs for every container? y/n" "$(plain <<<"$out")"
 out=$(keys '\t' l A y | tui) || true
 assert_eq "y allows it everywhere" "allow --all docs.rs --yes" "$(cat "$S/egress-calls" 2>/dev/null)"
+
+echo "long host confirmations"
+long_host="docs.rs.$(printf '%063d' 0).$(printf '%063d' 0).attacker.example"
+printf '%s\n' "$long_host" > "$S/long-host"
+out=$(keys '\t' l a y | tui) || true
+assert_contains "a clipped hostname is marked" "...:443" "$(plain <<<"$out")"
+assert_contains "an unreadable confirmation directs to the CLI" "Host and scope do not fit; use incs egress allow." "$(plain <<<"$out")"
+assert_eq "y cannot allow a host whose confirmation is clipped" "" "$(cat "$S/egress-calls" 2>/dev/null)"
+out=$(keys '\t' l A y | tui) || true
+assert_eq "y cannot allow a clipped host everywhere" "" "$(cat "$S/egress-calls" 2>/dev/null)"
+rm "$S/long-host"
 
 echo "the Rules tab"
 out=$(keys '\t' l l | tui) || true

@@ -605,7 +605,8 @@ status_tab_rows() {
     "$SCRIPT_DIR/incs.egress" log "$1" --raw 2>/dev/null | tail -n +2 | awk -F'\t' '
       { gsub(/[[:cntrl:]]/, "?", $2); k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = substr($1, 12, 8) }
       END { for (k in n) { split(k, f, "\t"); r = (f[3] == "blocked") ? 0 : (f[3] == "would-block") ? 1 : 2
-                           print r "\t" n[k] "\t" f[1] "\t" sprintf("%-12s %5d  %-8s  %s:%s", f[3], n[k], last[k], substr(f[1], 1, 60), f[2]) } }' |
+                           h = f[1]; if (length(h) > 60) h = substr(h, 1, 57) "..."
+                           print r "\t" n[k] "\t" f[1] "\t" sprintf("%-12s %5d  %-8s  %s:%s", f[3], n[k], last[k], h, f[2]) } }' |
       sort -t$'\t' -k1,1n -k2,2nr | cut -f3-
   else
     "$SCRIPT_DIR/incs.egress" ls "$1" --tsv 2>/dev/null | awk -F'\t' '{ gsub(/[[:cntrl:]]/, "?", $1); gsub(/[[:cntrl:]]/, "?", $2); printf "%s\t%-44s %s\n", $1, substr($1, 1, 44), $2 }'
@@ -726,6 +727,12 @@ status_interactive() {
     term_cols=${size##* }
     if ! [[ "$term_rows" =~ ^[0-9]+$ ]] || ((term_rows < 1)); then term_rows=24; fi
     if ! [[ "$term_cols" =~ ^[0-9]+$ ]]; then term_cols=0; fi
+    # Wrapping is disabled: never approve a host and scope the user cannot
+    # see in full. Check every frame so shrinking the terminal cancels too.
+    if [[ "$ask" == confirm ]] && ((${#ask_desc} >= term_cols)); then
+      ask=""
+      msg=$(status_note "$msg" "Host and scope do not fit; use incs egress allow.")
+    fi
     wide=false
     if ((term_cols >= STATUS_WIDE_COLS)); then wide=true; fi
     if ((count == 0)); then focus=list; fi
