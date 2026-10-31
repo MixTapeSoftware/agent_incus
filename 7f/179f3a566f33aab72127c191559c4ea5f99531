@@ -1,0 +1,21 @@
+incs
+  s_623ac2e669e9e4::t_c1b7fd3621ff14 830-842
+tests/egress_tui_test.sh
+  s_623ac2e669e9e4::t_e237b09ee1806c 84,135-160
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7f179f3a566f33aab72127c191559c4ea5f99531",
+  "prompts": {},
+  "sessions": {
+    "s_623ac2e669e9e4": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18f58-c9d9-7210-a3e8-401072da92b4",
+        "model": "unknown"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
