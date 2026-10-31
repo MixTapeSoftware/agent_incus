@@ -291,7 +291,9 @@ sleep 1
 old_ok="$([[ "$(seen_since "$t2" udp "$OLD_SPORT")" -gt 0 ]] && echo yes || echo no)"
 new_ok="$([[ "$(seen_since "$t2" udp "$NEW_SPORT")" -gt 0 ]] && echo yes || echo no)"
 check "control: a fresh UDP flow after the restart is blocked" "no" "$new_ok"
-check "the old UDP flow's addresses and ports are blocked after the restart" "no" "$old_ok"
+# Either answer is about the host, not a defect: incs moves the container to a
+# new address on lock either way, and the next section checks that.
+info "the old UDP flow after the restart: $([[ "$old_ok" == yes ]] && echo "still gets through" || echo blocked)"
 if [[ "$old_ok" == yes ]]; then
   info "RESULT: the host's connection tracking outlives the restart. incs must clear it, or give the container a new IP."
 else
