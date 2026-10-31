@@ -130,7 +130,7 @@ say_result() {
 
 converge_one() {
   local c="$1" r
-  r="$(egress_converge "$c" "$FORCE")" || error "$c: the change didn't go through"
+  r="$(egress_converge "$c" "$FORCE")" || { warn "$c: the change didn't go through"; return 1; }
   say_result "$c" "$r"
 }
 
@@ -148,7 +148,7 @@ cmd_mode() {
   incs_lock
   attach "$c" "$group"
   incus config set "$c" "user.incs.egress=$mode" >/dev/null
-  converge_one "$c"
+  converge_one "$c" || { incs_unlock; return 1; }
   incs_unlock
 }
 
@@ -212,13 +212,13 @@ cmd_allow_rm() {
   incs_lock
   attach "$c" ""
   edit_hosts "$op" "$c" "$@"
-  converge_one "$c"
+  converge_one "$c" || { incs_unlock; return 1; }
   incs_unlock
 }
 
 # --all changes your baseline additions, then every allowlisted container.
 all_hosts() {
-  local op="$1" h out=() list cs c
+  local op="$1" h out=() list cs c failed=""
   shift
   [[ $# -gt 0 ]] || usage 1
   for h in "$@"; do out+=("$(egress_host "$h")") || error "Not a hostname incs accepts: $h"; done
@@ -243,8 +243,9 @@ all_hosts() {
   { echo "# Your additions to the egress baseline, for every container. Managed by incs egress allow/rm --all."
     printf '%s\n' "$list" | sed '/^$/d'; } > "$EGRESS_USER_HOSTS.new"
   mv "$EGRESS_USER_HOSTS.new" "$EGRESS_USER_HOSTS"
-  for c in $cs; do converge_one "$c" || true; done
+  for c in $cs; do converge_one "$c" || failed="$failed $c"; done
   incs_unlock
+  [[ -z "$failed" ]] || error "Changes did not finish for:$failed. Retry: incs egress refresh --all"
 }
 
 cmd_ls() {
@@ -337,7 +338,7 @@ cmd_log() {
 }
 
 cmd_refresh() {
-  local target="${1:-}" cs c
+  local target="${1:-}" cs c failed=""
   egress_ensure_approved
   if ! cmp -s <(egress_read_hosts "$EGRESS_SHIPPED") <(egress_read_hosts "$EGRESS_APPROVED"); then
     echo "The shipped egress baseline differs from the one you approved:"
@@ -367,9 +368,10 @@ cmd_refresh() {
       warn "$c's build was abandoned ($(incus config get "$c" user.incs.egress.build)); it's stopped. Rebuild it, or delete it: incs -d $c"
       continue
     fi
-    converge_one "$c"
+    converge_one "$c" || failed="$failed $c"
   done
   incs_unlock
+  [[ -z "$failed" ]] || error "Changes did not finish for:$failed. Retry: incs egress refresh --all"
 }
 
 args=()
