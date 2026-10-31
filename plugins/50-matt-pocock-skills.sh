@@ -1,7 +1,7 @@
 PLUGIN_ID="matt-pocock-skills"
 PLUGIN_NAME="Matt Pocock Skills"
 PLUGIN_DESC="Engineering and productivity skills for Claude Code, Codex, and Grok"
-PLUGIN_DEFAULT=1
+PLUGIN_DEFAULT=0
 PLUGIN_CLI_FLAGS="--matt-pocock-skills"
 
 plugin_is_installed() {
