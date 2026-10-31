@@ -117,6 +117,24 @@ assert_eq "is two containers: the project and the agent's" "1" "$rc"
 assert_contains "and both are listed" "chad-fakeagent-web chad-shell-fakeagent-web" "$out"
 incus delete --force chad-shell-fakeagent-web
 
+echo "a race for a name"
+# Another bxn creates chad-shell-race after this one chose the name.
+mkdir -p "$SANDBOX/racebin"
+cat > "$SANDBOX/racebin/incus" <<EOF
+#!/bin/bash
+if [[ "\$1 \$3" == "init chad-shell-race" && ! -e "$SANDBOX/raced" ]]; then
+  touch "$SANDBOX/raced"
+  "$SANDBOX/bin/incus" init img chad-shell-race >/dev/null 2>&1
+  echo theirs > "$FAKE_INCUS_STATE/instances/chad-shell-race/owner"
+fi
+exec "$SANDBOX/bin/incus" "\$@"
+EOF
+chmod +x "$SANDBOX/racebin/incus"
+PATH="$SANDBOX/racebin:$PATH" build race
+assert_eq "the loser still builds" "0" "$RC"
+assert_eq "under the next number" "yes" "$(exists chad-shell-race-1)"
+assert_eq "and leaves the winner's container alone" "theirs" "$(cat "$FAKE_INCUS_STATE/instances/chad-shell-race/owner" 2>/dev/null)"
+
 echo "the agent picker"
 if script -qec true /dev/null >/dev/null 2>&1; then
   pick() { { sleep 1.5; for k in "$@"; do printf '%b' "$k"; sleep 0.5; done; sleep 0.5; printf '\r'; sleep 1; } |

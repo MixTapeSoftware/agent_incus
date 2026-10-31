@@ -206,7 +206,7 @@ echo "publish fails during a template build"
             template_cleanup_on_exit cleanup_on_exit save_template; do
     extract_fn "$fn"
   done
-  echo 'CONTAINER_NAME=box; HOST_USER=dev; CONTAINER_WORKSPACE=/workspace'
+  echo 'CONTAINER_NAME=box; CREATED_INSTANCE=1; HOST_USER=dev; CONTAINER_WORKSPACE=/workspace'
   echo 'SAVE_TEMPLATE=1; READY_TIMEOUT=2; TS_STATE_BACKUP=""; BUILD_SUDO_GRANTED=0'
   echo 'revoke_build_sudo() { :; }'
   grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/boxen.init"

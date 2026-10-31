@@ -115,7 +115,7 @@ echo "modes and refusals"
 fresh
 init obox --egress off --from base
 assert_eq "--egress off builds" "0" "$RC"
-assert_eq "--egress off launches as before" "launch" "$(grep -m1 -E '^(launch|init) .* obox' "$FAKE_INCUS_STATE/calls.log" | cut -d' ' -f1)"
+assert_eq "--egress off starts it as soon as it's created" "start obox" "$(grep -A1 -E '^init [^ ]+ obox' "$FAKE_INCUS_STATE/calls.log" | sed -n 2p)"
 assert_eq "--egress off makes no egress container" "no" "$([[ -d "$FAKE_INCUS_STATE/instances/boxen-egress" ]] && echo yes || echo no)"
 assert_eq "--egress off has no build state" "" "$(cfg obox user.boxen.egress.build)"
 assert_contains "an off launch from a template clears its old proxy settings" "rm -f /etc/apt/apt.conf.d/95boxen-proxy" "$(cat "$FAKE_INCUS_STATE/exec.log")"
@@ -179,7 +179,7 @@ source "$SCRIPT_DIR/boxen.egress"
 for name in revoke_build_sudo restore_tailscale_state cleanup_on_exit; do
   eval "$(awk -v name="$name" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$SCRIPT_DIR/boxen.init")"
 done
-CONTAINER_NAME=failed HOST_USER=dev BUILD_SUDO_GRANTED=0 TS_STATE_BACKUP=""
+CONTAINER_NAME=failed CREATED_INSTANCE=1 HOST_USER=dev BUILD_SUDO_GRANTED=0 TS_STATE_BACKUP=""
 trap cleanup_on_exit EXIT
 [[ "${2:-}" != owned ]] || boxen_lock
 exit 1

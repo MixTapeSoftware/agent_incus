@@ -41,7 +41,7 @@ extract_fn() {
   extract_fn revoke_build_sudo
   extract_fn restore_tailscale_state
   extract_fn cleanup_on_exit
-  echo 'CONTAINER_NAME=box; HOST_USER=dev; BUILD_SUDO_GRANTED="${GRANTED:-1}"; TS_STATE_BACKUP=""'
+  echo 'CONTAINER_NAME=box; CREATED_INSTANCE="${CREATED:-1}"; HOST_USER=dev; BUILD_SUDO_GRANTED="${GRANTED:-1}"; TS_STATE_BACKUP=""'
   grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/boxen.init" || true
   echo 'eval "$BODY"'
 } > "$SANDBOX/harness.sh"
@@ -51,7 +51,7 @@ assert_eq "harness found the exit trap and three signal traps" \
 fresh_box() {
   export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
   mkdir -p "$FAKE_INCUS_STATE"
-  unset FAKE_INCUS_FAIL_EXEC FAKE_INCUS_FAIL_CALL GRANTED
+  unset FAKE_INCUS_FAIL_EXEC FAKE_INCUS_FAIL_CALL GRANTED CREATED
   incus launch images:ubuntu/24.04 box
 }
 # run <body> — stdin is whatever the caller provides.
@@ -85,6 +85,13 @@ assert_eq "answer n: container is kept"     "yes" "$(exists)"
 fresh_box
 run 'false' <<< ""
 assert_eq "answer Enter: container is deleted" "no" "$(exists)"
+
+# Another run's container, under the name this run lost a race for.
+fresh_box
+export CREATED=0
+run 'false' <<< ""
+assert_eq "not created by this run: never offered for deletion" "yes" "$(exists)"
+assert_eq "not created by this run: nothing to revoke" "0" "$(revoked)"
 
 fresh_box
 export GRANTED=0

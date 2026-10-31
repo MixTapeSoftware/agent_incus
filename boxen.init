@@ -173,7 +173,7 @@ cleanup_on_exit() {
   local rc=$? reply="" egress=""
   trap - EXIT INT TERM HUP
   set +e
-  if [[ -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
+  if [[ "${CREATED_INSTANCE:-0}" == "1" && -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
     # Before the prompt: the container may be kept, or the prompt never answered.
     revoke_build_sudo || \
       warn "Could not revoke build-time sudo in '$CONTAINER_NAME'. Delete it: incus delete --force $CONTAINER_NAME"
@@ -217,6 +217,9 @@ WORKSPACE_PATH="$PWD"
 CONTAINER_WORKSPACE="/workspace"
 BASE_IMAGE="images:ubuntu/24.04"
 CONTAINER_NAME=""
+# Set once this run has created the instance: a run that loses a race for a
+# name must never offer to delete the container that won it.
+CREATED_INSTANCE=0
 PROJECT=""
 EXACT_NAME=""
 HANDLE=""
@@ -1203,20 +1206,35 @@ fi
 # ---------------------------------------------------------------------------
 # Create container
 # ---------------------------------------------------------------------------
+create_instance() {
+  if [[ "$IS_VM" == "1" ]]; then
+    # Naming any profile replaces the implicit default, so name it too.
+    incus init "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
+      ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
+      -c limits.memory="$VM_MEMORY" \
+      -c limits.cpu="$VM_CPUS" \
+      -d root,size="$VM_DISK"
+  else
+    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
+  fi
+}
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
-# Under an allowlist it's created stopped, so bxn decides when it first runs.
-LAUNCH=launch
-[[ "$LOCKED_BUILD" == "1" ]] && LAUNCH=init
-if [[ "$IS_VM" == "1" ]]; then
-  # Naming any profile replaces the implicit default, so name it too.
-  incus "$LAUNCH" "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
-    ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
-    -c limits.memory="$VM_MEMORY" \
-    -c limits.cpu="$VM_CPUS" \
-    -d root,size="$VM_DISK"
-else
-  incus "$LAUNCH" "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
-fi
+# Created, then started, so a failure to create is told apart from a failure
+# to start. Another bxn may take a generated name after names_next chose it:
+# that container is theirs, so take the next number instead.
+_create_tries=0
+until create_instance; do
+  if [[ -n "$HANDLE" ]] && (( ++_create_tries < 5 )) && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
+    CONTAINER_NAME="$(names_next "$HANDLE-$AGENT_TOKEN-$PROJECT")"
+    log "That name was just taken; creating $CONTAINER_NAME instead"
+    continue
+  fi
+  error "Could not create $CONTAINER_NAME"
+done
+unset _create_tries
+CREATED_INSTANCE=1
+# Under an allowlist it stays stopped, so bxn decides when it first runs.
+[[ "$LOCKED_BUILD" == "1" ]] || incus start "$CONTAINER_NAME"
 incus config set "$CONTAINER_NAME" user.managed-by=boxen user.boxen=1 "user.boxen.agent=$AGENT_TOKEN"
 # Commands find a container from its project by these (boxen.names).
 if [[ -n "$HANDLE" ]]; then
