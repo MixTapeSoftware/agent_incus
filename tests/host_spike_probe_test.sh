@@ -10,7 +10,7 @@ extract_fn() {
 mkdir "$TMP/bin"
 printf '#!/bin/sh\nexit 1\n' > "$TMP/bin/incus"
 chmod +x "$TMP/bin/incus"
-ln -s /bin/true "$TMP/bin/python3"
+for t in /usr/bin/true /bin/true; do [[ -x "$t" ]] && { ln -s "$t" "$TMP/bin/python3"; break; }; done
 if PATH="$TMP/bin" /bin/bash "$ROOT/tests/host/egress_spike.sh" >"$TMP/preflight.out" 2>&1; then
   echo 'FAIL missing ss must stop the host spike'; exit 1
 fi
