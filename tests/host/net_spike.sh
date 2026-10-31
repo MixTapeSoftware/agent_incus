@@ -179,7 +179,7 @@ host_connects() { timeout 7 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1 && echo ye
 # Report capture errors separately: they must never count as a filtered packet.
 sees_syn() {
   local source="$1" address="$2" capture_pid ready=0 rc=0 attempt
-  incus exec "$P" -- timeout 8 tcpdump -l -n -i eth0 -c 1 \
+  incus exec "$P" -- env LC_ALL=C timeout 8 tcpdump -l -n -i eth0 -c 1 \
     "src host $address and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" \
     >"$TMP/syn.out" 2>"$TMP/syn.err" &
   capture_pid=$!
@@ -193,9 +193,13 @@ sees_syn() {
   fi
   wait "$capture_pid" || rc=$?
   if [[ "$ready" != 1 ]]; then echo error; return; fi
+  # BusyBox timeout preserves tcpdump's exit status (often 0 after TERM),
+  # while GNU timeout returns 124. Inspect capture evidence in either case.
   case "$rc" in
-    0) echo yes ;;
-    124) echo no ;;
+    0|124|143)
+      if [[ -s "$TMP/syn.out" ]]; then echo yes
+      elif grep -q '^0 packets captured$' "$TMP/syn.err"; then echo no
+      else echo error; fi ;;
     *) echo error ;;
   esac
 }

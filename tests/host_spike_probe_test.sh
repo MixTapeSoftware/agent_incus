@@ -36,10 +36,17 @@ A=client
 A_IP=10.230.0.10
 P_IP=10.230.0.20
 PROBE_RESULT=0
+PROBE_CAPTURED=1
 incus() {
-  [[ "$*" == "exec receiver -- timeout 8 tcpdump -l -n -i eth0 -c 1 src host $A_IP and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" ]]
+  [[ "$*" == "exec receiver -- env LC_ALL=C timeout 8 tcpdump -l -n -i eth0 -c 1 src host $A_IP and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" ]]
   echo 'listening on eth0, link-type EN10MB (Ethernet)' >&2
   sleep 0.1
+  if [[ "$PROBE_CAPTURED" == 1 ]]; then
+    echo 'IP 10.230.0.10.40000 > 10.230.0.20.443: Flags [S]'
+    echo '1 packet captured' >&2
+  else
+    echo '0 packets captured' >&2
+  fi
   return "$PROBE_RESULT"
 }
 connects() {
@@ -51,12 +58,20 @@ eval "$(extract_fn sees_syn "$ROOT/tests/host/net_spike.sh")"
 [[ "$(sees_syn "$A" "$A_IP")" == yes ]]
 [[ "$(cat "$TMP/sender")" == "$A $P_IP 443 $A_IP" ]]
 echo 'ok receiver sees a SYN even when the handshake fails'
-PROBE_RESULT=124
-[[ "$(sees_syn "$A" "$A_IP")" == no ]]
-echo 'ok a ready capture timing out reports no packet'
+PROBE_CAPTURED=0
+for PROBE_RESULT in 0 124 143; do
+  [[ "$(sees_syn "$A" "$A_IP")" == no ]]
+done
+echo 'ok BusyBox and GNU timeout results report no packet from capture evidence'
 PROBE_RESULT=1
 [[ "$(sees_syn "$A" "$A_IP")" == error ]]
 echo 'ok capture failures cannot pass as filtered traffic'
 incus() { return 1; }
 [[ "$(sees_syn "$A" "$A_IP")" == error ]]
 echo 'ok a capture that never becomes ready reports an error'
+incus() {
+  echo 'listening on eth0, link-type EN10MB (Ethernet)' >&2
+  sleep 0.1
+}
+[[ "$(sees_syn "$A" "$A_IP")" == error ]]
+echo 'ok an unexplained empty capture is not accepted as filtered traffic'
