@@ -309,7 +309,7 @@ connects_settled() {
   local n
   for n in 1 2 3 4 5; do
     if [[ "$(connects "$@")" == yes ]]; then
-      [[ "$n" -gt 1 ]] && echo "INFO $1 reached $2:$3 on attempt $n, 2 s apart" >&2
+      [[ "$n" -gt 1 ]] && echo "INFO $1 reached $2:$3 on attempt $n" >&2
       echo yes; return
     fi
     sleep 2
