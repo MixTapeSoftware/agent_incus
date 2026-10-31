@@ -54,8 +54,9 @@ Commands:
   -ua, update-all                Update packages in all agent-incus containers
   status [--once]                Live view of all instances: state, CPU, memory, disk,
                                  IPv4; j/k or arrows select, space starts/stops,
-                                 tab or enter shows details; h/l switch to an
-                                 allowlisted container's Network and Rules tabs
+                                 D deletes (asks first), tab or enter shows
+                                 details; h/l switch to an allowlisted
+                                 container's Network and Rules tabs
   new-plugin <slug> [opts]       Generate a new plugin file from a template
   -h, help                       Show this help
 
@@ -489,9 +490,10 @@ cmd_status() {
 
 # ---------------------------------------------------------------------------
 # Interactive status: redraws about once a second. j/k or the arrow keys
-# move the highlighted row, space starts or stops it, q quits. Start and
-# stop run in the background so the view keeps refreshing; each job writes
-# its exit code to <log>.rc when it finishes.
+# move the highlighted row, space starts or stops it, D deletes it after a
+# y/n, q quits. Start, stop and delete run in the background so the view
+# keeps refreshing; each job writes its exit code to <log>.rc when it
+# finishes.
 #
 # A terminal at least STATUS_WIDE_COLS wide shows the instances on the left
 # and the selected one's details on the right; tab moves the keys between
@@ -613,6 +615,24 @@ status_tab_rows() {
   fi
 }
 
+# Runs a start, stop or delete in the background; the loop reports it when
+# <log>.rc appears.
+# Usage: status_job <verb> <name> <command...>
+status_job() {
+  local verb="$1" name="$2"
+  shift 2
+  jobs=$((jobs + 1))
+  log_file="$STATUS_TMP/$jobs"
+  (
+    trap - EXIT INT TERM
+    rc=0
+    "$@" </dev/null >"$log_file" 2>&1 || rc=$?
+    echo "$rc" >"$log_file.tmp"
+    mv "$log_file.tmp" "$log_file.rc"
+  ) &
+  pending+="$verb"$'\t'"$name"$'\t'"$log_file"$'\n'
+}
+
 # Starts an egress change as a background job, like start and stop.
 # Usage: status_egress_job <description> <incs egress args...>
 status_egress_job() {
@@ -638,7 +658,7 @@ status_interactive() {
   local names=() states=() count=0 sel=0 sel_name="" hl i
   local pending="" still msg="" fetch=true last=-1 jobs=0
   local key rc rest line out table tagged keys name state verb log_file p_verb p_name p_log err
-  local egs=() trans=() eg tr tab=info tabs_n=1 rsel=0 tab_rows=() tab_for="" tab_at=0 ask="" ask_args=() ask_desc="" r
+  local egs=() trans=() mgds=() roles=() eg tr mgd role tab=info tabs_n=1 rsel=0 tab_rows=() tab_for="" tab_at=0 ask="" ask_args=() ask_desc="" r
   local frame=() size term_rows term_cols msg_lines wide focus=list top=0 rtop=0
   if [[ -n "${NO_COLOR:-}" ]]; then color=false; fi
 
@@ -671,10 +691,11 @@ status_interactive() {
           if [[ "$(cat "$p_log.rc")" == 0 ]]; then line="${err#\[+\] }"; else line="Failed: $(head -n 1 "$p_log.desc"): ${err#\[ERROR\] }"; fi
           msg=$(status_note "$msg" "$line")
         elif [[ "$(cat "$p_log.rc")" == 0 ]]; then
-          if [[ "$p_verb" == stop ]]; then line="Stopped $p_name"; else line="Started $p_name"; fi
+          case "$p_verb" in stop) line="Stopped $p_name" ;; delete) line="Deleted $p_name" ;; *) line="Started $p_name" ;; esac
           msg=$(status_note "$msg" "$line")
         else
-          err=$(head -n 1 "$p_log")
+          err=$(sed -e $'s/\033\\[[0-9;]*m//g' -e '/^$/d' "$p_log" | grep -m 1 -i 'error' || head -n 1 "$p_log")
+          err=${err#\[ERROR\] }
           msg=$(status_note "$msg" "Failed to $p_verb $p_name: ${err#Error: }")
         fi
         fetch=true
@@ -692,15 +713,21 @@ status_interactive() {
         states=()
         egs=()
         trans=()
-        while IFS=$'\t' read -r name state eg tr; do
+        mgds=()
+        roles=()
+        while IFS=$'\t' read -r name state eg tr mgd role; do
           [[ -n "$name" ]] || continue
           names+=("$name")
           states+=("$state")
           egs+=("$eg")
           trans+=("$tr")
+          mgds+=("$mgd")
+          roles+=("$role")
         done <<<"$(jq -r "$STATUS_ORDER_DEFS"' ordered[] | [.name, .status,
           (.expanded_config["user.incs.egress.container"] // "-" | if . == "" then "-" else . end),
-          (.expanded_config["user.incs.egress.transition"] // "none")] | @tsv' <<<"$json")"
+          (.expanded_config["user.incs.egress.transition"] // "none"),
+          (if managed then "yes" else "no" end),
+          (.expanded_config["user.incs.role"] // "-" | if . == "" then "-" else . end)] | @tsv' <<<"$json")"
         count=${#names[@]}
         # Keep the highlight on the same instance when the list changes.
         for ((i = 0; i < count; i++)); do
@@ -733,6 +760,10 @@ status_interactive() {
       ask=""
       msg=$(status_note "$msg" "Host and scope do not fit; use incs egress allow.")
     fi
+    if [[ "$ask" == delete ]] && ((${#ask_desc} >= term_cols)); then
+      ask=""
+      msg=$(status_note "$msg" "The question does not fit; widen the terminal or use incs delete.")
+    fi
     wide=false
     if ((term_cols >= STATUS_WIDE_COLS)); then wide=true; fi
     if ((count == 0)); then focus=list; fi
@@ -742,7 +773,7 @@ status_interactive() {
     if [[ $wide == false && $focus == list ]]; then
       table=$(status_render "$json" "$prev" "$at" "$host" "$color" "$hl") || table="Failed to render status"
       status_frame_table "$table"
-      keys="↑/↓ or j/k select · enter details · space start/stop · q quit"
+      keys="↑/↓ or j/k select · enter details · space start/stop · D delete · q quit"
     else
       tabs_n=1
       if ((count > 0)) && [[ "${egs[$sel]}" != "-" ]]; then tabs_n=3; fi
@@ -780,19 +811,20 @@ status_interactive() {
       fi
       status_frame_panels "$tagged" "$wide"
       if [[ $focus == list ]]; then
-        keys="↑/↓ or j/k select · tab details · space start/stop · q quit"
+        keys="↑/↓ or j/k select · tab details · space start/stop · D delete · q quit"
       elif [[ $tab == network ]]; then
         keys="j/k select · a allow here · A allow everywhere · m mode · h/l tabs · tab list · q quit"
       elif [[ $tab == rules ]]; then
         keys="j/k select · d remove · m mode · h/l tabs · tab list · q quit"
       elif [[ $wide == true ]]; then
-        keys="↑/↓ or j/k scroll · tab list · space start/stop · q quit"
+        keys="↑/↓ or j/k scroll · tab list · space start/stop · D delete · q quit"
       else
-        keys="↑/↓ or j/k scroll · esc back · space start/stop · q quit"
+        keys="↑/↓ or j/k scroll · esc back · space start/stop · D delete · q quit"
       fi
       if ((tabs_n > 1)) && [[ $focus == info && $tab == info ]]; then keys="${keys/ · q quit/ · h/l tabs · m mode · q quit}"; fi
-      if [[ -n "$ask" ]]; then keys="$ask_desc"; fi
     fi
+    # A question replaces the key help, in either layout.
+    if [[ -n "$ask" ]]; then keys="$ask_desc"; fi
     frame+=("" "$keys")
     if [[ -n "$msg" ]]; then
       while IFS= read -r line; do frame+=("$line"); done <<<"$msg"
@@ -824,7 +856,8 @@ status_interactive() {
       esac
     fi
     if [[ -n "$ask" && -n "$key" ]]; then
-      name=${names[$sel]}
+      # The list may be empty by now; a delete uses the name it asked about.
+      name=${names[$sel]:-}
       case "$ask" in
         confirm)
           if [[ "$key" == y || "$key" == Y ]]; then
@@ -836,6 +869,21 @@ status_interactive() {
               status_egress_job "${ask_args[@]}"
             else
               msg=$(status_note "$msg" "Host and scope do not fit; use incs egress allow.")
+            fi
+          else
+            msg=$(status_note "$msg" "Nothing changed")
+          fi
+          ;;
+        delete)
+          if [[ "$key" == y || "$key" == Y ]]; then
+            # As with allow: the whole question must still be visible.
+            size=$(stty size 2>/dev/null) || size=""
+            term_cols=${size##* }
+            if [[ "$term_cols" =~ ^[0-9]+$ ]] && ((${#ask_desc} < term_cols)); then
+              status_job delete "${ask_args[0]}" "$SCRIPT_DIR/incs" delete "${ask_args[0]}"
+              msg=$(status_note "$msg" "Deleting ${ask_args[0]}…")
+            else
+              msg=$(status_note "$msg" "The question does not fit; widen the terminal or use incs delete.")
             fi
           else
             msg=$(status_note "$msg" "Nothing changed")
@@ -929,6 +977,23 @@ status_interactive() {
           tab=info
         fi
         ;;
+      D)
+        ((count > 0)) || continue
+        [[ $focus == list || $tab == info ]] || continue
+        name=${names[$sel]}
+        if [[ "$pending" == *$'\t'"$name"$'\t'* ]]; then
+          msg=$(status_note "$msg" "$name is busy")
+        elif [[ "${mgds[$sel]}" != yes ]]; then
+          msg=$(status_note "$msg" "$name wasn't made by incs; delete it with incus delete")
+        elif [[ "${roles[$sel]}" == egress ]]; then
+          msg=$(status_note "$msg" "$name runs other containers' proxies; it isn't deleted from here")
+        else
+          # The name is fixed now: the list can reorder before the answer.
+          ask=delete
+          ask_desc="Delete $name and everything in it? This can't be undone. y/n"
+          ask_args=("$name")
+        fi
+        ;;
       " ")
         ((count > 0)) || continue
         name=${names[$sel]}
@@ -941,16 +1006,7 @@ status_interactive() {
           msg=$(status_note "$msg" "$name is partway through turning its allowlist on; finish it: incs egress refresh $name")
           continue
         fi
-        jobs=$((jobs + 1))
-        log_file="$STATUS_TMP/$jobs"
-        (
-          trap - EXIT INT TERM
-          rc=0
-          incus "$verb" "$name" </dev/null >"$log_file" 2>&1 || rc=$?
-          echo "$rc" >"$log_file.tmp"
-          mv "$log_file.tmp" "$log_file.rc"
-        ) &
-        pending+="$verb"$'\t'"$name"$'\t'"$log_file"$'\n'
+        status_job "$verb" "$name" incus "$verb" "$name"
         if [[ $verb == stop ]]; then line="Stopping $name…"; else line="Starting $name…"; fi
         msg=$(status_note "$msg" "$line")
         ;;

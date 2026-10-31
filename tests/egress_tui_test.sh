@@ -2,8 +2,8 @@
 # tests/egress_tui_test.sh
 # The status view's allowlist parts: the lock mark in the list, the egress
 # rows in Info, the Network and Rules tabs, the allow, remove and mode keys
-# with their confirmations, and the start key refusing a container behind
-# the boot barrier. Drives the live view in a pseudo-terminal against a
+# with their confirmations, the start key refusing a container behind the
+# boot barrier, and the delete key with its confirmation. Drives the live view in a pseudo-terminal against a
 # stubbed incus and a stubbed `incs egress`.
 # Run: bash tests/egress_tui_test.sh
 
@@ -36,6 +36,7 @@ case "$1" in
   query) echo '{"cpu":{"total":4},"memory":{"total":17179869184}}' ;;
   list) cat "$STUB/instances.json" ;;
   start|stop) echo "$1 $2" >> "$STUB/calls" ;;
+  delete) echo "$*" >> "$STUB/calls" ;;
   *) exit 1 ;;
 esac
 EOF
@@ -75,7 +76,11 @@ cat > "$S/instances.json" <<'EOF'
     "user.incs.egress":"enforce","user.incs.egress.transition":"enforce:10.201.0.30"},
   "state":{"pid":0,"cpu":{"usage":0},"memory":{"usage":0},"disk":{},"network":null}},
  {"name":"plain","status":"Running","type":"container","expanded_config":{"user.managed-by":"agent-incus"},
-  "state":{"pid":102,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}}
+  "state":{"pid":102,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}},
+ {"name":"incs-egress","status":"Running","type":"container","expanded_config":{"user.managed-by":"agent-incus","user.incs.role":"egress"},
+  "state":{"pid":103,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}},
+ {"name":"other","status":"Running","type":"container","expanded_config":{},
+  "state":{"pid":104,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}}
 ]
 EOF
 
@@ -182,6 +187,33 @@ assert_eq "space won't start a container behind the barrier" "" "$(cat "$S/calls
 assert_contains "and says how to finish" "finish it: incs egress refresh stuck" "$(last_frame "$out" | plain)"
 out=$(keys j j j '\t' l | tui) || true
 assert_eq "a container with no allowlist has only Info" "" "$(last_frame "$out" | plain | grep -o 'DECISION' || true)"
+
+echo "delete"
+out=$(keys | tui) || true
+assert_contains "the key help offers delete" "D delete" "$(last_frame "$out" | plain)"
+out=$(keys j j j D | tui) || true
+assert_contains "D asks first, naming the container" "Delete plain and everything in it? This can't be undone. y/n" "$(plain <<<"$out")"
+out=$(keys j j j D n | tui) || true
+assert_eq "n deletes nothing" "" "$(cat "$S/calls" 2>/dev/null)"
+assert_contains "and says so" "Nothing changed" "$(last_frame "$out" | plain)"
+out=$(keys j j j d | tui) || true
+assert_eq "a lowercase d in the list deletes nothing" "" "$(cat "$S/calls" 2>/dev/null)"
+out=$(keys j j j D y | tui) || true
+assert_eq "y deletes it through incs delete" "delete --force plain" "$(cat "$S/calls" 2>/dev/null)"
+assert_contains "the result is shown" "Deleted plain" "$(last_frame "$out" | plain)"
+out=$(keys j j j j D y | tui) || true
+assert_eq "the egress container isn't deleted from here" "" "$(cat "$S/calls" 2>/dev/null)"
+assert_contains "and says why" "runs other containers' proxies" "$(last_frame "$out" | plain)"
+out=$(keys j j j j j D y | tui) || true
+assert_eq "an instance incs didn't make isn't deleted" "" "$(cat "$S/calls" 2>/dev/null)"
+assert_contains "and says so" "wasn't made by incs" "$(last_frame "$out" | plain)"
+# The list empties while the question is open: answering mustn't end the view.
+cp "$S/instances.json" "$S/instances.saved"
+out=$( { sleep 1.5; for k in j j j D; do printf '%s' "$k"; sleep 0.6; done
+         echo '[]' > "$S/instances.json"; sleep 1.5; printf y; sleep 1; printf q; sleep 0.4; printf q; sleep 0.5; } | tui ) || true
+mv "$S/instances.saved" "$S/instances.json"
+assert_eq "an answer after the list empties doesn't crash the view" "no" "$([[ "$out" == *"unbound variable"* ]] && echo yes || echo no)"
+assert_eq "and deletes the container it asked about" "delete --force plain" "$(cat "$S/calls" 2>/dev/null)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
