@@ -93,13 +93,14 @@ net_version_ge() {
 net_preflight() {
   local ver info fw why=""
   ver="$(incus version 2>/dev/null | awk -F': *' '/^Server version/ {print $2}')"
-  info="$(incus info 2>/dev/null)" || info=""
-  fw="$(awk -F': *' '$1 ~ /^ +firewall$/ {print $2; exit}' <<< "$info")"
+  # The server's own record: `incus info` stopped listing API extensions in 7.6.
+  info="$(incus query /1.0 2>/dev/null)" || info=""
+  fw="$(grep -o '"firewall": *"[^"]*"' <<< "$info" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')" || fw=""
   if [[ -z "$ver" ]] || ! net_version_ge "$ver" "$INCS_NET_MIN_INCUS"; then
     why="Incus ${ver:-(unknown version)} is older than $INCS_NET_MIN_INCUS"
   elif [[ "$fw" != "nftables" ]]; then
     why="Incus's firewall driver is ${fw:-unknown}, not nftables"
-  elif ! grep -q -- '- network_bridge_acl_devices$' <<< "$info"; then
+  elif ! grep -q '"network_bridge_acl_devices"' <<< "$info"; then
     why="Incus lacks the network_bridge_acl_devices API extension"
   fi
   [[ -z "$why" ]] && return 0

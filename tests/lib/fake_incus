@@ -31,8 +31,9 @@
 #   FAKE_INCUS_VERSION     what `incus version` reports (default 6.19)
 #   FAKE_EGRESS_CTL        a stand-in run for `exec <egress> -- /usr/local/sbin/incs-egress-ctl ...`
 #   FAKE_INCUS_IMAGE_TYPE  the Type `incus image info` reports (default container)
-#   FAKE_INCUS_FIREWALL    the firewall driver `incus info` reports (default nftables)
-#   FAKE_INCUS_EXTENSIONS  API extensions `incus info` lists
+#   FAKE_INCUS_FIREWALL    the firewall driver `incus query /1.0` reports (default
+#                          nftables; none leaves it out)
+#   FAKE_INCUS_EXTENSIONS  API extensions `incus query /1.0` lists
 #                          (default: network_bridge_acl_devices network_address_set)
 set -uo pipefail
 
@@ -76,11 +77,30 @@ create_instance() {
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
+  query)
+    # The server record, as Incus 7.6 prints it.
+    [[ "${1:-}" == "/1.0" ]] || die "not found"
+    echo "{"
+    echo '  "api_extensions": ['
+    first=1
+    for e in ${FAKE_INCUS_EXTENSIONS-network_bridge_acl_devices network_address_set}; do
+      [[ "$first" == 1 ]] || echo ","
+      printf '    "%s"' "$e"; first=0
+    done
+    echo ""
+    echo "  ],"
+    echo '  "environment": {'
+    printf '    "server_version": "%s"' "${FAKE_INCUS_VERSION:-6.19}"
+    # none: a server that doesn't name its firewall.
+    [[ "${FAKE_INCUS_FIREWALL:-}" == none ]] || printf ',\n    "firewall": "%s"' "${FAKE_INCUS_FIREWALL:-nftables}"
+    echo ""
+    echo "  }"
+    echo "}"
+    ;;
+
   info)
     if [[ $# -eq 0 ]]; then
-      # Server info: the API extensions, then the environment.
-      echo "api_extensions:"
-      for e in ${FAKE_INCUS_EXTENSIONS-network_bridge_acl_devices network_address_set}; do echo "- $e"; done
+      # Server info; since 7.6 it doesn't list the API extensions.
       echo "environment:"
       echo "  firewall: ${FAKE_INCUS_FIREWALL:-nftables}"
       echo "  server_version: \"${FAKE_INCUS_VERSION:-6.19}\""
