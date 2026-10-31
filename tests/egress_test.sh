@@ -100,6 +100,11 @@ assert_contains "the user's additions" "extra.example" "$hosts"
 assert_contains "the plugins' additions" "*.tailscale.com" "$hosts"
 assert_contains "and the agent's own" "docs.rs" "$hosts"
 assert_eq "hosts are sorted and unique" "$(printf '%s\n' "$hosts" | LC_ALL=C sort -u)" "$hosts"
+# incs's own log writes to stdout; the first-use notice mustn't join the list.
+rm -f "$INCS_CONFIG_DIR/egress-approved-baseline.txt"
+hosts="$(bash -c 'set -euo pipefail; log() { echo "[+] $1"; }; error() { exit 1; }
+  SCRIPT_DIR="$1"; source "$1/incus.net"; source "$1/incus.egress"; egress_hosts box' _ "$REPO_ROOT" 2>/dev/null)"
+assert_eq "the first-use notice stays out of the host list" "" "$(grep -v '^[*a-z0-9.-]*$' <<< "$hosts" || true)"
 id1="$(eg 'egress_hosts box | egress_policy_id enforce')"
 assert_eq "the policy id is stable" "$id1" "$(eg 'egress_hosts box | egress_policy_id enforce')"
 assert_eq "the policy id is 16 hex digits" "yes" "$([[ "$id1" =~ ^[0-9a-f]{16}$ ]] && echo yes || echo no)"
