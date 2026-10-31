@@ -1,0 +1,7 @@
+[Unit]
+Description=incs proxy prototype: generation acks
+
+[Socket]
+ListenStream=/run/incs-proto-ack.sock
+Accept=yes
+SocketMode=0666

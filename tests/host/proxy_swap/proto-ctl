@@ -1,0 +1,109 @@
+#!/bin/bash
+# Prototype of item 8's generation swap for one agent ("a").
+#   proto-ctl gen N MODE HOST...   write generation N's files
+#   proto-ctl check N              probe a check copy of N on a private port
+#   proto-ctl widen N              add N without ending older generations
+#   proto-ctl tighten N            end every generation, then start N
+#   proto-ctl status
+set -uo pipefail
+AGENT=a; MAX_DRAINING=6
+PC="$(dirname "$0")/pc.py"
+unit() { echo "incs-proto-$AGENT@$1.service"; }
+gens_active() {
+  systemctl list-units --plain --no-legend --state=active,activating,deactivating "incs-proto-$AGENT@*.service" \
+    | awk '{print $1}' | sed -E "s/^incs-proto-$AGENT@([0-9]+)\.service$/\1/" | sort -n
+}
+current() { cat "/etc/incs-proto/$AGENT/current" 2>/dev/null || true; }
+die() { echo "proto-ctl: $*" >&2; exit 1; }
+
+cmd_gen() {
+  local n="$1" mode="$2"; shift 2
+  local d="/etc/incs-proto/$AGENT/$n" action="$mode"
+  [[ "$mode" == off ]] && action=open
+  sudo install -d -m755 "$d"
+  { echo "version: v1"; echo "services: []"; echo "default:"; echo "  project: incs"; echo "  action: $action"
+    if [[ "$mode" != off ]]; then echo "  allowed_domains:"; for h in "$@"; do echo "    - $h"; done; fi
+  } | sudo tee "$d/acl.yaml" >/dev/null
+  printf 'allow_missing_role: true\nallow_ranges: ["127.0.0.0/8"]\nexit_timeout: 120s\n' | sudo tee "$d/config.yaml" >/dev/null
+  echo "$mode" | sudo tee "$d/mode" >/dev/null
+  sudo chmod 644 "$d"/*
+}
+
+# The decision record for the probe, from one unit's journal since a cursor.
+probe_record() {
+  sudo journalctl -u "$1" --after-cursor="$2" -o cat --no-pager 2>/dev/null \
+    | grep 'CANONICAL-PROXY-DECISION' | grep 'incs-probe.invalid' | tail -1
+}
+journal_cursor() { sudo journalctl -n 0 --show-cursor -o cat --no-pager 2>/dev/null | sed -n 's/^-- cursor: //p'; }
+
+# Readiness: the check copy answers, and the probe gets the right decision for
+# the mode. A failed request alone doesn't count.
+cmd_check() {
+  local n="$1" u="incs-proto-$AGENT-check@$1.service" mode cur rec ok=1
+  mode="$(cat "/etc/incs-proto/$AGENT/$n/mode" 2>/dev/null || echo enforce)"
+  cur="$(journal_cursor)"
+  sudo systemctl start "$u" || { echo "check: $u didn't start"; sudo journalctl -u "$u" --after-cursor="$cur" -o cat --no-pager | tail -3; return 1; }
+  for _ in $(seq 1 50); do ss -ltn | grep -q '127.0.0.1:4751 ' && break; sleep 0.1; done
+  PROXY_PORT=4751 python3 -I "$PC" once incs-probe.invalid >/dev/null
+  sleep 0.3
+  rec="$(probe_record "$u" "$cur")"
+  sudo systemctl stop "$u"
+  case "$mode" in
+    enforce) grep -q '"allow":false' <<<"$rec" && grep -q '"decision_reason":"default rule policy used"' <<<"$rec" || ok=0 ;;
+    report)  grep -q '"allow":true' <<<"$rec" && grep -q '"enforce_would_deny":true' <<<"$rec" || ok=0 ;;
+    off)     grep -q '"allow":true' <<<"$rec" || ok=0 ;;
+  esac
+  [[ -n "$rec" ]] || ok=0
+  if [[ "$ok" == 1 ]]; then echo "check $n ($mode): ok"; else echo "check $n ($mode): FAILED; record: ${rec:-none}"; return 1; fi
+}
+
+# The generation's ack, matched to its main PID, means it's accepting.
+wait_ack() {
+  local u="$1" cur="$2" pid
+  for _ in $(seq 1 50); do
+    pid="$(systemctl show -p MainPID --value "$u")"
+    if [[ "$pid" != 0 ]] && sudo journalctl -u 'incs-proto-ack@*' --after-cursor="$cur" -o cat --no-pager 2>/dev/null | grep -q "pid: $pid%0A"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+cmd_widen() {
+  local n="$1" old draining cur
+  old="$(gens_active | grep -vx "$n" || true)"
+  draining="$(gens_active | grep -vx "$(current)" | grep -vx "$n" | grep -c . || true)"
+  (( draining < MAX_DRAINING )) || die "widen $n: $draining generations still draining (limit $MAX_DRAINING); not cutting connections"
+  cmd_check "$n" || die "widen $n: check failed; nothing changed"
+  cur="$(journal_cursor)"
+  sudo systemctl start "$(unit "$n")" || die "widen $n: didn't start; nothing changed"
+  wait_ack "$(unit "$n")" "$cur" || { sudo systemctl stop "$(unit "$n")"; die "widen $n: no ack; stopped it; nothing changed"; }
+  # Only now do older generations stop taking new connections.
+  for g in $old; do sudo systemctl kill --signal=SIGTERM "$(unit "$g")"; done
+  echo "$n" | sudo tee "/etc/incs-proto/$AGENT/current" >/dev/null
+  echo "widen $n: ready; draining: $(echo $old)"
+}
+
+cmd_tighten() {
+  local n="$1" cur
+  local old g
+  cmd_check "$n" || die "tighten $n: check failed; nothing changed"
+  old="$(gens_active | grep -vx "$n" || true)"
+  # Old generations stop accepting at once; new connections wait in the
+  # socket's queue for the new generation instead of reaching an old policy.
+  for g in $old; do sudo systemctl kill --signal=SIGTERM "$(unit "$g")"; done
+  cur="$(journal_cursor)"
+  sudo systemctl start "$(unit "$n")" || die "tighten $n: didn't start; NO LISTENER"
+  wait_ack "$(unit "$n")" "$cur" || die "tighten $n: no ack; NO LISTENER"
+  # Then end their open connections: stop forces a kill after TimeoutStopSec.
+  for g in $old; do sudo systemctl stop "$(unit "$g")" 2>/dev/null & done; wait
+  [[ -z "$(gens_active | grep -vx "$n")" ]] || die "tighten $n: old generations still running: $(gens_active | grep -vx "$n" | tr '\n' ' ')"
+  echo "$n" | sudo tee "/etc/incs-proto/$AGENT/current" >/dev/null
+  echo "tighten $n: ready; no older generation left"
+}
+
+cmd_status() { echo "current: $(current); active: $(gens_active | tr '\n' ' ')"; }
+
+c="$1"; shift
+"cmd_$c" "$@"

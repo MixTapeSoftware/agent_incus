@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# tests/lib/fake_egress_ctl
+# Stands in for egress/incs-egress-ctl inside a fake egress container, so
+# host-side tests can check what incs asked for. tests/host/egress_ctl_test.sh
+# runs the real one.
+#
+# State under <dir> (fake_incus passes $FAKE_INCUS_STATE/ctl/<container>):
+#   calls.log               one line per call
+#   <agent>/port            from add
+#   <agent>/gens/<n>/{mode,policy,hosts}
+#   <agent>/current         generation number, or none
+# Knob: FAKE_EGRESS_CTL_FAIL, a regex; a call whose arguments match exits 1.
+set -uo pipefail
+d="$1"; shift
+mkdir -p "$d"
+echo "$*" >> "$d/calls.log"
+if [[ -n "${FAKE_EGRESS_CTL_FAIL:-}" && "$*" =~ $FAKE_EGRESS_CTL_FAIL ]]; then
+  echo "incs-egress-ctl: injected failure" >&2; exit 1
+fi
+cur() { cat "$d/$1/current" 2>/dev/null || echo none; }
+case "$1" in
+  setup) : ;;
+  add) mkdir -p "$d/$2/gens"; echo "$3" > "$d/$2/port"; [[ -f "$d/$2/current" ]] || echo none > "$d/$2/current" ;;
+  gen)
+    n=$(( $(ls "$d/$2/gens" | sort -n | tail -1 || echo 0) + 1 ))
+    mkdir -p "$d/$2/gens/$n"
+    echo "$3" > "$d/$2/gens/$n/mode"; echo "$4" > "$d/$2/gens/$n/policy"; cat > "$d/$2/gens/$n/hosts"
+    # As the real one: every line must be a hostname.
+    while IFS= read -r h; do
+      [[ -z "$h" || ( ${#h} -le 253 && "$h" =~ ^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ) ]] ||
+        { echo "incs-egress-ctl: bad hostname: $h" >&2; rm -rf "${d:?}/$2/gens/$n"; exit 1; }
+    done < "$d/$2/gens/$n/hosts"
+    echo "$n"
+    ;;
+  check) : ;;
+  widen|tighten) echo "$3" > "$d/$2/current" ;;
+  stop) echo none > "$d/$2/current" ;;
+  remove) rm -rf "${d:?}/$2" ;;
+  status)
+    c="$(cur "$2")"
+    if [[ "$c" == none ]]; then printf '%s\t%s\tnone\t-\t-\tno\t\n' "$2" "$(cat "$d/$2/port")"
+    else printf '%s\t%s\t%s\t%s\t%s\tyes\t%s\n' "$2" "$(cat "$d/$2/port")" "$c" "$(cat "$d/$2/gens/$c/policy")" "$(cat "$d/$2/gens/$c/mode")" "$c"; fi
+    ;;
+  hosts) c="$(cur "$2")"; [[ "$c" == none ]] || cat "$d/$2/gens/$c/hosts" ;;
+  # Decision records a test wrote to <agent>/log, as the real ctl prints them.
+  log) cat "$d/$2/log" 2>/dev/null || true ;;
+  *) echo "fake_egress_ctl: unsupported: $*" >&2; exit 1 ;;
+esac

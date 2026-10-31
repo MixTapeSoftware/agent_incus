@@ -1,0 +1,365 @@
+#!/usr/bin/env bash
+# tests/host/egress_spike.sh
+# Spike for the egress allowlist design
+# (docs/superpowers/specs/2026-10-27-egress-allowlist-design.md, Build gates).
+# It checks three things the design takes on faith, on a real Incus host:
+#
+#   1. A bridge with its DNS server turned off still hands out addresses, and
+#      neither answers nor advertises DNS.
+#   2. Whether a connection a container opened while open survives locking
+#      the container down, and then a restart. If it survives the restart,
+#      incs has to clear the host's connection tracking, or give the
+#      container a new IP.
+#   3. If it survives, whether a new IP on lock ends it: the old flow resent
+#      from the new IP, and from the old IP as root inside the container.
+#
+#   bash tests/host/egress_spike.sh              # about 2 minutes
+#   bash tests/host/egress_spike.sh --restart    # also restarts Incus (sudo) and re-checks DNS
+#
+# It creates only throwaway objects named incs-spike*, refuses to start if any
+# already exist, and deletes them all on exit. It also runs a small Python
+# listener on the host for the connection test. Needs python3 on the host.
+# If ufw is active, it adds narrow rules for its bridge with sudo and removes
+# them on exit.
+# Prints PASS/FAIL for what the design relies on and INFO for what it needs
+# to know. Paste the whole output back.
+
+set -uo pipefail
+
+RESTART=0
+[[ "${1:-}" == "--restart" ]] && RESTART=1
+
+NET=incs-spike1                 # a bridge name must be 15 characters or fewer
+PROFILE=incs-spike-egress
+X=incs-spike-x
+ACL_LOCK=incs-spike-lock
+IMAGE=images:alpine/3.24
+UDP_PORT=47990
+TCP_PORT=47991
+OLD_SPORT=40000                 # the source port of the flow opened while open
+NEW_SPORT=40001                 # a fresh flow, as a control
+
+PASS=0; FAIL=0
+pass() { PASS=$((PASS+1)); echo "PASS $1"; }
+fail() { FAIL=$((FAIL+1)); echo "FAIL $1"; }
+info() { echo "INFO $1"; }
+check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected: $2, got: $3)"; fi; }
+section() { echo ""; echo "== $1"; }
+
+TMP=""
+HOST_PY_PID=""
+FLOW_PIDS=""
+UFW_ADDED=0
+# ufw denies incoming and routed traffic by default, which drops DHCP on a new
+# bridge. These open only what the spike needs: DHCP, the two listener ports,
+# and forwarding out for the socat install. DNS (53) stays closed.
+ufw_rules() {
+  local verb="$1"
+  sudo ufw $verb allow in on "$NET" to any port 67 proto udp &&
+  sudo ufw $verb allow in on "$NET" to any port "$UDP_PORT" proto udp &&
+  sudo ufw $verb allow in on "$NET" to any port "$TCP_PORT" proto tcp &&
+  sudo ufw route $verb allow in on "$NET"
+}
+cleanup() {
+  echo ""; echo "== cleanup"
+  [[ "$UFW_ADDED" == "1" ]] && ufw_rules delete >/dev/null 2>&1
+  [[ -n "$HOST_PY_PID" ]] && kill "$HOST_PY_PID" 2>/dev/null
+  [[ -n "$FLOW_PIDS" ]] && kill $FLOW_PIDS 2>/dev/null
+  incus delete --force "$X" >/dev/null 2>&1
+  incus network acl delete "$ACL_LOCK" >/dev/null 2>&1
+  incus profile delete "$PROFILE" >/dev/null 2>&1
+  incus network delete "$NET" >/dev/null 2>&1
+  [[ -n "$TMP" ]] && rm -rf "$TMP"
+  echo "removed incs-spike objects"
+}
+
+# --- preflight -------------------------------------------------------------
+section "preflight"
+command -v incus >/dev/null || { echo "incus not found"; exit 1; }
+command -v python3 >/dev/null || { echo "python3 not found on the host"; exit 1; }
+command -v ss >/dev/null || { echo "ss not found on the host (install iproute2)"; exit 1; }
+incus info "$X" >/dev/null 2>&1 && { echo "Instance $X already exists; refusing to run."; exit 1; }
+incus network show "$NET" >/dev/null 2>&1 && { echo "Network $NET already exists; refusing to run."; exit 1; }
+incus profile show "$PROFILE" >/dev/null 2>&1 && { echo "Profile $PROFILE already exists; refusing to run."; exit 1; }
+incus network acl show "$ACL_LOCK" >/dev/null 2>&1 && { echo "ACL $ACL_LOCK already exists; refusing to run."; exit 1; }
+trap cleanup EXIT
+TMP="$(mktemp -d)"
+info "server version: $(incus version 2>/dev/null | awk -F': *' '/^Server version/ {print $2}')"
+info "firewall driver: $(incus info 2>/dev/null | awk -F': *' 'tolower($1) ~ /firewall/ {print $2; exit}')"
+info "br_netfilter loaded: $(lsmod 2>/dev/null | grep -q '^br_netfilter' && echo yes || echo no) (yes means ufw also filters traffic between containers on one bridge)"
+if command -v ufw >/dev/null && sudo ufw status 2>/dev/null | grep -q '^Status: active'; then
+  info "ufw is active; adding narrow rules for $NET (sudo; removed on exit)"
+  UFW_ADDED=1
+  ufw_rules "" >/dev/null || { fail "add the ufw rules for $NET"; exit 1; }
+fi
+
+ip_of() { incus list "^$1\$" -c 4 --format csv | grep -oE '[0-9]+(\.[0-9]+){3}' | head -1; }
+wait_ip() { for _ in $(seq 1 60); do [[ -n "$(ip_of "$1")" ]] && return 0; sleep 1; done; return 1; }
+# 0 when a TCP connection opens, nonzero when it is dropped or refused.
+connects() { incus exec "$X" -- timeout 7 socat -u /dev/null "TCP:$1:$2,connect-timeout=5" >/dev/null 2>&1 && echo yes || echo no; }
+dns_listeners() {
+  { ss -Hlnu 2>/dev/null; ss -Hlnt 2>/dev/null; } | awk -v gw="$GW" '
+    $4 ~ /:53$/ {
+      address=$4
+      sub(/:53$/, "", address)
+      sub(/%.*/, "", address)
+      if (address == gw || address == "0.0.0.0" || address == "*" || address == "[::]") print
+    }'
+}
+
+# --- 1. a bridge with no DNS -------------------------------------------------
+section "bridge with DNS turned off"
+if incus network create "$NET" ipv4.address=auto ipv4.nat=true ipv6.address=none "raw.dnsmasq=port=0" >/dev/null 2>"$TMP/err"; then
+  pass "create a bridge with raw.dnsmasq=port=0"
+else
+  fail "create a bridge with raw.dnsmasq=port=0: $(cat "$TMP/err")"; exit 1
+fi
+GW_CIDR="$(incus network get "$NET" ipv4.address)"; GW="${GW_CIDR%/*}"
+info "bridge $NET: $GW_CIDR"
+incus profile create "$PROFILE" >/dev/null
+incus profile device add "$PROFILE" eth0 nic network="$NET" \
+  security.ipv4_filtering=true security.mac_filtering=true >/dev/null || { fail "profile NIC"; exit 1; }
+info "launching $X from $IMAGE (the first run downloads the image)"
+incus launch "$IMAGE" "$X" -p default -p "$PROFILE" >/dev/null || { fail "launch $X"; exit 1; }
+# Why DHCP failed: a dead dnsmasq, a host firewall dropping DHCP on a new
+# bridge (ufw does this by default), or port=0 itself. The control turns DNS
+# back on and retries, which separates the last from the other two.
+diagnose_dhcp() {
+  info "$X state: $(incus list "^$X\$" -c s --format csv)"
+  info "$X eth0: $(incus exec "$X" -- ip -4 addr show eth0 2>/dev/null | awk '/inet /{print $2}' | tr '\n' ' ')"
+  info "dnsmasq for $NET: $(pgrep -af "dnsmasq.*$NET" | head -1)"
+  info "leases: $(incus network list-leases "$NET" --format csv 2>/dev/null | tr '\n' ';')"
+  if command -v ufw >/dev/null; then
+    info "ufw: $(sudo -n ufw status 2>/dev/null | head -1 || echo 'installed; status needs sudo')"
+  fi
+  local f
+  for f in "/var/log/incus/dnsmasq.$NET.log" "/var/snap/incus/common/incus/logs/dnsmasq.$NET.log"; do
+    if sudo -n test -e "$f" 2>/dev/null || [[ -e "$f" ]]; then
+      info "last lines of $f:"; { sudo -n tail -5 "$f" 2>/dev/null || tail -5 "$f"; } | sed 's/^/    /'
+    fi
+  done
+  info "control: turning DNS back on (unset raw.dnsmasq) and restarting $X"
+  incus network unset "$NET" raw.dnsmasq >/dev/null
+  incus restart "$X" >/dev/null
+  if wait_ip "$X"; then
+    info "RESULT: DHCP works with DNS on and fails with port=0. port=0 itself breaks DHCP here."
+  else
+    info "RESULT: DHCP fails on this new bridge even with DNS on, so port=0 isn't the cause. Check the host firewall (ufw rules added by this script: $UFW_ADDED)."
+  fi
+}
+info "waiting up to 60s for a DHCP address"
+if wait_ip "$X"; then pass "DHCP still hands out an address ($(ip_of "$X"))"; else fail "DHCP hands out an address"; diagnose_dhcp; exit 1; fi
+X_IP="$(ip_of "$X")"
+
+resolv="$(incus exec "$X" -- cat /etc/resolv.conf 2>/dev/null)"
+info "resolv.conf from DHCP: $(tr '\n' ';' <<< "$resolv")"
+if grep -q "nameserver $GW" <<< "$resolv"; then
+  fail "DHCP still advertises the bridge ($GW) as a DNS server with port=0 alone"
+  info "trying raw.dnsmasq 'port=0' plus 'dhcp-option=option:dns-server'"
+  incus network set "$NET" "raw.dnsmasq=$(printf 'port=0\ndhcp-option=option:dns-server')" >/dev/null 2>"$TMP/err" \
+    || info "setting the extra dhcp-option failed: $(cat "$TMP/err")"
+  incus restart "$X" >/dev/null; wait_ip "$X"
+  resolv="$(incus exec "$X" -- cat /etc/resolv.conf 2>/dev/null)"
+  info "resolv.conf after adding the option: $(tr '\n' ';' <<< "$resolv")"
+  if grep -q "nameserver $GW" <<< "$resolv"; then fail "DHCP still advertises $GW with the extra option"
+  else pass "with dhcp-option=option:dns-server, DHCP stops advertising $GW"; fi
+else
+  pass "DHCP doesn't advertise the bridge as a DNS server (port=0 alone)"
+fi
+
+check "nothing on the host listens for DNS on $GW" "" "$(dns_listeners)"
+check "a DNS query to the bridge gets no answer" "no" \
+  "$(incus exec "$X" -- timeout 8 nslookup example.com "$GW" >/dev/null 2>&1 && echo yes || echo no)"
+
+# Tools for the rest. The container has no DNS of its own, so point it at a
+# public resolver for the install only; its network is still open here.
+incus exec "$X" -- sh -c 'echo "nameserver 1.1.1.1" > /etc/resolv.conf'
+info "installing socat in $X"
+incus exec "$X" -- apk add --no-cache -q socat >/dev/null 2>&1 || { fail "install socat in $X (needs internet)"; exit 1; }
+check "TCP to the bridge's port 53 is refused" "no" "$(connects "$GW" 53)"
+
+old_ip="$X_IP"
+incus exec "$X" -- sh -c 'kill -USR1 "$(pidof udhcpc)"' >/dev/null 2>&1
+sleep 3
+check "a DHCP renewal keeps the address" "$old_ip" "$(ip_of "$X")"
+
+# Changing a DHCP setting restarts dnsmasq; DNS must stay off afterwards.
+incus network set "$NET" ipv4.dhcp.expiry=2h >/dev/null
+sleep 3
+check "after dnsmasq restarts, nothing listens for DNS on $GW" "" "$(dns_listeners)"
+
+if [[ "$RESTART" == "1" ]]; then
+  if sudo systemctl restart incus 2>/dev/null || sudo snap restart incus 2>/dev/null; then
+    sleep 10
+    check "after an Incus restart, nothing listens for DNS on $GW" "" "$(dns_listeners)"
+  else
+    fail "could not restart Incus (tried systemctl and snap)"
+  fi
+fi
+
+# --- 2. open connections across a lock and a restart -------------------------
+section "connections opened while open, then locked"
+HOST_IP="$(ip route get 1.1.1.1 2>/dev/null | awk '{for (i=1;i<NF;i++) if ($i=="src") {print $(i+1); exit}}')"
+[[ -n "$HOST_IP" ]] || { fail "find the host's main address"; exit 1; }
+info "host listener on $HOST_IP (udp $UDP_PORT, tcp $TCP_PORT)"
+cat > "$TMP/listen.py" <<'PY'
+import socket, sys, threading, time
+host, udp_port, tcp_port, log = sys.argv[1], int(sys.argv[2]), int(sys.argv[3]), sys.argv[4]
+out = open(log, "a", buffering=1)
+def udp():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    s.bind((host, udp_port))
+    while True:
+        _, addr = s.recvfrom(2048)
+        out.write(f"{time.time():.1f} udp {addr[0]} {addr[1]}\n")
+        s.sendto(b"echo\n", addr)  # replies make the flow two-way
+def serve(c, addr):
+    with c:
+        for _ in c.makefile():
+            out.write(f"{time.time():.1f} tcp {addr[0]} {addr[1]}\n")
+def tcp():
+    s = socket.socket()
+    s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    s.bind((host, tcp_port)); s.listen(5)
+    while True:
+        c, addr = s.accept()
+        threading.Thread(target=serve, args=(c, addr), daemon=True).start()
+threading.Thread(target=udp, daemon=True).start()
+tcp()
+PY
+touch "$TMP/seen.log"
+python3 -I "$TMP/listen.py" "$HOST_IP" "$UDP_PORT" "$TCP_PORT" "$TMP/seen.log" & HOST_PY_PID=$!
+sleep 1
+# Lines seen since a time, from the container's address, optionally one port.
+seen_since() { awk -v t="$1" -v p="$2" -v ip="$X_IP" -v sp="${3:-}" \
+  '$1 >= t && $2 == p && $3 == ip && (sp == "" || $4 == sp)' "$TMP/seen.log" | wc -l | tr -d ' '; }
+now() { date +%s; }
+send_from() { incus exec "$X" -- sh -c "echo probe | timeout 3 socat -u - UDP:$HOST_IP:$UDP_PORT,sourceport=$1" >/dev/null 2>&1; }
+
+# Where the path breaks: the listener itself, the host firewall, or socat.
+diagnose_flow() {
+  python3 -I -c 'import socket,sys; socket.socket(socket.AF_INET, socket.SOCK_DGRAM).sendto(b"self\n", (sys.argv[1], int(sys.argv[2])))' \
+    "$HOST_IP" "$UDP_PORT"
+  sleep 1
+  info "listener alive: $(kill -0 "$HOST_PY_PID" 2>/dev/null && echo yes || echo no); packet from the host itself logged: $(grep -q " udp $HOST_IP " "$TMP/seen.log" && echo yes || echo no)"
+  info "socat processes in $X: $(incus exec "$X" -- sh -c 'pidof socat | wc -w' 2>/dev/null)"
+  info "ufw blocks to the listener in the last 2 minutes:"
+  sudo journalctl -k --since "-2min" --no-pager 2>/dev/null | grep -E 'UFW BLOCK.*DPT=(47990|47991)' | tail -3 | sed 's/^/    /'
+  info "seen.log: $(tail -3 "$TMP/seen.log" | tr '\n' ';')"
+  info "RESULT: inconclusive. The open container can't reach the host listener, so the lock test would prove nothing. Stopping here."
+}
+
+# One packet first: if this doesn't arrive, nothing below can.
+t0="$(now)"; send_from 40002; sleep 1
+check "control: one UDP packet from the open container reaches the host" "yes" "$([[ "$(seen_since "$t0" udp 40002)" -gt 0 ]] && echo yes || echo no)"
+
+# Each flow runs under its own incus exec, kept as a host background job:
+# processes backgrounded inside a finished exec don't survive. The flows end
+# when the container restarts; cleanup kills the host side.
+tick='while true; do echo tick; sleep 0.5; done'
+incus exec "$X" -- sh -c "$tick | socat -u - UDP:$HOST_IP:$UDP_PORT,sourceport=$OLD_SPORT" </dev/null >/dev/null 2>&1 &
+FLOW_PIDS="$!"
+incus exec "$X" -- sh -c "$tick | socat -u - TCP:$HOST_IP:$TCP_PORT" </dev/null >/dev/null 2>&1 &
+FLOW_PIDS="$FLOW_PIDS $!"
+sleep 3
+t0="$(now)"; sleep 3
+udp_ok="$([[ "$(seen_since "$t0" udp "$OLD_SPORT")" -gt 0 ]] && echo yes || echo no)"
+tcp_ok="$([[ "$(seen_since "$t0" tcp)" -gt 0 ]] && echo yes || echo no)"
+check "control: the open container's UDP flow reaches the host" "yes" "$udp_ok"
+check "control: the open container's TCP stream reaches the host" "yes" "$tcp_ok"
+if [[ "$udp_ok" != yes ]]; then diagnose_flow; echo ""; echo "== done: $PASS passed, $FAIL failed"; exit 1; fi
+
+# Lock it: outbound default reject with no allow rules, the shape enforce uses
+# (enforce would also allow DHCP and the proxy port).
+incus network acl create "$ACL_LOCK" >/dev/null
+incus config device override "$X" eth0 security.acls="$ACL_LOCK" \
+  security.acls.default.egress.action=reject security.acls.default.ingress.action=allow >/dev/null 2>"$TMP/err" \
+  || { fail "attach the locking ACL live: $(cat "$TMP/err")"; exit 1; }
+sleep 2
+t1="$(now)"; sleep 4
+udp_after="$(seen_since "$t1" udp)"; tcp_after="$(seen_since "$t1" tcp)"
+info "after the lock, still arriving: udp $udp_after packets, tcp $tcp_after lines (Incus accepts established traffic before its rules)"
+check "a new TCP connection after the lock is refused" "no" "$(connects "$HOST_IP" "$TCP_PORT")"
+
+section "after a restart, behind the lock"
+info "restarting $X behind the lock"
+incus restart "$X" >/dev/null; wait_ip "$X"
+check "the container keeps its address across the restart" "$X_IP" "$(ip_of "$X")"
+t2="$(now)"
+for _ in 1 2 3 4 5; do send_from "$OLD_SPORT"; send_from "$NEW_SPORT"; sleep 0.5; done
+sleep 1
+old_ok="$([[ "$(seen_since "$t2" udp "$OLD_SPORT")" -gt 0 ]] && echo yes || echo no)"
+new_ok="$([[ "$(seen_since "$t2" udp "$NEW_SPORT")" -gt 0 ]] && echo yes || echo no)"
+check "control: a fresh UDP flow after the restart is blocked" "no" "$new_ok"
+# Either answer is about the host, not a defect: incs moves the container to a
+# new address on lock either way, and the next section checks that, always.
+info "the old UDP flow after the restart: $([[ "$old_ok" == yes ]] && echo "still gets through" || echo blocked)"
+if [[ "$old_ok" == yes ]]; then
+  info "RESULT: the host's connection tracking outlives the restart. incs must clear it, or give the container a new IP."
+else
+  info "RESULT: a restart is enough to end old flows on this host."
+fi
+
+# --- 3. a new IP on lock -----------------------------------------------------
+# The fix incs would use: lock = a new address. The host's old entries are
+# keyed on the old address, and IPv4 filtering should stop the container from
+# sending from an address it no longer holds, even as root inside it.
+section "a new IP on lock"
+NEW_IP="${GW%.*}.200"
+info "moving $X from $X_IP to $NEW_IP and restarting"
+incus config device set "$X" eth0 ipv4.address="$NEW_IP" >/dev/null 2>"$TMP/err" \
+  || { fail "set a static address on eth0: $(cat "$TMP/err")"; }
+incus restart "$X" >/dev/null
+for _ in $(seq 1 60); do [[ "$(ip_of "$X")" == "$NEW_IP" ]] && break; sleep 1; done
+check "the container gets the new address" "$NEW_IP" "$(ip_of "$X")"
+# UDP lines from one address and source port since a time.
+seen_from() { awk -v t="$1" -v ip="$2" -v sp="$3" '$1 >= t && $2 == "udp" && $3 == ip && $4 == sp' "$TMP/seen.log" | wc -l | tr -d ' '; }
+
+t3="$(now)"
+for _ in 1 2 3; do send_from "$OLD_SPORT"; sleep 0.5; done
+sleep 1
+check "from the new IP, the old source port is blocked" "0" "$(seen_from "$t3" "$NEW_IP" "$OLD_SPORT")"
+
+# As root inside the container, take the old address back and resend the
+# old flow from exactly its old address and port.
+# A 0 only counts once the spoofed packets were sent: the address added,
+# socat sending from it, and, with tcpdump on the host, the frames seen on
+# the container's port before the bridge filters them.
+if incus exec "$X" -- ip addr add "$X_IP/${GW_CIDR#*/}" dev eth0 >/dev/null 2>"$TMP/err"; then
+  info "added $X_IP back to eth0 inside $X"
+  hv="$(incus config get "$X" volatile.eth0.host_name 2>/dev/null)"; cap_pid=""
+  # sudo -n: a capture in the background can't ask for a password.
+  if command -v tcpdump >/dev/null && [[ -n "$hv" ]] && sudo -n true 2>/dev/null; then
+    sudo -n timeout 8 tcpdump -l -n -i "$hv" -c 3 "udp and src host $X_IP and src port $OLD_SPORT" \
+      >"$TMP/spoof.cap" 2>"$TMP/spoof.err" & cap_pid=$!
+    for _ in $(seq 1 50); do grep -q 'listening on' "$TMP/spoof.err" 2>/dev/null && break; sleep 0.1; done
+  fi
+  t4="$(now)"; sent=0
+  for _ in 1 2 3; do
+    incus exec "$X" -- sh -c "echo spoof | timeout 3 socat -u - UDP:$HOST_IP:$UDP_PORT,bind=$X_IP:$OLD_SPORT" \
+      >/dev/null 2>"$TMP/sender.err" && sent=$((sent+1))
+    sleep 0.5
+  done
+  sleep 1
+  [[ -n "$cap_pid" ]] && wait "$cap_pid"
+  spoof_seen="$(seen_from "$t4" "$X_IP" "$OLD_SPORT")"
+  frames=""; [[ -n "$cap_pid" ]] && frames="$(grep -c " $X_IP\.$OLD_SPORT > " "$TMP/spoof.cap")"
+  if [[ "$sent" == 0 ]]; then
+    fail "spoof check inconclusive: socat couldn't send from $X_IP:$OLD_SPORT ($(tail -1 "$TMP/sender.err"))"
+  elif [[ -n "$cap_pid" && "$frames" == 0 ]]; then
+    fail "spoof check inconclusive: no spoofed frame reached $X's port $hv ($(tail -1 "$TMP/spoof.err"))"
+  else
+    info "spoofed packets sent: $sent; frames on $X's port: ${frames:-not captured (needs tcpdump and sudo on the host)}"
+    check "sending from the old IP as root doesn't revive the old flow" "0" "$spoof_seen"
+    if [[ "$spoof_seen" == "0" ]]; then
+      info "RESULT: a new IP on lock ends old flows without root on the host."
+    else
+      info "RESULT: IPv4 filtering didn't stop the old address. A new IP isn't enough; incs needs to clear connection tracking."
+    fi
+  fi
+else
+  fail "spoof setup: add $X_IP back inside $X: $(cat "$TMP/err")"
+fi
+
+echo ""
+echo "== done: $PASS passed, $FAIL failed"

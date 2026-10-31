@@ -19,6 +19,9 @@
 #   instances/<name>/stopped/<unit>   a unit `systemctl stop` stopped (cleared at start)
 #   images/<alias>/root/...        filesystem captured by `publish`
 #   profiles/<name>/<key>          one file per profile config key
+#   profiles/<name>/devices/<dev>/<key>  one file per profile device key
+#   networks/<name>/<key>          one file per network config key
+#   acls/<name>                    the YAML last given to `network acl edit`
 #   gh.log                         arguments of each `gh` run inside an instance
 #
 # Knobs (env):
@@ -26,6 +29,12 @@
 #   FAKE_INCUS_NEXT_IP     address handed to the next created instance
 #   FAKE_INCUS_FAIL_CALL   regex; any invocation whose argv matches exits 1
 #   FAKE_INCUS_VERSION     what `incus version` reports (default 6.19)
+#   FAKE_EGRESS_CTL        a stand-in run for `exec <egress> -- /usr/local/sbin/incs-egress-ctl ...`
+#   FAKE_INCUS_IMAGE_TYPE  the Type `incus image info` reports (default container)
+#   FAKE_INCUS_FIREWALL    the firewall driver `incus query /1.0` reports (default
+#                          nftables; none leaves it out)
+#   FAKE_INCUS_EXTENSIONS  API extensions `incus query /1.0` lists
+#                          (default: network_bridge_acl_devices network_address_set)
 set -uo pipefail
 
 S="${FAKE_INCUS_STATE:?FAKE_INCUS_STATE must be set}"
@@ -68,7 +77,35 @@ create_instance() {
 
 cmd="${1:-}"; shift || true
 case "$cmd" in
+  query)
+    # The server record, as Incus 7.6 prints it.
+    [[ "${1:-}" == "/1.0" ]] || die "not found"
+    echo "{"
+    echo '  "api_extensions": ['
+    first=1
+    for e in ${FAKE_INCUS_EXTENSIONS-network_bridge_acl_devices network_address_set}; do
+      [[ "$first" == 1 ]] || echo ","
+      printf '    "%s"' "$e"; first=0
+    done
+    echo ""
+    echo "  ],"
+    echo '  "environment": {'
+    printf '    "server_version": "%s"' "${FAKE_INCUS_VERSION:-6.19}"
+    # none: a server that doesn't name its firewall.
+    [[ "${FAKE_INCUS_FIREWALL:-}" == none ]] || printf ',\n    "firewall": "%s"' "${FAKE_INCUS_FIREWALL:-nftables}"
+    echo ""
+    echo "  }"
+    echo "}"
+    ;;
+
   info)
+    if [[ $# -eq 0 ]]; then
+      # Server info; since 7.6 it doesn't list the API extensions.
+      echo "environment:"
+      echo "  firewall: ${FAKE_INCUS_FIREWALL:-nftables}"
+      echo "  server_version: \"${FAKE_INCUS_VERSION:-6.19}\""
+      exit 0
+    fi
     need_inst "${1:-}" 2>/dev/null || exit 1
     echo "Name: $1"
     ;;
@@ -77,12 +114,15 @@ case "$cmd" in
     # incus init <image> <name> [flags]
     name="${2:-}"
     [[ -n "$name" ]] || die "name required"
-    profiles=()
+    profiles=(); devs=()
     shift 2
     while [[ $# -gt 0 ]]; do
       if [[ "$1" == "-p" || "$1" == "--profile" ]]; then
         [[ "$2" == "default" || -d "$S/profiles/$2" ]] || die "Profile not found: $2"
         profiles+=("$2")
+        shift 2
+      elif [[ "$1" == "-d" || "$1" == "--device" ]]; then
+        devs+=("$2")
         shift 2
       else
         shift
@@ -91,11 +131,44 @@ case "$cmd" in
     if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
     else create_instance "$name" STOPPED; fi
     printf '%s\n' ${profiles[@]+"${profiles[@]}"} > "$(inst_dir "$name")/profiles"
+    # -d <device>,<key>=<value>: an instance device override at create.
+    for d in ${devs[@]+"${devs[@]}"}; do
+      kv="${d#*,}"
+      printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.${d%%,*}.${kv%%=*}"
+      if [[ "$d" == eth0,ipv4.address=* ]]; then echo "${kv#*=}" > "$(inst_dir "$name")/ipv4"; fi
+    done
     ;;
 
   profile)
     sub="${1:-}"; name="${2:-}"; shift 2 || true
     p="$S/profiles/$name"
+    if [[ "$sub" == "device" ]]; then
+      # incus profile device add|set|show <profile> [<device> ...]
+      op="$name"; name="${1:-}"; p="$S/profiles/$name"; shift || true
+      [[ -d "$p" ]] || die "Profile not found: $name"
+      case "$op" in
+        show)
+          for dd in "$p/devices"/*/; do
+            [[ -d "$dd" ]] || continue
+            echo "$(basename "$dd"):"
+            for f in "$dd"*; do echo "  $(basename "$f"): $(cat "$f")"; done
+          done
+          ;;
+        add)
+          dev="$1"; shift
+          [[ -d "$p/devices/$dev" ]] && die "Device already exists: $dev"
+          mkdir -p "$p/devices/$dev"; printf '%s' "$1" > "$p/devices/$dev/type"; shift
+          for kv in "$@"; do printf '%s' "${kv#*=}" > "$p/devices/$dev/${kv%%=*}"; done
+          ;;
+        set)
+          dev="$1"; shift
+          [[ -d "$p/devices/$dev" ]] || die "Device doesn't exist: $dev"
+          for kv in "$@"; do printf '%s' "${kv#*=}" > "$p/devices/$dev/${kv%%=*}"; done
+          ;;
+        *) die "unsupported profile device op: $op" ;;
+      esac
+      exit 0
+    fi
     case "$sub" in
       show)   [[ -d "$p" ]] || die "Profile not found: $name" ;;
       create) [[ -d "$p" ]] && die "Profile already exists: $name"; mkdir -p "$p" ;;
@@ -126,7 +199,7 @@ case "$cmd" in
 
   image)
     [[ "$1" == info && -d "$S/images/$2" ]] || die "Image not found: ${2:-}"
-    echo "Type: container"
+    echo "Type: ${FAKE_INCUS_IMAGE_TYPE:-container}"
     ;;
 
   publish)
@@ -148,9 +221,18 @@ case "$cmd" in
       set)
         name="$1"; shift
         need_inst "$name"
-        if [[ $# -eq 1 ]]; then key="${1%%=*}"; val="${1#*=}"
-        else key="$1"; val="$2"; fi
-        printf '%s' "$val" > "$(inst_dir "$name")/config/$key"
+        if [[ "$1" == *=* ]]; then
+          for kv in "$@"; do printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/${kv%%=*}"; done
+        else
+          printf '%s' "$2" > "$(inst_dir "$name")/config/$1"
+        fi
+        ;;
+      show)
+        need_inst "$1"
+        echo "config:"
+        for f in "$(inst_dir "$1")/config"/*; do
+          [[ -f "$f" ]] && echo "  $(basename "$f"): $(cat "$f")"
+        done
         ;;
       get)
         need_inst "$1"
@@ -169,9 +251,15 @@ case "$cmd" in
         op="$1"; name="$2"; dev="$3"; shift 3
         need_inst "$name"
         case "$op" in
-          override)
-            kv="${1:-}"
-            printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+          override|set)
+            for kv in "$@"; do
+              printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/devices.$dev.${kv%%=*}"
+            done
+            ;;
+          get)
+            f="$(inst_dir "$name")/config/devices.$dev.$1"
+            [[ -f "$f" ]] && cat "$f"
+            echo
             ;;
           add)
             [[ -f "$(inst_dir "$name")/config/devices.$dev.type" ]] && die "Device already exists: $dev"
@@ -283,6 +371,12 @@ case "$cmd" in
       exit 1
     fi
 
+    if [[ "${1:-}" == "/usr/local/sbin/incs-egress-ctl" && -n "${FAKE_EGRESS_CTL:-}" ]]; then
+      shift
+      stdin_file="$S/exec-stdin/$n"; [[ -f "$stdin_file" ]] || stdin_file=/dev/null
+      exec "$FAKE_EGRESS_CTL" "$S/ctl/$name" "$@" < "$stdin_file"
+    fi
+
     root="$(inst_dir "$name")/root"
     stub="$S/stub-bin"; mkdir -p "$stub"
     printf '#!/bin/sh\nexit 0\n' > "$stub/systemctl"
@@ -362,6 +456,56 @@ case "$cmd" in
         esac
         ;;
       *) : ;;
+    esac
+    ;;
+
+  network)
+    sub="${1:-}"; shift || true
+    if [[ "$sub" == "acl" ]]; then
+      op="${1:-}"; name="${2:-}"
+      a="$S/acls/$name"
+      case "$op" in
+        show)   [[ -f "$a" ]] || die "Network ACL not found"; cat "$a" ;;
+        create) [[ -f "$a" ]] && die "The network ACL already exists"; mkdir -p "$S/acls"; : > "$a" ;;
+        edit)   [[ -f "$a" ]] || die "Network ACL not found"; cat > "$a" ;;
+        delete) [[ -f "$a" ]] || die "Network ACL not found"; rm -f "$a" ;;
+        *) die "unsupported network acl op: $op" ;;
+      esac
+      exit 0
+    fi
+    name="${1:-}"; shift || true
+    n="$S/networks/$name"
+    case "$sub" in
+      create)
+        [[ -d "$n" ]] && die "The network already exists"
+        mkdir -p "$n"
+        for kv in "$@"; do printf '%s' "${kv#*=}" > "$n/${kv%%=*}"; done
+        ;;
+      show) [[ -d "$n" ]] || die "Network not found" ;;
+      get)
+        [[ -d "$n" ]] || die "Network not found"
+        [[ -f "$n/$1" ]] && cat "$n/$1"
+        echo
+        ;;
+      set)
+        [[ -d "$n" ]] || die "Network not found"
+        for kv in "$@"; do printf '%s' "${kv#*=}" > "$n/${kv%%=*}"; done
+        ;;
+      list)
+        # Called as `network list --format csv`, so $name holds a flag.
+        for d in "$S/networks"/*/; do
+          [[ -d "$d" ]] || continue
+          echo "$(basename "$d"),bridge,YES,$(cat "$d/ipv4.address" 2>/dev/null),,,0,CREATED"
+        done
+        ;;
+      list-leases)
+        [[ -d "$n" ]] || die "Network not found"
+        for d in "$S/instances"/*/; do
+          f="$d/config/devices.eth0.ipv4.address"
+          [[ -f "$f" ]] && echo "$(basename "$d"),00:16:3e:00:00:01,$(cat "$f"),STATIC,"
+        done
+        ;;
+      *) die "unsupported network subcommand: $sub" ;;
     esac
     ;;
 

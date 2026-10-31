@@ -1,0 +1,473 @@
+#!/bin/bash
+# egress/incs-egress-ctl
+# Runs as root inside an egress container; incs calls it from the host
+# through `incus exec`. It runs one smokescreen proxy per agent.
+#
+# Each agent's port is a systemd socket that a holder service keeps open and
+# never accepts on. Every generation of the agent's proxy inherits that
+# socket (smokescreen's einhorn support), so while one generation hands over
+# to the next, new connections wait in the socket's queue instead of being
+# refused. A generation's files never change once written.
+#
+#   setup <resolver> <deny-ranges>   install the shared units; ranges are a
+#                                    comma list
+#   add <agent> <port>               the agent's socket, holder and unit templates
+#   gen <agent> <mode> <policy-id>   write a new generation from hosts on stdin;
+#                                    prints its number
+#   check <agent> <gen>              probe a check copy of it on a private port
+#   widen <agent> <gen> [--force]    start it; older generations drain
+#   tighten <agent> <gen>            start it; older generations end now
+#   stop <agent>                     end every generation; nothing serves
+#   remove <agent>                   stop, then remove the agent's units
+#   status [<agent>]                 one line per agent
+#   hosts <agent>                    the hosts the current generation allows
+#   log <agent> [<since>]            decisions as TSV: time host port decision reason gen
+#   boot                             at boot: start each agent's current generation
+set -euo pipefail
+
+ETC=/etc/incs-egress
+LIB=/usr/local/libexec/incs
+UNITS=/etc/systemd/system
+ACK_SOCK=/run/incs-egress-ack.sock
+MAX_DRAINING=6
+CHECK_PORT=4700
+# Old generations end when their last connection closes, or after this.
+EXIT_TIMEOUT=3h
+PROBE_HOST=incs-probe.invalid
+
+die() { echo "incs-egress-ctl: $*" >&2; exit 1; }
+valid_agent() { [[ "$1" =~ ^[a-zA-Z][a-zA-Z0-9-]{0,62}$ ]] || die "bad agent name: $1"; }
+valid_gen() { [[ "$1" =~ ^[0-9]+$ ]] || die "bad generation: $1"; }
+# Lowercase punycode hostnames, a wildcard only as a leading "*.", and a last
+# label that starts with a letter, so no IP address passes.
+valid_host() {
+  [[ ${#1} -le 253 && "$1" =~ ^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ]]
+}
+
+agent_dir() { echo "$ETC/agents/$1"; }
+gen_dir() { echo "$ETC/agents/$1/gens/$2"; }
+gen_unit() { echo "incs-gen_$1@$2.service"; }
+check_unit() { echo "incs-check_$1@$2.service"; }
+agent_slice() { printf 'incs-agent_%s.slice\n' "$(systemd-escape "$1")"; }
+current() { cat "$(agent_dir "$1")/current" 2>/dev/null || echo none; }
+set_current() { echo "$2" > "$(agent_dir "$1")/current.new" && mv "$(agent_dir "$1")/current.new" "$(agent_dir "$1")/current"; }
+
+# Generations of an agent that are running, starting or stopping.
+gens_active() {
+  systemctl list-units --plain --no-legend --state=active,activating,deactivating "incs-gen_$1@*.service" 2>/dev/null |
+    awk '{print $1}' | sed -E "s/^incs-gen_$1@([0-9]+)\.service$/\1/" | grep -E '^[0-9]+$' | sort -n || true
+}
+
+journal_cursor() { journalctl -n 0 --show-cursor -o cat --no-pager 2>/dev/null | sed -n 's/^-- cursor: //p'; }
+
+# One change at a time: the check copy's port is shared.
+lock() { exec 9>/run/incs-egress-ctl.lock; flock 9; }
+
+# smokescreen takes a single resolver.
+cmd_setup() {
+  local resolver="$1" deny="$2" r
+  install -d -m 755 "$ETC/agents"
+  [[ "$resolver" =~ ^[0-9]+(\.[0-9]+){3}$ ]] || die "bad resolver: $resolver"
+  for r in ${deny//,/ }; do [[ "$r" =~ ^[0-9]+(\.[0-9]+){3}/[0-9]+$ ]] || die "bad deny range: $r"; done
+  echo "$resolver" > "$ETC/resolver"
+  echo "$deny" > "$ETC/deny-ranges"
+  cat > "$UNITS/incs-egress-ack.socket" <<EOF
+[Unit]
+Description=incs egress: generations report here when they start accepting
+
+[Socket]
+ListenStream=$ACK_SOCK
+Accept=yes
+SocketMode=0666
+
+[Install]
+WantedBy=sockets.target
+EOF
+  cat > "$UNITS/incs-egress-ack@.service" <<'EOF'
+[Unit]
+Description=incs egress: record one generation's ack
+
+[Service]
+ExecStart=/bin/cat
+StandardInput=socket
+StandardOutput=journal
+DynamicUser=yes
+EOF
+  cat > "$UNITS/incs-egress-boot.service" <<'EOF'
+[Unit]
+Description=incs egress: start each agent's current proxy generation
+After=sockets.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/incs-egress-ctl boot
+
+[Install]
+WantedBy=multi-user.target
+EOF
+  systemctl daemon-reload
+  systemctl enable --now incs-egress-ack.socket >/dev/null 2>&1
+  systemctl enable incs-egress-boot.service >/dev/null 2>&1
+}
+
+cmd_add() {
+  local agent="$1" port="$2" d have slice
+  valid_agent "$agent"
+  [[ "$port" =~ ^[0-9]+$ ]] && (( port >= 1024 && port <= 65535 )) || die "bad port: $port"
+  d="$(agent_dir "$agent")"
+  have="$(cat "$d/port" 2>/dev/null || true)"
+  [[ -z "$have" || "$have" == "$port" ]] || die "$agent already listens on $have"
+  install -d -m 755 "$d/gens"
+  echo "$port" > "$d/port"
+  [[ -f "$d/current" ]] || set_current "$agent" none
+  # Escape dashes so every agent gets a sibling slice with its own cap.
+  slice="$(agent_slice "$agent")"
+  cat > "$UNITS/$slice" <<EOF
+[Unit]
+Description=incs egress: every proxy generation for $agent
+
+[Slice]
+MemoryMax=512M
+TasksMax=1024
+CPUWeight=100
+EOF
+  cat > "$UNITS/incs-proxy_$agent.socket" <<EOF
+[Unit]
+Description=incs egress: $agent's proxy port
+
+[Socket]
+ListenStream=0.0.0.0:$port
+Backlog=1024
+Service=incs-hold_$agent.service
+
+[Install]
+WantedBy=sockets.target
+EOF
+  cat > "$UNITS/incs-hold_$agent.service" <<EOF
+[Unit]
+Description=incs egress: keeps $agent's socket open (never accepts)
+
+[Service]
+ExecStart=/bin/sleep infinity
+DynamicUser=yes
+EOF
+  local common
+  common="EnvironmentFile=-$ETC/agents/$agent/gens/%i/env
+ExecStart=$LIB/incs-proxy-run $agent %i
+Slice=$slice
+DynamicUser=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+NoNewPrivileges=yes
+LimitNOFILE=4096
+LogRateLimitIntervalSec=30s
+LogRateLimitBurst=2000"
+  cat > "$UNITS/incs-gen_$agent@.service" <<EOF
+[Unit]
+Description=incs egress: $agent's proxy, generation %i
+
+[Service]
+Sockets=incs-proxy_$agent.socket
+Environment=EINHORN_MASTER_PID=1 EINHORN_FD_COUNT=1 EINHORN_FD_0=3 EINHORN_SOCK_PATH=$ACK_SOCK
+TimeoutStopSec=3
+$common
+EOF
+  cat > "$UNITS/incs-check_$agent@.service" <<EOF
+[Unit]
+Description=incs egress: check copy of $agent's proxy, generation %i
+
+[Service]
+Environment=INCS_PROBE_PORT=$CHECK_PORT
+TimeoutStopSec=3
+$common
+EOF
+  systemctl daemon-reload
+  systemctl enable --now "incs-proxy_$agent.socket" >/dev/null 2>&1
+  systemctl start "incs-hold_$agent.service"
+}
+
+cmd_gen() {
+  local agent="$1" mode="$2" policy="$3" n d action host hosts=() deny r
+  valid_agent "$agent"
+  [[ -d "$(agent_dir "$agent")/gens" ]] || die "unknown agent: $agent"
+  [[ "$policy" =~ ^[0-9a-f]{8,64}$ ]] || die "bad policy id: $policy"
+  case "$mode" in enforce | report) action="$mode" ;; off) action=open ;; *) die "bad mode: $mode" ;; esac
+  while IFS= read -r host; do
+    [[ -z "$host" ]] && continue
+    valid_host "$host" || die "bad hostname: $host"
+    hosts+=("$host")
+  done
+  n="$(ls "$(agent_dir "$agent")/gens" | grep -E '^[0-9]+$' | sort -n | tail -1 || true)"
+  n=$(( ${n:-0} + 1 ))
+  d="$(gen_dir "$agent" "$n")"
+  install -d -m 755 "$d"
+  {
+    echo "version: v1"
+    echo "services: []"
+    echo "default:"
+    echo "  project: incs"
+    echo "  action: $action"
+    if [[ "$mode" != off ]]; then
+      echo "  allowed_domains:"
+      for host in ${hosts[@]+"${hosts[@]}"}; do echo "    - \"$host\""; done
+    fi
+  } > "$d/acl.yaml"
+  deny="$(cat "$ETC/deny-ranges")"
+  {
+    echo "allow_missing_role: true"
+    echo "exit_timeout: $EXIT_TIMEOUT"
+    echo "max_concurrent_connect_tunnels: 1024"
+    echo "resolver_addresses:"
+    echo "  - \"$(cat "$ETC/resolver"):53\""
+    if [[ -n "$deny" ]]; then
+      echo "deny_ranges:"
+      for r in ${deny//,/ }; do echo "  - \"$r\""; done
+    fi
+    echo "deny_message_extra: \"Blocked by the incs allowlist for $agent. On the host: incs egress log $agent\""
+  } > "$d/config.yaml"
+  echo "$mode" > "$d/mode"
+  echo "$policy" > "$d/policy"
+  chmod 644 "$d"/*
+  # Keep the last few generations that aren't running, for the logs.
+  local g
+  for g in $(ls "$(agent_dir "$agent")/gens" | grep -E '^[0-9]+$' | sort -n | head -n -10); do
+    [[ "$g" == "$(current "$agent")" ]] && continue
+    gens_active "$agent" | grep -qx "$g" && continue
+    rm -rf "$(gen_dir "$agent" "$g")"
+  done
+  echo "$n"
+}
+
+# The probe's decision record, from one unit's journal since a cursor.
+probe_record() {
+  journalctl -u "$1" --after-cursor="$2" -o cat --no-pager 2>/dev/null |
+    grep 'CANONICAL-PROXY-DECISION' | grep -F "$PROBE_HOST" | tail -1
+}
+
+# Ready means: the check copy, started from the generation's own files,
+# answers, and the probe gets the decision the mode calls for. A failed
+# request alone doesn't count.
+cmd_check() {
+  local agent="$1" gen="$2" u mode cur rec ok=1 i
+  valid_agent "$agent"; valid_gen "$gen"
+  u="$(check_unit "$agent" "$gen")"
+  mode="$(cat "$(gen_dir "$agent" "$gen")/mode" 2>/dev/null)" || die "no generation $gen for $agent"
+  systemctl reset-failed "$u" 2>/dev/null || true
+  cur="$(journal_cursor)"
+  if ! systemctl start "$u" 2>/dev/null; then
+    echo "check $agent/$gen: didn't start: $(journalctl -u "$u" --after-cursor="$cur" -o cat --no-pager | tail -1)" >&2
+    return 1
+  fi
+  for i in $(seq 1 50); do
+    (exec 3<>"/dev/tcp/127.0.0.1/$CHECK_PORT") 2>/dev/null && break
+    sleep 0.1
+  done
+  curl -s -o /dev/null --max-time 5 -x "http://127.0.0.1:$CHECK_PORT" "https://$PROBE_HOST/" || true
+  for i in $(seq 1 20); do
+    rec="$(probe_record "$u" "$cur")"
+    [[ -n "$rec" ]] && break
+    sleep 0.1
+  done
+  systemctl stop "$u" 2>/dev/null || true
+  systemctl reset-failed "$u" 2>/dev/null || true
+  case "$mode" in
+    enforce) grep -q '"allow":false' <<<"$rec" && grep -q '"decision_reason":"default rule policy used"' <<<"$rec" || ok=0 ;;
+    report) grep -q '"allow":true' <<<"$rec" && grep -q '"enforce_would_deny":true' <<<"$rec" || ok=0 ;;
+    off) grep -q '"allow":true' <<<"$rec" || ok=0 ;;
+  esac
+  [[ -n "$rec" ]] || ok=0
+  if [[ "$ok" == 1 ]]; then return 0; fi
+  echo "check $agent/$gen ($mode): wrong decision for the probe: ${rec:-no record}" >&2
+  journalctl -u "$u" --after-cursor="$cur" -o cat --no-pager 2>/dev/null | grep -v CANONICAL | tail -3 | sed 's/^/  /' >&2
+  systemctl reset-failed "$u" 2>/dev/null || true
+  return 1
+}
+
+# Starting a generation that already runs is a no-op, so no ack would come,
+# and the cleanup after a missing ack would stop the live generation.
+refuse_active() {
+  if gens_active "$1" | grep -qx "$2"; then
+    die "$1/$2 is already running; write a new generation with gen"
+  fi
+}
+
+# The generation's ack, matched to its main PID, means it's accepting.
+wait_ack() {
+  local u="$1" cur="$2" pid i
+  for i in $(seq 1 50); do
+    pid="$(systemctl show -p MainPID --value "$u")"
+    if [[ "$pid" != 0 ]] && journalctl -u 'incs-egress-ack@*' --after-cursor="$cur" -o cat --no-pager 2>/dev/null | grep -q "pid: $pid%0A"; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  return 1
+}
+
+cmd_widen() {
+  local agent="$1" gen="$2" force="${3:-}" old draining cur g
+  valid_agent "$agent"; valid_gen "$gen"
+  lock
+  refuse_active "$agent" "$gen"
+  old="$(gens_active "$agent" | grep -vx "$gen" || true)"
+  draining="$(grep -vx "$(current "$agent")" <<<"$old" | grep -c . || true)"
+  if (( draining >= MAX_DRAINING )); then
+    [[ "$force" == "--force" ]] ||
+      die "$agent has $draining generations still draining (the limit is $MAX_DRAINING), so nothing changed. Their connections end on their own; --force ends the oldest one's now."
+    g="$(grep -vx "$(current "$agent")" <<<"$old" | head -1)"
+    systemctl stop "$(gen_unit "$agent" "$g")" 2>/dev/null || true
+    systemctl reset-failed "$(gen_unit "$agent" "$g")" 2>/dev/null || true
+    old="$(grep -vx "$g" <<<"$old" || true)"
+  fi
+  cmd_check "$agent" "$gen" || die "widen $agent/$gen: the check failed; nothing changed"
+  cur="$(journal_cursor)"
+  systemctl start "$(gen_unit "$agent" "$gen")" || die "widen $agent/$gen: didn't start; nothing changed"
+  if ! wait_ack "$(gen_unit "$agent" "$gen")" "$cur"; then
+    systemctl stop "$(gen_unit "$agent" "$gen")" 2>/dev/null || true
+    systemctl reset-failed "$(gen_unit "$agent" "$gen")" 2>/dev/null || true
+    die "widen $agent/$gen: it never started accepting, so it was stopped; nothing changed"
+  fi
+  # Only now do older generations stop taking new connections. They keep
+  # their open ones until those close or EXIT_TIMEOUT passes.
+  set_current "$agent" "$gen"
+  for g in $old; do systemctl kill --kill-whom=main --signal=SIGTERM "$(gen_unit "$agent" "$g")" 2>/dev/null || true; done
+}
+
+cmd_tighten() {
+  local agent="$1" gen="$2" old cur g left
+  valid_agent "$agent"; valid_gen "$gen"
+  lock
+  refuse_active "$agent" "$gen"
+  cmd_check "$agent" "$gen" || die "tighten $agent/$gen: the check failed; nothing changed"
+  old="$(gens_active "$agent" | grep -vx "$gen" || true)"
+  # Old generations stop accepting at once; new connections wait in the
+  # socket's queue for the new policy.
+  set_current "$agent" "$gen"
+  for g in $old; do systemctl kill --kill-whom=main --signal=SIGTERM "$(gen_unit "$agent" "$g")" 2>/dev/null || true; done
+  cur="$(journal_cursor)"
+  if ! systemctl start "$(gen_unit "$agent" "$gen")" || ! wait_ack "$(gen_unit "$agent" "$gen")" "$cur"; then
+    set_current "$agent" none
+    stop_gens "$agent"
+    die "tighten $agent/$gen: it didn't start, so nothing serves $agent now"
+  fi
+  # Then their open connections end: stop kills after TimeoutStopSec.
+  for g in $old; do systemctl stop "$(gen_unit "$agent" "$g")" 2>/dev/null & done
+  wait
+  for g in $old; do systemctl reset-failed "$(gen_unit "$agent" "$g")" 2>/dev/null || true; done
+  left="$(gens_active "$agent" | grep -vx "$gen" | tr '\n' ' ' || true)"
+  [[ -z "${left// /}" ]] || die "tighten $agent/$gen: old generations still running: $left"
+}
+
+# Ends every generation and confirms none is left.
+stop_gens() {
+  local agent="$1" g left
+  for g in $(gens_active "$agent"); do systemctl stop "$(gen_unit "$agent" "$g")" 2>/dev/null & done
+  wait
+  systemctl reset-failed "incs-gen_$agent@*.service" 2>/dev/null || true
+  left="$(gens_active "$agent" | tr '\n' ' ')"
+  [[ -z "${left// /}" ]] || die "$agent: generations still running: $left"
+}
+
+cmd_stop() {
+  valid_agent "$1"
+  lock
+  # Cleared first, so a reboot partway through can't start it again.
+  set_current "$1" none
+  stop_gens "$1"
+}
+
+cmd_remove() {
+  local agent="$1"
+  valid_agent "$agent"
+  [[ -d "$(agent_dir "$agent")" ]] || return 0
+  cmd_stop "$agent"
+  systemctl disable --now "incs-proxy_$agent.socket" >/dev/null 2>&1 || true
+  systemctl stop "incs-hold_$agent.service" 2>/dev/null || true
+  rm -f "$UNITS/$(agent_slice "$agent")" "$UNITS/incs-proxy_$agent.socket" "$UNITS/incs-hold_$agent.service" \
+    "$UNITS/incs-gen_$agent@.service" "$UNITS/incs-check_$agent@.service"
+  systemctl daemon-reload
+  rm -rf "$(agent_dir "$agent")"
+}
+
+# agent port current-gen current-policy current-mode listening active-gens
+cmd_status() {
+  local agents agent cur pol mode listening
+  if [[ $# -gt 0 ]]; then valid_agent "$1"; agents="$1"; else agents="$(ls "$ETC/agents" 2>/dev/null || true)"; fi
+  for agent in $agents; do
+    [[ -d "$(agent_dir "$agent")" ]] || die "unknown agent: $agent"
+    cur="$(current "$agent")" pol=- mode=- listening=no
+    if [[ "$cur" != none ]]; then
+      pol="$(cat "$(gen_dir "$agent" "$cur")/policy" 2>/dev/null || echo -)"
+      mode="$(cat "$(gen_dir "$agent" "$cur")/mode" 2>/dev/null || echo -)"
+      systemctl is-active --quiet "$(gen_unit "$agent" "$cur")" && listening=yes
+    fi
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$agent" "$(cat "$(agent_dir "$agent")/port")" "$cur" "$pol" "$mode" "$listening" \
+      "$(gens_active "$agent" | tr '\n' ' ' | sed 's/ $//')"
+  done
+}
+
+cmd_hosts() {
+  local cur
+  valid_agent "$1"
+  cur="$(current "$1")"
+  [[ "$cur" == none ]] && return 0
+  awk '/^  allowed_domains:/ {d=1; next} d && /^    - / {h=$2; gsub(/"/, "", h); print h; next} {d=0}' \
+    "$(gen_dir "$1" "$cur")/acl.yaml"
+}
+
+# The decision records, without the probe's. jq picks fields by name, so a
+# hostile hostname can't forge a column, and control characters in it are
+# replaced so it can't reach a terminal as an escape code.
+cmd_log() {
+  local agent="$1" since="${2:--1h}"
+  valid_agent "$agent"
+  [[ "$since" =~ ^[-+0-9a-zA-Z:\ ]+$ ]] || die "bad --since: $since"
+  journalctl -u "incs-gen_$agent@*.service" --since "$since" -o json --no-pager 2>/dev/null |
+    jq -r --arg probe "$PROBE_HOST" '
+      (._SYSTEMD_UNIT | capture("@(?<g>[0-9]+)\\.service$").g // "-") as $gen
+      | (.MESSAGE | strings | select(contains("CANONICAL-PROXY-DECISION"))
+         | (try fromjson catch null)) as $m
+      | select($m != null)
+      | ($m.requested_host // "" | tostring | .[0:300] | gsub("[[:cntrl:]]"; "?")) as $hp
+      | select(($hp | split(":")[0]) != $probe)
+      | [ ($m.time // "-"),
+          ($hp | sub(":[0-9]+$"; "")),
+          ($hp | capture(":(?<p>[0-9]+)$").p // "-"),
+          (if $m.allow == false then "blocked"
+           elif $m.enforce_would_deny == true then "would-block"
+           else "allowed" end),
+          ($m.decision_reason // "-" | tostring | .[0:200] | gsub("[[:cntrl:]]"; "?")),
+          $gen ]
+      | @tsv'
+}
+
+cmd_boot() {
+  local agent cur
+  for agent in $(ls "$ETC/agents" 2>/dev/null || true); do
+    cur="$(current "$agent")"
+    [[ "$cur" == none ]] && continue
+    systemctl start "incs-hold_$agent.service" || true
+    systemctl start "$(gen_unit "$agent" "$cur")" || echo "boot: $agent generation $cur didn't start" >&2
+  done
+}
+
+c="${1:-}"
+[[ -n "$c" ]] || die "usage: incs-egress-ctl <command> [args]"
+shift
+case "$c" in
+  setup) [[ $# -eq 2 ]] || die "usage: setup <resolver> <deny-ranges>"; cmd_setup "$@" ;;
+  add) [[ $# -eq 2 ]] || die "usage: add <agent> <port>"; cmd_add "$@" ;;
+  gen) [[ $# -eq 3 ]] || die "usage: gen <agent> <mode> <policy-id> < hosts"; cmd_gen "$@" ;;
+  check) [[ $# -eq 2 ]] || die "usage: check <agent> <gen>"; cmd_check "$@" ;;
+  widen) [[ $# -ge 2 ]] || die "usage: widen <agent> <gen> [--force]"; cmd_widen "$@" ;;
+  tighten) [[ $# -eq 2 ]] || die "usage: tighten <agent> <gen>"; cmd_tighten "$@" ;;
+  stop) [[ $# -eq 1 ]] || die "usage: stop <agent>"; cmd_stop "$@" ;;
+  remove) [[ $# -eq 1 ]] || die "usage: remove <agent>"; cmd_remove "$@" ;;
+  status) cmd_status "$@" ;;
+  hosts) [[ $# -eq 1 ]] || die "usage: hosts <agent>"; cmd_hosts "$@" ;;
+  log) [[ $# -ge 1 ]] || die "usage: log <agent> [<since>]"; cmd_log "$@" ;;
+  boot) cmd_boot ;;
+  *) die "unknown command: $c" ;;
+esac

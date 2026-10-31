@@ -1,0 +1,290 @@
+# incus.net
+# The isolated bridge that new agents and VMs join (incsbr0). Agents can't
+# reach each other, the host's services or private networks. The host can
+# reach them, and the internet stays open.
+#
+# The bridge serves no DNS: Incus lets DNS to the bridge through before any
+# rule, so a DNS server there would be a way out that rules can't close. DHCP
+# hands out public resolvers instead. incs gives each instance its address,
+# outside the DHCP pool, from a counter that only grows, so a later lockdown
+# can move an instance to an address no old connection knows.
+#
+# Sourced by incus.init. Defines functions only; uses log, warn and error.
+
+INCS_NET="incsbr0"
+INCS_NET_PROFILE="incs-net"
+INCS_NET_ACL="incs-base"
+# The September 2026 fail-open fixes for ACLs are in 7.5.1.
+INCS_NET_MIN_INCUS="7.5.1"
+INCS_RESOLVERS="${INCS_RESOLVERS:-1.1.1.1,9.9.9.9}"
+# It ends up in dnsmasq's config and in rules, so only IPv4 addresses pass.
+[[ "$INCS_RESOLVERS" =~ ^[0-9]{1,3}(\.[0-9]{1,3}){3}(,[0-9]{1,3}(\.[0-9]{1,3}){3})*$ ]] || {
+  echo "INCS_RESOLVERS must be IPv4 addresses separated by commas (got: $INCS_RESOLVERS)" >&2
+  exit 1
+}
+INCS_LOCK_DIR="${INCS_LOCK_DIR:-$HOME/.local/state/incs/lock}"
+INCS_UFW_CONF="${INCS_UFW_CONF:-/etc/ufw/ufw.conf}"
+
+# IPv4 ranges agents may not reach: unspecified, private, shared (CGNAT and
+# tailnets), loopback, link-local (cloud metadata), protocol assignments,
+# documentation, benchmarking, multicast and reserved. The bridge's own /16 is
+# cut out of these, so traffic between instances is left to the target's
+# ingress rules rather than to how Incus orders a reject against an allow.
+INCS_NET_PRIVATE="0.0.0.0/8 10.0.0.0/8 100.64.0.0/10 127.0.0.0/8 169.254.0.0/16 172.16.0.0/12 192.0.0.0/24 192.0.2.0/24 192.168.0.0/16 198.18.0.0/15 198.51.100.0/24 203.0.113.0/24 224.0.0.0/4 240.0.0.0/4"
+
+net_ip2int() {
+  local IFS=.
+  # shellcheck disable=SC2086
+  set -- $1
+  echo $(( ($1 << 24) + ($2 << 16) + ($3 << 8) + $4 ))
+}
+net_int2ip() { echo "$(( ($1 >> 24) & 255 )).$(( ($1 >> 16) & 255 )).$(( ($1 >> 8) & 255 )).$(( $1 & 255 ))"; }
+net_mask() { echo $(( (0xFFFFFFFF << (32 - $1)) & 0xFFFFFFFF )); }
+
+# Prints what's left of CIDR <outer> once <inner> is taken out, one CIDR per
+# line: <outer> itself when they don't overlap, nothing when <inner> covers
+# it, otherwise the sibling of <inner>'s prefix at each length below <outer>.
+net_cidr_minus() {
+  local on ol="${1#*/}" in il="${2#*/}" mask l
+  on=$(net_ip2int "${1%/*}")
+  in=$(net_ip2int "${2%/*}")
+  if (( il <= ol )); then
+    mask=$(net_mask "$il")
+    (( (on & mask) == (in & mask) )) || echo "$1"
+    return 0
+  fi
+  mask=$(net_mask "$ol")
+  if (( (on & mask) != (in & mask) )); then echo "$1"; return 0; fi
+  for (( l = ol + 1; l <= il; l++ )); do
+    mask=$(net_mask "$l")
+    echo "$(net_int2ip $(( (in & mask) ^ (1 << (32 - l)) )))/$l"
+  done
+}
+
+# The ranges agents are refused, as one comma-separated list.
+# Usage: net_egress_rejects <bridge-cidr>
+net_egress_rejects() {
+  local subnet="$1" net r out=""
+  net="$(net_int2ip $(( $(net_ip2int "${subnet%/*}") & $(net_mask "${subnet#*/}") )))/${subnet#*/}"
+  for r in $INCS_NET_PRIVATE; do
+    while IFS= read -r piece; do
+      [[ -n "$piece" ]] && out+="${out:+,}$piece"
+    done <<< "$(net_cidr_minus "$r" "$net")"
+  done
+  echo "$out"
+}
+
+# Usage: net_version_ge <have> <want>
+net_version_ge() {
+  local IFS=. have want i h w
+  read -r -a have <<< "${1%% *}"
+  read -r -a want <<< "$2"
+  for i in 0 1 2; do
+    h="${have[$i]:-0}"; h="${h%%[!0-9]*}"; h="${h:-0}"
+    w="${want[$i]:-0}"
+    (( 10#$h > 10#$w )) && return 0
+    (( 10#$h < 10#$w )) && return 1
+  done
+  return 0
+}
+
+# Isolation needs NIC-level ACLs, which need nftables and a recent Incus.
+# Without them incs refuses, unless the user takes the default bridge.
+net_preflight() {
+  local ver info fw why=""
+  ver="$(incus version 2>/dev/null | awk -F': *' '/^Server version/ {print $2}')"
+  # The server's own record: `incus info` stopped listing API extensions in 7.6.
+  info="$(incus query /1.0 2>/dev/null)" || info=""
+  fw="$(grep -o '"firewall": *"[^"]*"' <<< "$info" | head -1 | sed 's/.*"\([^"]*\)"$/\1/')" || fw=""
+  if [[ -z "$ver" ]] || ! net_version_ge "$ver" "$INCS_NET_MIN_INCUS"; then
+    why="Incus ${ver:-(unknown version)} is older than $INCS_NET_MIN_INCUS"
+  elif [[ "$fw" != "nftables" ]]; then
+    why="Incus's firewall driver is ${fw:-unknown}, not nftables"
+  elif ! grep -q '"network_bridge_acl_devices"' <<< "$info"; then
+    why="Incus lacks the network_bridge_acl_devices API extension"
+  fi
+  [[ -z "$why" ]] && return 0
+  error "$why, so incs can't isolate the instance on the network.
+  Upgrade Incus, or pass --insecure-network (or set INCS_INSECURE_NETWORK=1)
+  to use the default bridge, where instances can reach each other and the host."
+}
+
+# Whether two CIDRs overlap: the shorter prefix contains the other.
+net_overlaps() {
+  local a b l mask
+  a=$(net_ip2int "${1%/*}"); b=$(net_ip2int "${2%/*}")
+  l="${1#*/}"; (( ${2#*/} < l )) && l="${2#*/}"
+  mask=$(net_mask "$l")
+  (( (a & mask) == (b & mask) ))
+}
+
+# A free 10.x.0.0/16: one no route on the host and no Incus network
+# overlaps, including broader ones such as a VPN's 10.0.0.0/8.
+net_pick_subnet() {
+  if [[ -n "${INCS_NET_SUBNET:-}" ]]; then echo "$INCS_NET_SUBNET"; return 0; fi
+  local used o c taken
+  used="$( { ip -4 route 2>/dev/null; incus network list --format csv 2>/dev/null; } |
+    grep -oE '([0-9]+\.){3}[0-9]+/[0-9]+' | sort -u)" || used=""
+  for o in $(seq 200 250) $(seq 100 199); do
+    taken=0
+    for c in $used; do
+      if net_overlaps "$c" "10.$o.0.0/16"; then taken=1; break; fi
+    done
+    [[ "$taken" == 1 ]] && continue
+    echo "10.$o.0.1/16"
+    return 0
+  done
+  error "No free 10.x.0.0/16 for $INCS_NET. Set INCS_NET_SUBNET, for example INCS_NET_SUBNET=10.201.0.1/16."
+}
+
+# The bridge's last /24 is the DHCP pool. incs assigns everything below it.
+net_dhcp_pool() {
+  local base
+  base=$(( $(net_ip2int "${1%/*}") & 0xFFFF0000 ))
+  echo "$(net_int2ip $(( base + 0xFF0A )))-$(net_int2ip $(( base + 0xFFFA )))"
+}
+
+# No DNS server on the bridge (port=0), and public resolvers over DHCP.
+net_dnsmasq() { printf 'port=0\ndhcp-option=option:dns-server,%s' "$INCS_RESOLVERS"; }
+
+# Sets each key=value on the bridge only when it differs: a change to a DHCP
+# setting restarts dnsmasq.
+net_converge() {
+  local kv
+  for kv in "$@"; do
+    [[ "$(incus network get "$INCS_NET" "${kv%%=*}" 2>/dev/null)" == "${kv#*=}" ]] && continue
+    incus network set "$INCS_NET" "$kv" >/dev/null || error "Could not set ${kv%%=*} on $INCS_NET"
+  done
+}
+
+net_acl_yaml() {
+  local subnet="$1" gw="${1%/*}"
+  cat <<EOF
+description: Agents on $INCS_NET. Managed by incs; edits are overwritten.
+egress:
+- action: reject
+  destination: $(net_egress_rejects "$subnet")
+  description: private and special ranges outside $INCS_NET
+  state: enabled
+- action: reject
+  destination: $gw/32
+  description: the host (DHCP still works)
+  state: enabled
+ingress:
+- action: allow
+  source: $gw/32
+  description: the host
+  state: enabled
+EOF
+}
+
+# ufw's default deny drops DHCP on a new bridge and forwarding out of it.
+# Opens exactly those, once per bridge. No DNS: the bridge serves none.
+net_ufw() {
+  [[ "$(uname -s)" == "Linux" ]] || return 0
+  command -v ufw >/dev/null 2>&1 || return 0
+  grep -q '^ENABLED=yes' "$INCS_UFW_CONF" 2>/dev/null || return 0
+  [[ "$(incus network get "$INCS_NET" user.incs.ufw 2>/dev/null)" == "1" ]] && return 0
+  log "ufw is on: allowing DHCP and forwarding on $INCS_NET (sudo)"
+  if sudo ufw allow in on "$INCS_NET" to any port 67 proto udp comment "incs: DHCP" >/dev/null &&
+     sudo ufw route allow in on "$INCS_NET" comment "incs: out to the internet; incs rules filter" >/dev/null; then
+    incus network set "$INCS_NET" user.incs.ufw=1
+  else
+    error "Could not add the ufw rules for $INCS_NET. Add them, then retry:
+  sudo ufw allow in on $INCS_NET to any port 67 proto udp
+  sudo ufw route allow in on $INCS_NET"
+  fi
+}
+
+# Creates or converges the bridge, its rules and the profile. Idempotent and
+# safe to race, like ensure_profile.
+ensure_net() {
+  local subnet
+  if ! incus network show "$INCS_NET" &>/dev/null; then
+    subnet="$(net_pick_subnet)"
+    log "Creating network: $INCS_NET ($subnet)"
+    incus network create "$INCS_NET" "ipv4.address=$subnet" >/dev/null 2>&1 ||
+      incus network show "$INCS_NET" &>/dev/null ||
+      error "Could not create network: $INCS_NET"
+  fi
+  subnet="$(incus network get "$INCS_NET" ipv4.address)"
+  [[ "$subnet" =~ ^[0-9]+(\.[0-9]+){3}/16$ ]] ||
+    error "$INCS_NET has ipv4.address=$subnet, but incs needs a /16. Delete the network (incus network delete $INCS_NET) or set ipv4.address to a /16."
+  net_converge ipv4.nat=true ipv6.address=none \
+    "ipv4.dhcp.ranges=$(net_dhcp_pool "$subnet")" "raw.dnsmasq=$(net_dnsmasq)"
+
+  if ! incus network acl show "$INCS_NET_ACL" &>/dev/null; then
+    incus network acl create "$INCS_NET_ACL" >/dev/null 2>&1 ||
+      incus network acl show "$INCS_NET_ACL" &>/dev/null ||
+      error "Could not create network ACL: $INCS_NET_ACL"
+  fi
+  net_acl_yaml "$subnet" | incus network acl edit "$INCS_NET_ACL" ||
+    error "Could not set the rules in network ACL: $INCS_NET_ACL"
+
+  if ! incus profile show "$INCS_NET_PROFILE" &>/dev/null; then
+    log "Creating Incus profile: $INCS_NET_PROFILE"
+    incus profile create "$INCS_NET_PROFILE" >/dev/null 2>&1 ||
+      incus profile show "$INCS_NET_PROFILE" &>/dev/null ||
+      error "Could not create Incus profile: $INCS_NET_PROFILE"
+  fi
+  local keys=(network="$INCS_NET" security.ipv4_filtering=true security.mac_filtering=true
+    security.acls="$INCS_NET_ACL" security.acls.default.ingress.action=drop
+    security.acls.default.egress.action=allow)
+  # A device add that loses a race leaves the other run's eth0, so set it.
+  if ! grep -q '^eth0:' <<< "$(incus profile device show "$INCS_NET_PROFILE" 2>/dev/null)"; then
+    incus profile device add "$INCS_NET_PROFILE" eth0 nic "${keys[@]}" >/dev/null 2>&1 || true
+  fi
+  incus profile device set "$INCS_NET_PROFILE" eth0 "${keys[@]}" >/dev/null ||
+    error "Could not set eth0 in Incus profile: $INCS_NET_PROFILE"
+
+  net_ufw
+}
+
+# The next address to give an instance. The counter in the bridge's config
+# only grows, so a given-up address comes back only after it wraps. Run it
+# under incs_lock.
+net_next_address() {
+  local subnet base n span used host ip gw tries=0
+  subnet="$(incus network get "$INCS_NET" ipv4.address)"
+  base=$(( $(net_ip2int "${subnet%/*}") & 0xFFFF0000 ))
+  gw="${subnet%/*}"
+  n="$(incus network get "$INCS_NET" user.incs.next-address 2>/dev/null)"
+  [[ "$n" =~ ^[0-9]+$ ]] || n=0
+  used="$(incus network list-leases "$INCS_NET" --format csv 2>/dev/null | grep -oE '([0-9]+\.){3}[0-9]+')" || used=""
+  # Hosts .0.10 up to the DHCP pool in the last /24.
+  span=$(( 0xFF00 - 10 ))
+  while (( tries++ < span )); do
+    host=$(( 10 + n % span ))
+    n=$(( n + 1 ))
+    (( (host & 255) == 0 || (host & 255) == 255 )) && continue
+    ip="$(net_int2ip $(( base + host )))"
+    [[ "$ip" == "$gw" ]] && continue
+    grep -qx "$ip" <<< "$used" && continue
+    incus network set "$INCS_NET" "user.incs.next-address=$n" >/dev/null ||
+      error "Could not record the next address on $INCS_NET"
+    echo "$ip"
+    return 0
+  done
+  error "No free address left on $INCS_NET"
+}
+
+# One incs change to shared network state at a time on this host. mkdir is
+# atomic everywhere; flock isn't on macOS. A lock whose owner has exited is
+# taken over.
+incs_lock() {
+  local waited=0 pid
+  mkdir -p "$(dirname "$INCS_LOCK_DIR")"
+  until mkdir "$INCS_LOCK_DIR" 2>/dev/null; do
+    pid="$(cat "$INCS_LOCK_DIR/pid" 2>/dev/null)" || pid=""
+    if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+      rm -rf "$INCS_LOCK_DIR"
+      continue
+    fi
+    # Creating an egress container builds smokescreen under the lock.
+    (( waited++ < 900 )) ||
+      error "Another incs command has held $INCS_LOCK_DIR for 15 minutes. If none is running, remove it."
+    sleep 1
+  done
+  echo "$$" > "$INCS_LOCK_DIR/pid"
+}
+incs_unlock() { rm -rf "$INCS_LOCK_DIR"; }

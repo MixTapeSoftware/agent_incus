@@ -5,6 +5,9 @@ PLUGIN_DEFAULT=0
 PLUGIN_CLI_FLAGS="--tailscale"
 PLUGIN_NEEDS_PROMPT=1
 PLUGIN_RUN_ON_LAUNCH=1
+# Under an allowlist: the installer, packages, control servers and relays
+# (DERP). Direct connections are refused, so it relays.
+PLUGIN_EGRESS_ALLOW="tailscale.com *.tailscale.com log.tailscale.io"
 
 plugin_prompt() {
   echo ""
@@ -62,16 +65,25 @@ plugin_install() {
 
   # A stored pref, so it survives restarts. 'tailscale up' has no
   # --auto-update flag and doesn't check it, so a later 'up --operator=...'
-  # won't complain that the setting is missing.
+  # won't complain that the setting is missing. Under an allowlist the
+  # packages come from pkgs.tailscale.com, which *.tailscale.com covers.
   incus exec "$CONTAINER_NAME" -- tailscale set --auto-update || \
-    warn "Could not turn on Tailscale auto-updates; run 'incs shell --with-sudo $CONTAINER_NAME \"sudo tailscale set --auto-update\"'"
+    warn "Could not turn on Tailscale auto-updates; run 'incus exec $CONTAINER_NAME -- tailscale set --auto-update'"
+
+  # Under an allowlist the agent mustn't control Tailscale: an operator could
+  # turn on an exit node (around the allowlist) or Funnel. Serve mappings are
+  # changed from the host instead (incs serve).
+  local operator=()
+  if [[ "${EGRESS_MODE:-off}" == "off" ]]; then
+    operator=(--operator="$HOST_USER")
+  fi
 
   if [[ -n "${TS_AUTH_KEY:-}" ]]; then
     log "Bringing tailscale up with provided auth key..."
     incus exec "$CONTAINER_NAME" -- tailscale up \
       --authkey="$TS_AUTH_KEY" \
       --hostname="$CONTAINER_NAME" \
-      --operator="$HOST_USER"
+      ${operator[@]+"${operator[@]}"}
     unset TS_AUTH_KEY
 
     # Expose the joined machine's FQDN as a global so other plugins
@@ -90,10 +102,15 @@ plugin_install() {
         warn "tailscale serve failed — run it manually once your app is up"
       unset TS_SERVE_PORT
     fi
-  else
+  elif [[ "${EGRESS_MODE:-off}" == "off" ]]; then
     echo ""
     echo "  To join the tailnet, run:"
     echo "    incs -s $CONTAINER_NAME \"sudo tailscale up --operator=$HOST_USER\""
+  else
+    echo ""
+    echo "  To join the tailnet, run (as root; the agent can't control Tailscale):"
+    echo "    incus exec $CONTAINER_NAME -- tailscale up --hostname=$CONTAINER_NAME"
+    echo "  Then expose a dev server with: incs serve $CONTAINER_NAME <port>"
   fi
 }
 

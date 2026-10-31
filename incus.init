@@ -50,6 +50,10 @@ Options:
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
   --no-tui                  Skip interactive plugin selector, use defaults
+  --insecure-network        Use the default bridge: no isolation from other
+                            instances or the host (also INCS_INSECURE_NETWORK=1)
+  --egress MODE             Internet allowlist: enforce (default), report or off
+  --egress-container NAME   Run this container's proxy in incs-egress-NAME
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
 
@@ -104,13 +108,21 @@ wait_for_container() {
   return 0
 }
 
-# Wait for networking inside the container (can lag behind boot/restart)
+# Wait for networking inside the container (can lag behind boot/restart). A
+# container on an allowlist has no DNS of its own; it reaches the internet
+# only through its proxy, so the check goes through it too.
+NET_VIA_PROXY=0
 wait_for_network() {
-  local name="$1" timeout="${2:-30}" elapsed=0
+  local name="$1" timeout="${2:-30}" elapsed=0 probe
   log "Waiting for container networking..."
+  if [[ "$NET_VIA_PROXY" == "1" ]]; then
+    probe='curl -fsS -o /dev/null --max-time 5 https://github.com'
+  else
+    probe='getent hosts github.com >/dev/null 2>&1'
+  fi
   local ready=0
   while [[ $elapsed -lt $timeout ]]; do
-    if incus exec "$name" -- sh -c "getent hosts github.com >/dev/null 2>&1"; then
+    if incus exec "$name" -- sh -c "$probe"; then
       ready=1
       break
     fi
@@ -154,7 +166,7 @@ template_cleanup_on_exit() {
 
 # An EXIT trap, not ERR: error() calls exit directly, which ERR never sees.
 cleanup_on_exit() {
-  local rc=$? reply=""
+  local rc=$? reply="" egress=""
   trap - EXIT INT TERM HUP
   set +e
   if [[ -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
@@ -169,8 +181,20 @@ cleanup_on_exit() {
       # No answer (stdin closed) keeps the container: never delete unasked.
       read -rp "Delete it? [Y/n] " reply || reply="n"
       if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+        egress="$(incus config get "$CONTAINER_NAME" user.incs.egress.container 2>/dev/null)" || egress=""
         if incus delete --force "$CONTAINER_NAME"; then
           log "Deleted $CONTAINER_NAME"
+          if [[ -n "$egress" ]]; then
+            # A build can fail while holding the network lock. Reuse our own
+            # lock, and isolate error() so cleanup preserves the build's status.
+            (
+              if [[ "$(cat "$INCS_LOCK_DIR/pid" 2>/dev/null)" != "$$" ]]; then
+                incs_lock || exit 1
+              fi
+              trap incs_unlock EXIT
+              egress_forget "$CONTAINER_NAME" "$egress"
+            ) || warn "Could not remove $CONTAINER_NAME's proxy from $egress"
+          fi
         else
           warn "Could not delete '$CONTAINER_NAME'"
         fi
@@ -201,6 +225,9 @@ VM_DISK="20GiB"
 VM_MEMORY="4GiB"
 VM_CPUS="4"
 READY_TIMEOUT=30
+INSECURE_NETWORK="${INCS_INSECURE_NETWORK:-0}"
+EGRESS_MODE=""
+EGRESS_GROUP=""
 
 # ---------------------------------------------------------------------------
 # Plugin discovery — reads built-in plugins/*.sh plus user plugins from
@@ -473,7 +500,7 @@ ZSHEOF
 _reset_plugin_state() {
   PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
   PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
-  PLUGIN_REQUIRES="" PLUGIN_AGENT_COMMAND=""
+  PLUGIN_REQUIRES="" PLUGIN_AGENT_COMMAND="" PLUGIN_PHASE="" PLUGIN_EGRESS_ALLOW=""
   unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch 2>/dev/null || true
 }
 
@@ -516,13 +543,24 @@ _plugin_failed() {
   return 1
 }
 
+# A plugin's build phase under an allowlist: "open" plugins install before
+# the lock, "locked" ones after it, with the workspace. A plugin that takes a
+# credential (it prompts) is locked unless it says otherwise.
+_plugin_phase() {
+  if [[ -n "${PLUGIN_PHASE:-}" ]]; then echo "$PLUGIN_PHASE"
+  elif [[ "${PLUGIN_NEEDS_PROMPT:-0}" == "1" ]]; then echo locked
+  else echo open; fi
+}
+
+# Usage: _run_plugin_installs <from_template> [open|locked|all]
 _run_plugin_installs() {
-  local from_template="$1"
+  local from_template="$1" phase="${2:-all}"
   local i
   for ((i=0; i<PLUGIN_COUNT; i++)); do
     _reset_plugin_state
     source "${_P_FILE[$i]}"
     [[ "$(selected_get "$PLUGIN_ID")" != "1" ]] && continue
+    [[ "$phase" == all || "$(_plugin_phase)" == "$phase" ]] || continue
 
     if [[ "$from_template" == "1" ]]; then
       # Template launch dispatch:
@@ -639,6 +677,74 @@ copy_workspace() {
     "git config --global --add safe.directory $ws_q 2>/dev/null || true"
 }
 
+# The egress hosts the selected plugins ask for (PLUGIN_EGRESS_ALLOW).
+_selected_plugin_hosts() {
+  local i
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    [[ "${_P_SELECTED[$i]}" == "1" ]] || continue
+    ( _reset_plugin_state; source "${_P_FILE[$i]}"; echo "${PLUGIN_EGRESS_ALLOW:-}" )
+  done
+}
+
+# The lock, between a fresh build's open and locked phases: the container's
+# proxy, then the same lockdown `incs egress mode` uses (stop, locked card, a
+# new address, a verified proxy, start).
+lock_build() {
+  log "Turning on the allowlist ($EGRESS_MODE) before the workspace and credentials go in..."
+  incs_lock
+  egress_ensure "$EGRESS_CONTAINER"
+  egress_register "$CONTAINER_NAME" "$EGRESS_CONTAINER"
+  egress_write_proxy_env "$CONTAINER_NAME"
+  egress_lockdown "$CONTAINER_NAME"
+  incs_unlock
+  incus config set "$CONTAINER_NAME" user.incs.egress.build=locked
+  NET_VIA_PROXY=1
+  wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
+  wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
+}
+
+# Settings a locked container needs, then the build is done:
+# - github.com over HTTPS, since SSH (port 22) can't get out;
+# - Docker's client proxy settings, for builds and containers inside Docker;
+# - the login banner and the coding agents' note.
+finish_locked_build() {
+  local url
+  url="$(egress_proxy_url "$CONTAINER_NAME")"
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c 'sh -s' <<GITCFG || warn "Could not set git and Docker proxy settings"
+git config --global url."https://github.com/".insteadOf "git@github.com:"
+git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+if command -v docker >/dev/null 2>&1; then
+  mkdir -p "\$HOME/.docker"
+  f="\$HOME/.docker/config.json"
+  [ -s "\$f" ] || echo '{}' > "\$f"
+  jq --arg u "$url" --arg n "$EGRESS_NO_PROXY" '.proxies.default = {httpProxy: \$u, httpsProxy: \$u, noProxy: \$n}' "\$f" > "\$f.new" && mv "\$f.new" "\$f"
+fi
+GITCFG
+  egress_write_notices "$CONTAINER_NAME" "$HOST_USER"
+  egress_commit "$CONTAINER_NAME"
+  incus config set "$CONTAINER_NAME" user.incs.egress.build=done
+}
+
+# Node's built-in fetch reads proxy settings only from v22.21 and v24.
+warn_old_node() {
+  local v="" f major minor
+  for f in .nvmrc .node-version; do
+    [[ -f "$WORKSPACE_PATH/$f" ]] && v="$(tr -d ' v\r' < "$WORKSPACE_PATH/$f" | head -1)"
+  done
+  [[ -z "$v" && -f "$WORKSPACE_PATH/.tool-versions" ]] &&
+    v="$(awk '$1 == "nodejs" || $1 == "node" { print $2; exit }' "$WORKSPACE_PATH/.tool-versions")"
+  for f in mise.toml .mise.toml; do
+    [[ -z "$v" && -f "$WORKSPACE_PATH/$f" ]] &&
+      v="$(sed -nE 's/^[[:space:]]*node[[:space:]]*=[[:space:]]*"?v?([0-9][0-9.]*).*/\1/p' "$WORKSPACE_PATH/$f" | head -1)"
+  done
+  [[ "$v" =~ ^([0-9]+)(\.([0-9]+))? ]] || return 0
+  major="${BASH_REMATCH[1]}" minor="${BASH_REMATCH[3]:-0}"
+  if (( major < 22 || (major == 22 && minor < 21) || major == 23 )); then
+    warn "The workspace pins Node $v. Its built-in fetch ignores proxy settings before v22.21 (and on v23), so it can't reach the internet under the allowlist. Upgrade Node, or use --egress off."
+  fi
+  return 0
+}
+
 save_template() {
   local alias="incus-init/$CONTAINER_NAME"
   log "Saving as local template: $alias (stored in local Incus image store)"
@@ -707,6 +813,9 @@ while [[ $# -gt 0 ]]; do
     --ack-env)       ACK_ENV=1; shift ;;
     --agent)         [[ $# -lt 2 ]] && error "$1 requires an argument"; select_agent "$2"; shift 2 ;;
     --no-tui)        NO_TUI=1; shift ;;
+    --insecure-network) INSECURE_NETWORK=1; shift ;;
+    --egress)        [[ $# -lt 2 ]] && error "$1 requires an argument"; EGRESS_MODE="$2"; shift 2 ;;
+    --egress-container) [[ $# -lt 2 ]] && error "$1 requires an argument"; EGRESS_GROUP="$2"; shift 2 ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
     -*)
@@ -731,6 +840,10 @@ source "$SCRIPT_DIR/incus.envscan"
 source "$SCRIPT_DIR/incus.prompt"
 # shellcheck source=incus.profile
 source "$SCRIPT_DIR/incus.profile"
+# shellcheck source=incus.net
+source "$SCRIPT_DIR/incus.net"
+# shellcheck source=incus.egress
+source "$SCRIPT_DIR/incus.egress"
 
 # ---------------------------------------------------------------------------
 # Validate
@@ -743,6 +856,21 @@ incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAM
 [[ "$CONTAINER_WORKSPACE" == /?* ]] || error "--workspace must be an absolute path other than / (got: $CONTAINER_WORKSPACE)"
 # Remote shell snippets cd into the workspace; quote it once for all of them.
 printf -v WORKSPACE_Q '%q' "$CONTAINER_WORKSPACE"
+
+# The allowlist needs the isolated network. Off builds as before.
+if [[ "$INSECURE_NETWORK" == "1" ]]; then
+  [[ -z "$EGRESS_MODE" || "$EGRESS_MODE" == "off" ]] ||
+    error "--egress $EGRESS_MODE needs the isolated network; drop --insecure-network"
+  EGRESS_MODE=off
+fi
+EGRESS_MODE="${EGRESS_MODE:-enforce}"
+case "$EGRESS_MODE" in
+  enforce|report|off) ;;
+  *) error "--egress must be enforce, report or off (got: $EGRESS_MODE)" ;;
+esac
+EGRESS_CONTAINER="$(egress_name "$EGRESS_GROUP")"
+LOCKED_BUILD=0
+[[ "$EGRESS_MODE" != "off" ]] && LOCKED_BUILD=1
 
 # ---------------------------------------------------------------------------
 # Detect if launching from a local base image (skip provisioning)
@@ -792,6 +920,7 @@ if [[ "$SAVE_TEMPLATE" != "1" ]]; then
   [[ ! -d "$WORKSPACE_PATH" ]] && error "Directory not found: $WORKSPACE_PATH"
 
   if [[ "$NO_COPY" != "1" ]]; then
+    [[ "$LOCKED_BUILD" == "1" ]] && warn_old_node
     ENV_FILES_LIST="$(detect_env_files "$WORKSPACE_PATH")"
     if [[ -n "$ENV_FILES_LIST" ]]; then
       echo ""
@@ -861,6 +990,16 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "Type:        container"
   fi
+  if [[ "$INSECURE_NETWORK" == "1" ]]; then
+    echo "Network:     default bridge, not isolated (--insecure-network)"
+  else
+    echo "Network:     $INCS_NET, isolated from other instances and the host"
+  fi
+  if [[ "$LOCKED_BUILD" == "1" ]]; then
+    echo "Egress:      $EGRESS_MODE (allowlist), proxy in $EGRESS_CONTAINER"
+  else
+    echo "Egress:      off (no allowlist)"
+  fi
   if [[ "$SAVE_TEMPLATE" == "1" ]]; then
     echo "Workspace:   empty (template base)"
   elif [[ "$NO_COPY" == "1" ]]; then
@@ -907,21 +1046,74 @@ trap 'exit 129' HUP
 
 ensure_profile
 
+# The isolated bridge, and this instance's address on it (incus.net).
+NET_ARGS=()
+if [[ "$INSECURE_NETWORK" == "1" ]]; then
+  warn "--insecure-network: $CONTAINER_NAME goes on the default bridge, where instances can reach each other and the host"
+else
+  net_preflight
+  incs_lock
+  ensure_net
+  NET_IP="$(net_next_address)"
+  incs_unlock
+  NET_ARGS=(-p "$INCS_NET_PROFILE" -d "eth0,ipv4.address=$NET_IP")
+fi
+
 # ---------------------------------------------------------------------------
 # Create container
 # ---------------------------------------------------------------------------
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
+# Under an allowlist it's created stopped, so incs decides when it first runs.
+LAUNCH=launch
+[[ "$LOCKED_BUILD" == "1" ]] && LAUNCH=init
 if [[ "$IS_VM" == "1" ]]; then
-  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
+  # Naming any profile replaces the implicit default, so name it too.
+  incus "$LAUNCH" "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
+    ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
     -c limits.memory="$VM_MEMORY" \
     -c limits.cpu="$VM_CPUS" \
     -d root,size="$VM_DISK"
 else
-  incus launch "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE"
+  incus "$LAUNCH" "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
 fi
 incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
+if [[ "$INSECURE_NETWORK" == "1" ]]; then
+  incus config set "$CONTAINER_NAME" user.incs.net=open
+else
+  incus config set "$CONTAINER_NAME" user.incs.net=isolated
+fi
 # incus.shell starts sessions here.
 incus config set "$CONTAINER_NAME" user.agent-incus.workspace="$CONTAINER_WORKSPACE"
+
+if [[ "$LOCKED_BUILD" == "1" ]]; then
+  # Kept from starting on its own until the build finishes; the original
+  # autostart (never set) comes back when the lock commits. The builder's PID
+  # and boot tell a healthy build from an abandoned one.
+  incus config set "$CONTAINER_NAME" boot.autostart=false user.incs.egress.autostart-saved=unset \
+    "user.incs.egress=$EGRESS_MODE" "user.incs.egress.builder=$$@$(egress_boot_id)" \
+    "user.incs.egress.build=$([[ "$FROM_BASE_IMAGE" == "1" ]] && echo locked || echo open)"
+  # read -a splits on spaces without pathname expansion, so a wildcard such
+  # as *.tailscale.com can't match files in the current directory.
+  read -r -a _plugin_hosts <<< "$(_selected_plugin_hosts | tr '\n' ' ')"
+  egress_record_plugin_hosts "$CONTAINER_NAME" ${_plugin_hosts[@]+"${_plugin_hosts[@]}"}
+  if [[ "$FROM_BASE_IMAGE" == "1" ]]; then
+    # A template may hold logins, credential files or startup services, so it
+    # never runs open: locked card and a verified proxy before its first start.
+    log "Locking $CONTAINER_NAME's network ($EGRESS_MODE) before its first start..."
+    incs_lock
+    egress_prepare_unstarted "$CONTAINER_NAME" "$EGRESS_CONTAINER" "$EGRESS_MODE"
+    incs_unlock
+    NET_VIA_PROXY=1
+  fi
+  incus start "$CONTAINER_NAME"
+  wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
+  [[ "$FROM_BASE_IMAGE" == "1" ]] && egress_write_proxy_env "$CONTAINER_NAME"
+elif [[ "$FROM_BASE_IMAGE" == "1" ]]; then
+  # A template built under an allowlist carries proxy settings for a proxy
+  # this container doesn't have.
+  wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
+  egress_clear_proxy_env "$CONTAINER_NAME"
+fi
 
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
 wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
@@ -1016,9 +1208,10 @@ incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'MISECFG'
 MISECFG
 
 # ---------------------------------------------------------------------------
-# Copy the workspace in
+# Copy the workspace in. A fresh build under an allowlist copies it after the
+# lock instead, below.
 # ---------------------------------------------------------------------------
-copy_workspace
+[[ "$LOCKED_BUILD" == "1" && "$FROM_BASE_IMAGE" == "0" ]] || copy_workspace
 
 # Final readiness check
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
@@ -1056,9 +1249,18 @@ ZSHEOF
 fi  # end FROM_BASE_IMAGE == 0
 
 # ---------------------------------------------------------------------------
-# Install selected plugins
+# Install selected plugins. A fresh build under an allowlist installs the
+# ones that take no credentials, locks, then copies the workspace and
+# installs the rest.
 # ---------------------------------------------------------------------------
-_run_plugin_installs "$FROM_BASE_IMAGE"
+if [[ "$LOCKED_BUILD" == "1" && "$FROM_BASE_IMAGE" == "0" ]]; then
+  _run_plugin_installs 0 open
+  lock_build
+  copy_workspace
+  _run_plugin_installs 0 locked
+else
+  _run_plugin_installs "$FROM_BASE_IMAGE"
+fi
 
 # Revoke build-time sudo now that plugins are done
 log "Revoking build-time sudo..."
@@ -1143,6 +1345,8 @@ fi
 # by symlinking them into ~/.local/bin, which is on the default PATH.
 # mise activation in .zshrc only covers interactive zsh; without this,
 # `incus exec ... bash -c '...'` falls through to system binaries.
+[[ "$LOCKED_BUILD" == "1" ]] && finish_locked_build
+
 log "Syncing mise shims into ~/.local/bin..."
 incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c '
   shims="$HOME/.local/share/mise/shims"

@@ -1,0 +1,8 @@
+[Unit]
+Description=incs proxy prototype: record one generation ack
+
+[Service]
+ExecStart=/bin/cat
+StandardInput=socket
+StandardOutput=journal
+DynamicUser=yes

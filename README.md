@@ -22,6 +22,8 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [Tailscale](#tailscale)
   - [Expose Container Ports](#expose-container-ports)
   - [Snapshots](#snapshots)
+  - [Network Isolation](#network-isolation)
+  - [Egress Allowlist](#egress-allowlist)
 - [Runtime Management](#runtime-management)
 - [Linux Gotchas](#linux-gotchas)
 
@@ -138,6 +140,9 @@ Options:
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 Start with an empty workspace instead of copying the host directory
+  --insecure-network        Use the default bridge: no isolation from other instances or the host
+  --egress MODE             Internet allowlist: enforce (default), report or off
+  --egress-container NAME   Run the container's proxy in incs-egress-NAME
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
@@ -149,7 +154,7 @@ Options:
 
 ### What incus.init does
 
-1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits
+1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits. It joins the `incsbr0` bridge, isolated from other instances and the host (see [Network Isolation](#network-isolation))
 2. Installs build tools, dev libraries, Python, and Node.js
 3. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
 4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
@@ -278,6 +283,8 @@ Optional extras:
 - `PLUGIN_CLI_FLAGS="--my-tool"` — adds a CLI flag to pre-select without the TUI
 - `PLUGIN_NEEDS_PROMPT=1` + `plugin_prompt()` — collect user input before install
 - `PLUGIN_RUN_ON_LAUNCH=1` + `plugin_on_launch()` — re-run setup when launching from a template (for symlinks, config that doesn't survive snapshots)
+- `PLUGIN_EGRESS_ALLOW="host *.example.com"` — hosts the plugin needs under the [egress allowlist](#egress-allowlist), recorded on the container when it's created
+- `PLUGIN_PHASE=open|locked` — when it installs under an allowlist: `open`, before the container is locked, or `locked`, after, with the workspace. Plugins that prompt (they usually take a credential) default to `locked`, others to `open`
 - `PLUGIN_REQUIRES="other-id ..."` — auto-select these plugins whenever this one is selected (single level: a required plugin's own requirements aren't chased)
 
 **Overriding a built-in:** define a plugin in your user dir with the same `PLUGIN_ID` as a built-in. You'll see a `[!] Plugin 'foo' from ... overrides ...` warning at discovery time.
@@ -477,6 +484,16 @@ If you skipped the auth key, join later with:
 incs shell --with-sudo project-dev "sudo tailscale up --operator=$USER"
 ```
 
+**Under the [egress allowlist](#egress-allowlist)** (the default for new containers), Tailscale relays through the container's proxy, and `*.tailscale.com` is on its list. The agent isn't Tailscale's operator, so it can't turn on an exit node (a way around the allowlist) or Funnel. Join as root from the host instead (`incus exec project-dev -- tailscale up --hostname=project-dev`), and change served ports from the host with `incs serve`:
+
+```bash
+incs serve project-dev            # list the mappings
+incs serve project-dev 443:5173   # tailnet https :443 -> the app on 5173
+incs serve project-dev --off 443  # remove one
+```
+
+Give the container's tag no tailnet privileges: no outbound grants, exit nodes or Funnel. Any process in the container can reach whatever devices the tag is allowed to reach, and incs can't check the policy. Containers with Tailscale aren't confined against a determined agent: with `*.tailscale.com` allowed, a script could start its own Tailscale and join someone else's tailnet. `incs egress ls` marks them.
+
 To add or change served ports after the fact, run `tailscale serve` inside the container (no sudo needed, since your user is the Tailscale operator):
 
 ```bash
@@ -622,6 +639,50 @@ incus restore project-dev before-refactor
 incus info project-dev   # list snapshots
 ```
 
+### Network Isolation
+
+New containers and VMs join `incsbr0`, a bridge incs creates on first use with the `incs-net` profile and the `incs-base` rules:
+
+- Instances can't reach each other, services on the host, or private and LAN addresses (including tailnet and cloud metadata ranges). Rejected connections fail at once rather than hanging.
+- The internet stays open, and the host can reach every instance: a dev server opens at the instance's IP, and `incs -n` port forwarding works as before.
+- No instance can take another's IP or MAC address.
+- The bridge serves no DNS. DHCP hands out public resolvers instead (`1.1.1.1` and `9.9.9.9`; set `INCS_RESOLVERS` to change them before the bridge is created).
+- IPv6 is off on the bridge.
+- incs assigns each instance its address, recorded on the instance's `eth0`.
+
+It needs Incus 7.5.1 or later with the nftables firewall. On an older Incus, `incs -i` refuses and explains. `--insecure-network` (or `INCS_INSECURE_NETWORK=1`) puts an instance on the default bridge with no isolation instead. The bridge's subnet is a free `10.x.0.0/16`; set `INCS_NET_SUBNET` (for example `10.201.0.1/16`) before the first `incs -i` to choose it.
+
+Instances created before this keep the default bridge. What changes for new ones:
+
+- A container can no longer connect to another container, or to a database or other service running on the host. Run it in the same container, or reach it from the host side.
+- Tailscale inside a container can't make direct LAN connections, so it relays (DERP). It's a little slower and still works.
+
+### Egress Allowlist
+
+`incs egress` limits which internet hosts a container on `incsbr0` can reach. Its traffic goes through its own [smokescreen](https://github.com/stripe/smokescreen) proxy in an egress container (`incs-egress`), and its network card lets it reach nothing but that proxy. Nothing is decrypted: the proxy sees only the hostname each connection asks for.
+
+```bash
+incs egress mode my-project enforce      # only listed hosts (restarts it the first time)
+incs egress log my-project               # what it tried to reach, blocked first
+incs egress allow my-project docs.rs     # open connections keep running
+incs egress rm my-project docs.rs        # its open connections through the proxy end
+incs egress mode my-project report       # allow all public web traffic, log what enforce would block
+incs egress mode my-project off          # no allowlist
+incs egress ls [my-project]              # modes, proxies, and where each host comes from
+incs egress refresh [my-project|--all]   # finish an interrupted change, review a baseline update
+```
+
+- **Hosts** are hostnames for ports 80 and 443. A leading `*.` matches any subdomain, not the name itself.
+- **The list** is the approved baseline (`~/.config/incs/egress-approved-baseline.txt`, AI APIs, package managers, code hosts and registries; copied from [`egress/baseline.txt`](egress/baseline.txt) on first use), your additions for every container (`incs egress allow --all`, kept in `~/.config/incs/egress-baseline.txt`), and the container's own hosts. When an update changes the shipped baseline, nothing uses it until `incs egress refresh` shows you the difference and you approve it.
+- **New containers** (`incs -i`) are built on the allowlist (`--egress enforce`; `--egress off` for none). Plugins that take no credentials install first, with the internet open; then the container is locked, and only then do the workspace and the plugins that take credentials go in. A container from a template is locked before its first start, since a template may hold logins or startup services.
+- **Turning it on** for an open container stops it, locks its card, ends its old proxies, moves it to a fresh address so no old connection survives, and starts it again. Until that finishes it won't start on its own, and `incs` won't start it; `incs egress refresh` finishes an interrupted one.
+- **Proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, a narrow `NO_PROXY`, `NODE_USE_ENV_PROXY=1`) go into the Incus environment, `/etc/environment`, every systemd service, and apt. A tool that ignores them fails rather than getting around the proxy. Node's built-in `fetch` needs Node 22.21 or 24 or later for this.
+- **Without DNS**: an allowlisted container can't look names up itself; the proxy does it.
+- **In the status view** (`incs`), allowlisted containers show 🔒 (enforce) or 🔓 (report), and their details have **Network** and **Rules** tabs (h/l). Network lists what the container tried to reach, blocked first: `a` allows the selected host for that container, `A` for every container, each after a y/n naming the exact host and scope. Rules lists its hosts and where each comes from; `d` removes one of the container's own. `m` changes the mode.
+- **Separate egress containers** (`--egress-container <name>` on `incs egress mode`, making `incs-egress-<name>`) keep groups of containers, such as different clients' work, from reaching each other's proxies. Each egress container is one security boundary.
+
+What an allowlist doesn't stop: data sent to an allowed host (a gist, a package upload), and anything reachable through an allowed shared front end such as a CDN. Hosts in the baseline that accept uploads from anyone with an account are marked `upload:` in the file.
+
 ## Runtime Management
 
 Containers come with [mise](https://mise.jdx.dev/) pre-installed. Install runtimes per-project:
@@ -637,7 +698,9 @@ Or add a `mise.toml` to your project — `incus.init` runs `mise install` automa
 
 ### Firewall (UFW)
 
-If UFW is enabled on the host, its default DROP policy will block traffic on the Incus bridge. See the [Incus firewall documentation](https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge) for setup instructions. The things you'll need to allow:
+For `incsbr0`, incs adds what it needs when it creates the bridge (it asks for sudo): DHCP in on the bridge, and forwarding out of it. It opens no DNS, because the bridge serves none.
+
+For the default bridge (`--insecure-network` and older instances): if UFW is enabled on the host, its default DROP policy will block traffic on the Incus bridge. See the [Incus firewall documentation](https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge) for setup instructions. The things you'll need to allow:
 
 - **DHCP + DNS** — containers need these to get an IP address and resolve names
 - **Outbound forwarding** — containers need a route through the host to reach the internet. Optionally, if you use `--proxy`, the proxy port on the host must also accept connections from the bridge

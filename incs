@@ -40,6 +40,12 @@ Commands:
                                  Shell into container (--with-sudo grants temporary sudo)
   -i, init [args...]             Create/provision a new container
   -n, net <container> [ports...] Manage port proxies
+  egress <command> [args...]     Which internet hosts a container may reach
+                                 (incs egress -h)
+  serve <container> [<port>[:<target>] | --off <port>]
+                                 Tailscale serve mappings, set from the host:
+                                 list them, map tailnet HTTPS <port> to the
+                                 app's <target> (default: the same), or remove
   -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)
   -d, delete <container>          Force delete a container
   -k, kill <container>           Stop a container
@@ -48,7 +54,8 @@ Commands:
   -ua, update-all                Update packages in all agent-incus containers
   status [--once]                Live view of all instances: state, CPU, memory, disk,
                                  IPv4; j/k or arrows select, space starts/stops,
-                                 tab or enter shows details
+                                 tab or enter shows details; h/l switch to an
+                                 allowlisted container's Network and Rules tabs
   new-plugin <slug> [opts]       Generate a new plugin file from a template
   -h, help                       Show this help
 
@@ -80,6 +87,14 @@ Examples:
   incs cron install 3            Install 3am daily update cron
 EOF
   exit 0
+}
+
+# A lockdown that didn't finish keeps the container stopped until it does
+# (incs egress refresh). Nothing in incs starts it before then.
+behind_barrier() {
+  local t
+  t="$(incus config get "$1" user.incs.egress.transition 2>/dev/null)" || return 0
+  [[ -n "$t" && "$t" != "none" ]]
 }
 
 is_debian() {
@@ -144,6 +159,10 @@ cmd_update_all() {
     local was_running=0
     if [[ "$status" == "RUNNING" ]]; then
       was_running=1
+    elif behind_barrier "$name"; then
+      echo "  ⚠️  Skipping $name: it's partway through turning its allowlist on. Finish it: incs egress refresh $name" >&2
+      failed+=("$name")
+      continue
     else
       log "Starting $name..."
       incus start "$name"
@@ -212,6 +231,8 @@ cmd_set_env() {
   local status
   status=$(incus list "^${container}$" --format csv --columns s 2>/dev/null)
   if [[ "$status" != "RUNNING" ]]; then
+    behind_barrier "$container" &&
+      error "$container is partway through turning its allowlist on, so it stays stopped. Finish it: incs egress refresh $container"
     log "Starting $container..."
     incus start "$container"
     local attempts=0
@@ -276,7 +297,10 @@ def ipv4:
 def row($t):
   .state as $s | ($s.cpu.usage // null) as $u | ($prev.cpu[.name] // null) as $p
   | ([.expanded_devices // {} | .[] | select(.type == "disk" and .path == "/") | .size // empty] | first // null) as $quota
+  | (.expanded_config // {}) as $c
   | { status, managed: managed,
+      egress: (($c["user.incs.egress.container"] // "") != ""),
+      emode: ($c["user.incs.egress"] // "enforce"),
       cells: [
         .name,
         (if .type == "virtual-machine" then "VM" else "CT" end),
@@ -332,7 +356,34 @@ STATUS_JQ="$STATUS_DEFS"'
 STATUS_PANELS_JQ="$STATUS_DEFS"'
 def clip($n): if length > $n then .[0:$n - 1] + "…" else . end;
 def when: if . == null or startswith("0001-") then "-" else .[0:16] | sub("T"; " ") end;
-def lcells: [(.cells[0] | clip(30)), .cells[2], (.cells[3] | split(" / ")[0])];
+# The name of an allowlisted instance carries a two-character placeholder for its
+# mark, swapped in after padding: a lock is two columns wide but one
+# character long.
+def lcells: [((.cells[0] | clip(30)) + (if .egress then " @@" else "" end)), .cells[2], (.cells[3] | split(" / ")[0])];
+def mark: if .egress | not then "" elif .emode == "enforce" then "🔒" elif .emode == "report" then "🔓" else "  " end;
+def egressinfo:
+  .inst.expanded_config as $c
+  | if ($c["user.incs.egress.container"] // "") == "" then [] else
+      ($c["user.incs.egress"] // "enforce") as $m
+      | ($c["user.incs.egress.active"] // "-") as $a
+      | ($c["user.incs.egress.transition"] // "none") as $t
+      | [ ["Egress", (if $m == "enforce" then "enforce: only listed hosts"
+                      elif $m == "report" then "report: logging what enforce would block"
+                      else "off: allowlist kept, not enforced" end)],
+          ["Proxy", "\($c["user.incs.egress.container"]):\($c["user.incs.egress.port"] // "-")"] ]
+        + (if $t != "none" then [["Attention", "change interrupted: incs egress refresh \(.inst.name)"]]
+           elif ($a | split(":")[0]) != $m then [["Attention", "wants \($m), runs \($a | split(":")[0]): incs egress refresh \(.inst.name)"]]
+           else [] end)
+        + (if (($c["user.incs.egress.plugin-allow"] // "") | split(",") | index("*.tailscale.com")) != null
+           then [["Tailscale", "not confined against a determined agent"]] else [] end)
+    end;
+def tabs($has):
+  ["Info"] + (if $has then ["Network", "Rules"] else [] end)
+  | to_entries
+  | map(if (.value | ascii_downcase) == $tab
+        then (if $focus == "info" then "\u001b[7m \(.value) \u001b[27m" else " \u001b[4m\(.value)\u001b[24m " end)
+        else " \(.value) " end)
+  | join(" ");
 def info:
   . as $r | .inst as $i
   | [ ["State", $i.status],
@@ -344,7 +395,7 @@ def info:
       ["Image", ($i.config["image.description"] // "-")],
       ["Profiles", ($i.profiles // [] | if length == 0 then "-" else join(", ") end)],
       ["Created", ($i.created_at | when)],
-      ["Last started", ($i.last_used_at | when)] ]
+      ["Last started", ($i.last_used_at | when)] ] + egressinfo
   # Values such as the image description come from image metadata. A newline
   # would forge a tagged row, and an escape sequence would reach the terminal.
   | .[] | (.[0] | pad(14)) + (.[1] | tostring | gsub("[[:cntrl:]]"; " "));
@@ -356,7 +407,8 @@ def info:
     | [range(0; $hdr | length) as $i | [$hdr[$i], ($rows[] | lcells[$i])] | map(length) | max] as $w
     | ([3 + ($w | add) + 2 * ($w | length - 1), ("Agent Incus instances:" | length)] | max) as $lw
     | def lrow:
-        (dot + "  " + (lcells | fmt($w) | pad($lw - 3))) as $s
+        mark as $mark
+        | (dot + "  " + (lcells | fmt($w) | pad($lw - 3) | sub("@@"; $mark))) as $s
         | if $sel != .index then $s
           elif $focus == "list" then "\u001b[7m" + $s + "\u001b[27m"
           else "\u001b[1m" + $s + "\u001b[22m" end;
@@ -372,9 +424,9 @@ def info:
       "S\t\([$left | to_entries[] | select(.value.sel) | .key] | first // -1)",
       ( $rows[] | select(.index == $sel)
         | "R\t\u001b[1m" + .inst.name + "\u001b[22m",
-          "R\t" + (if $focus == "info" then "\u001b[7m Info \u001b[27m" else " \u001b[4mInfo\u001b[24m " end),
+          "R\t" + tabs(.egress),
           "R\t",
-          ("R\t" + info) ),
+          (if $tab == "info" then "R\t" + info else empty end) ),
       "F\t",
       "F\t\([$rows[] | select(.status == "Running")] | length) of \($rows | length) running"
         + (if $host.cpus != null then ", host has \($host.cpus) CPUs" else "" end)
@@ -401,10 +453,10 @@ status_render() {
     --argjson color "$5" --argjson sel "$6" "$STATUS_JQ" <<<"$1"
 }
 
-# Usage: status_render_panels <json> <prev> <at> <host> <color> <sel> <focus>
+# Usage: status_render_panels <json> <prev> <at> <host> <color> <sel> <focus> [<tab>]
 status_render_panels() {
   jq -r --argjson prev "$2" --argjson at "$3" --argjson host "$4" \
-    --argjson color "$5" --argjson sel "$6" --arg focus "$7" "$STATUS_PANELS_JQ" <<<"$1"
+    --argjson color "$5" --argjson sel "$6" --arg focus "$7" --arg tab "${8:-info}" "$STATUS_PANELS_JQ" <<<"$1"
 }
 
 cmd_status() {
@@ -543,11 +595,50 @@ status_frame_panels() {
   if ((${#foots[@]} > 0)); then frame+=("${foots[@]}"); fi
 }
 
+# Rows for the Network and Rules tabs, as "key<TAB>shown text": the key is
+# the host an action applies to. Hostnames come from proxy logs and are
+# treated as hostile: control characters are already replaced by the egress
+# ctl, and they're clipped here and never run as shell.
+# Usage: status_tab_rows <name> network|rules
+status_tab_rows() {
+  if [[ "$2" == network ]]; then
+    "$SCRIPT_DIR/incs.egress" log "$1" --raw 2>/dev/null | tail -n +2 | awk -F'\t' '
+      { gsub(/[[:cntrl:]]/, "?", $2); k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = substr($1, 12, 8) }
+      END { for (k in n) { split(k, f, "\t"); r = (f[3] == "blocked") ? 0 : (f[3] == "would-block") ? 1 : 2
+                           h = f[1]; if (length(h) > 60) h = substr(h, 1, 57) "..."
+                           print r "\t" n[k] "\t" f[1] "\t" sprintf("%-12s %5d  %-8s  %s:%s", f[3], n[k], last[k], h, f[2]) } }' |
+      sort -t$'\t' -k1,1n -k2,2nr | cut -f3-
+  else
+    "$SCRIPT_DIR/incs.egress" ls "$1" --tsv 2>/dev/null | awk -F'\t' '{ gsub(/[[:cntrl:]]/, "?", $1); gsub(/[[:cntrl:]]/, "?", $2); printf "%s\t%-44s %s\n", $1, substr($1, 1, 44), $2 }'
+  fi
+}
+
+# Starts an egress change as a background job, like start and stop.
+# Usage: status_egress_job <description> <incs egress args...>
+status_egress_job() {
+  local desc="$1"
+  shift
+  jobs=$((jobs + 1))
+  log_file="$STATUS_TMP/$jobs"
+  printf '%s\n' "$desc" >"$log_file.desc"
+  (
+    trap - EXIT INT TERM
+    rc=0
+    "$SCRIPT_DIR/incs.egress" "$@" </dev/null >"$log_file" 2>&1 || rc=$?
+    echo "$rc" >"$log_file.tmp"
+    mv "$log_file.tmp" "$log_file.rc"
+  ) &
+  pending+="egress"$'\t'"$name"$'\t'"$log_file"$'\n'
+  msg=$(status_note "$msg" "$desc…")
+  tab_at=0
+}
+
 status_interactive() {
   local color=true host json="[]" listed sample='{"t":0,"cpu":{}}' prev at=null
   local names=() states=() count=0 sel=0 sel_name="" hl i
   local pending="" still msg="" fetch=true last=-1 jobs=0
   local key rc rest line out table tagged keys name state verb log_file p_verb p_name p_log err
+  local egs=() trans=() eg tr tab=info tabs_n=1 rsel=0 tab_rows=() tab_for="" tab_at=0 ask="" ask_args=() ask_desc="" r
   local frame=() size term_rows term_cols msg_lines wide focus=list top=0 rtop=0
   if [[ -n "${NO_COLOR:-}" ]]; then color=false; fi
 
@@ -573,7 +664,13 @@ status_interactive() {
           still+="$p_verb"$'\t'"$p_name"$'\t'"$p_log"$'\n'
           continue
         fi
-        if [[ "$(cat "$p_log.rc")" == 0 ]]; then
+        if [[ "$p_verb" == egress ]]; then
+          # The last line says what happened (incs egress logs one per change).
+          # sed alone, so an empty log can't fail the pipeline (pipefail).
+          err=$(sed -e $'s/\033\\[[0-9;]*m//g' -e '/^$/d' "$p_log" | tail -n 1 | tr -d '[:cntrl:]')
+          if [[ "$(cat "$p_log.rc")" == 0 ]]; then line="${err#\[+\] }"; else line="Failed: $(head -n 1 "$p_log.desc"): ${err#\[ERROR\] }"; fi
+          msg=$(status_note "$msg" "$line")
+        elif [[ "$(cat "$p_log.rc")" == 0 ]]; then
           if [[ "$p_verb" == stop ]]; then line="Stopped $p_name"; else line="Started $p_name"; fi
           msg=$(status_note "$msg" "$line")
         else
@@ -593,11 +690,17 @@ status_interactive() {
         at=$(jq '.t' <<<"$sample")
         names=()
         states=()
-        while IFS=$'\t' read -r name state; do
+        egs=()
+        trans=()
+        while IFS=$'\t' read -r name state eg tr; do
           [[ -n "$name" ]] || continue
           names+=("$name")
           states+=("$state")
-        done <<<"$(jq -r "$STATUS_ORDER_DEFS"' ordered[] | [.name, .status] | @tsv' <<<"$json")"
+          egs+=("$eg")
+          trans+=("$tr")
+        done <<<"$(jq -r "$STATUS_ORDER_DEFS"' ordered[] | [.name, .status,
+          (.expanded_config["user.incs.egress.container"] // "-" | if . == "" then "-" else . end),
+          (.expanded_config["user.incs.egress.transition"] // "none")] | @tsv' <<<"$json")"
         count=${#names[@]}
         # Keep the highlight on the same instance when the list changes.
         for ((i = 0; i < count; i++)); do
@@ -624,6 +727,12 @@ status_interactive() {
     term_cols=${size##* }
     if ! [[ "$term_rows" =~ ^[0-9]+$ ]] || ((term_rows < 1)); then term_rows=24; fi
     if ! [[ "$term_cols" =~ ^[0-9]+$ ]]; then term_cols=0; fi
+    # Wrapping is disabled: never approve a host and scope the user cannot
+    # see in full. Check every frame so shrinking the terminal cancels too.
+    if [[ "$ask" == confirm ]] && ((${#ask_desc} >= term_cols)); then
+      ask=""
+      msg=$(status_note "$msg" "Host and scope do not fit; use incs egress allow.")
+    fi
     wide=false
     if ((term_cols >= STATUS_WIDE_COLS)); then wide=true; fi
     if ((count == 0)); then focus=list; fi
@@ -635,16 +744,54 @@ status_interactive() {
       status_frame_table "$table"
       keys="↑/↓ or j/k select · enter details · space start/stop · q quit"
     else
-      tagged=$(status_render_panels "$json" "$prev" "$at" "$host" "$color" "$hl" "$focus") ||
+      tabs_n=1
+      if ((count > 0)) && [[ "${egs[$sel]}" != "-" ]]; then tabs_n=3; fi
+      if ((tabs_n == 1)); then tab=info; fi
+      tagged=$(status_render_panels "$json" "$prev" "$at" "$host" "$color" "$hl" "$focus" "$tab") ||
         tagged=$'L\tFailed to render status'
+      if [[ "$tab" != info ]]; then
+        # Read only while the tab is open, at most every five seconds.
+        if [[ "$tab_for" != "$sel_name/$tab" ]] || ((SECONDS - tab_at >= 5)); then
+          tab_rows=()
+          while IFS= read -r r; do [[ -n "$r" ]] && tab_rows+=("$r"); done <<<"$(status_tab_rows "$sel_name" "$tab")"
+          if [[ "$tab_for" != "$sel_name/$tab" ]]; then rsel=0; fi
+          tab_for="$sel_name/$tab"
+          tab_at=$SECONDS
+        fi
+        if ((rsel >= ${#tab_rows[@]})); then rsel=$((${#tab_rows[@]} - 1)); fi
+        if ((rsel < 0)); then rsel=0; fi
+        if ((${#tab_rows[@]} == 0)); then
+          if [[ "$tab" == network ]]; then tagged+=$'\nR\tNothing logged in the last hour.'; else tagged+=$'\nR\tNo hosts.'; fi
+        else
+          if [[ "$tab" == network ]]; then
+            tagged+=$'\nR\tDECISION      HITS  LAST      HOST'
+          else
+            tagged+=$'\nR\tHOST                                         FROM'
+          fi
+          # Keep the cursor in view: the title, tab and header rows stay put.
+          if ((rsel < rtop)); then rtop=$rsel; fi
+          if ((rsel - rtop > term_rows - 10)); then rtop=$((rsel - term_rows + 10)); fi
+          for ((i = 0; i < ${#tab_rows[@]}; i++)); do
+            line=${tab_rows[$i]#*$'\t'}
+            if ((i == rsel)) && [[ $focus == info ]]; then line=$'\033[7m'"$line"$'\033[27m'; fi
+            tagged+=$'\n'"R"$'\t'"$line"
+          done
+        fi
+      fi
       status_frame_panels "$tagged" "$wide"
       if [[ $focus == list ]]; then
         keys="↑/↓ or j/k select · tab details · space start/stop · q quit"
+      elif [[ $tab == network ]]; then
+        keys="j/k select · a allow here · A allow everywhere · m mode · h/l tabs · tab list · q quit"
+      elif [[ $tab == rules ]]; then
+        keys="j/k select · d remove · m mode · h/l tabs · tab list · q quit"
       elif [[ $wide == true ]]; then
         keys="↑/↓ or j/k scroll · tab list · space start/stop · q quit"
       else
         keys="↑/↓ or j/k scroll · esc back · space start/stop · q quit"
       fi
+      if ((tabs_n > 1)) && [[ $focus == info && $tab == info ]]; then keys="${keys/ · q quit/ · h/l tabs · m mode · q quit}"; fi
+      if [[ -n "$ask" ]]; then keys="$ask_desc"; fi
     fi
     frame+=("" "$keys")
     if [[ -n "$msg" ]]; then
@@ -670,9 +817,41 @@ status_interactive() {
       case "$rest" in
         "[A" | OA) key=k ;;
         "[B" | OB) key=j ;;
+        "[C" | OC) key=l ;;
+        "[D" | OD) key=h ;;
         "") key=esc ;;
         *) key="" ;;
       esac
+    fi
+    if [[ -n "$ask" && -n "$key" ]]; then
+      name=${names[$sel]}
+      case "$ask" in
+        confirm)
+          if [[ "$key" == y || "$key" == Y ]]; then
+            # The terminal can shrink while read waits for this answer.
+            # Check again at approval time, before starting any change.
+            size=$(stty size 2>/dev/null) || size=""
+            term_cols=${size##* }
+            if [[ "$term_cols" =~ ^[0-9]+$ ]] && ((${#ask_desc} < term_cols)); then
+              status_egress_job "${ask_args[@]}"
+            else
+              msg=$(status_note "$msg" "Host and scope do not fit; use incs egress allow.")
+            fi
+          else
+            msg=$(status_note "$msg" "Nothing changed")
+          fi
+          ;;
+        mode)
+          case "$key" in
+            e) status_egress_job "Setting $name to enforce" mode "$name" enforce ;;
+            r) status_egress_job "Setting $name to report" mode "$name" report ;;
+            o) status_egress_job "Setting $name to off" mode "$name" off ;;
+            *) msg=$(status_note "$msg" "Nothing changed") ;;
+          esac
+          ;;
+      esac
+      ask=""
+      continue
     fi
     case "$key" in
       q | Q) break ;;
@@ -682,20 +861,72 @@ status_interactive() {
         rtop=0
         ;;
       enter) if ((count > 0)); then focus=info; rtop=0; fi ;;
+      h | l)
+        if [[ $focus == info ]] && ((tabs_n > 1)); then
+          case "$tab:$key" in
+            info:l) tab=network ;; network:l) tab=rules ;; rules:l) tab=info ;;
+            info:h) tab=rules ;; network:h) tab=info ;; rules:h) tab=network ;;
+          esac
+          rtop=0
+          rsel=0
+        fi
+        ;;
+      a | A)
+        if [[ $focus == info && $tab == network ]] && ((${#tab_rows[@]} > 0)); then
+          name=${names[$sel]}
+          r=${tab_rows[$rsel]%%$'\t'*}
+          ask=confirm
+          if [[ "$key" == a ]]; then
+            ask_desc="Allow $r for $name? y/n"
+            ask_args=("Allowing $r for $name" allow "$name" "$r")
+          else
+            ask_desc="Allow $r for every container? y/n"
+            ask_args=("Allowing $r everywhere" allow --all "$r" --yes)
+          fi
+        fi
+        ;;
+      d)
+        if [[ $focus == info && $tab == rules ]] && ((${#tab_rows[@]} > 0)); then
+          name=${names[$sel]}
+          r=${tab_rows[$rsel]%%$'\t'*}
+          line=${tab_rows[$rsel]#*$'\t'}
+          # The sources start after the 44-column host and a space; the
+          # container's own list is always named last.
+          if [[ ", ${line:45}" == *", $name" ]]; then
+            ask=confirm
+            ask_desc="Remove $r from $name? Its open connections through the proxy end. y/n"
+            ask_args=("Removing $r from $name" rm "$name" "$r")
+          else
+            msg=$(status_note "$msg" "$r isn't on $name's own list; it comes from ${line:45}")
+          fi
+        fi
+        ;;
+      m)
+        if [[ $focus == info ]] && ((tabs_n > 1)); then
+          ask=mode
+          ask_desc="Mode for ${names[$sel]}: e enforce · r report · o off (turning it on restarts an open container) · other key cancels"
+        fi
+        ;;
       j)
-        if [[ $focus == info ]]; then
+        if [[ $focus == info && $tab != info ]]; then
+          rsel=$((rsel + 1))
+        elif [[ $focus == info ]]; then
           rtop=$((rtop + 1))
         elif ((sel < count - 1)); then
           sel=$((sel + 1))
           rtop=0
+          tab=info
         fi
         ;;
       k)
-        if [[ $focus == info ]]; then
+        if [[ $focus == info && $tab != info ]]; then
+          if ((rsel > 0)); then rsel=$((rsel - 1)); fi
+        elif [[ $focus == info ]]; then
           if ((rtop > 0)); then rtop=$((rtop - 1)); fi
         elif ((sel > 0)); then
           sel=$((sel - 1))
           rtop=0
+          tab=info
         fi
         ;;
       " ")
@@ -706,6 +937,10 @@ status_interactive() {
           continue
         fi
         if [[ "${states[$sel]}" == Running ]]; then verb=stop; else verb=start; fi
+        if [[ $verb == start && "${trans[$sel]}" != none ]]; then
+          msg=$(status_note "$msg" "$name is partway through turning its allowlist on; finish it: incs egress refresh $name")
+          continue
+        fi
         jobs=$((jobs + 1))
         log_file="$STATUS_TMP/$jobs"
         (
@@ -722,6 +957,31 @@ status_interactive() {
     esac
     if ((count > 0)); then sel_name=${names[$sel]}; fi
   done
+}
+
+# ---------------------------------------------------------------------------
+# Tailscale serve, from the host. Under an allowlist the agent isn't
+# Tailscale's operator, so mappings change here, as root in the container.
+# ---------------------------------------------------------------------------
+cmd_serve() {
+  local container="${1:-}" spec="${2:-}" port target
+  [[ -n "$container" ]] || error "Usage: incs serve <container> [<port>[:<target>] | --off <port>]"
+  incus info "$container" &>/dev/null || error "Container not found: $container"
+  if [[ -z "$spec" ]]; then
+    incus exec "$container" -- tailscale serve status
+  elif [[ "$spec" == "--off" ]]; then
+    port="${3:-}"
+    [[ "$port" =~ ^[0-9]+$ ]] || error "Usage: incs serve <container> --off <port>"
+    incus exec "$container" -- tailscale serve --https="$port" off
+    log "Removed tailnet port $port on $container"
+  else
+    port="${spec%%:*}" target="${spec#*:}"
+    [[ "$spec" == *:* ]] || target="$port"
+    [[ "$port" =~ ^[0-9]+$ && "$target" =~ ^[0-9]+$ ]] ||
+      error "Ports are numbers: incs serve <container> <port>[:<target>]"
+    incus exec "$container" -- tailscale serve --bg --https="$port" "http://127.0.0.1:$target"
+    log "Tailnet https port $port on $container serves its port $target"
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -807,6 +1067,14 @@ case "$1" in
     shift
     exec "$SCRIPT_DIR/incus.network" "$@"
     ;;
+  egress)
+    shift
+    exec "$SCRIPT_DIR/incs.egress" "$@"
+    ;;
+  serve)
+    shift
+    cmd_serve "$@"
+    ;;
   -e|env)
     shift
     cmd_set_env "$@"
@@ -814,8 +1082,19 @@ case "$1" in
   -d|delete)
     shift
     [[ $# -lt 1 ]] && error "Usage: incs delete <container>"
+    _egress="$(incus config get "$1" user.incs.egress.container 2>/dev/null || true)"
     incus delete --force "$1"
     log "Deleted $1"
+    if [[ -n "$_egress" ]]; then
+      # Its proxy goes too, under the lock that guards the egress
+      # container's rules; its port isn't handed out again.
+      ( SCRIPT_DIR="$SCRIPT_DIR"
+        warn() { echo -e "${YELLOW}[!]${NC} $1" >&2; }
+        source "$SCRIPT_DIR/incus.net"; source "$SCRIPT_DIR/incus.egress"
+        incs_lock
+        egress_forget "$1" "$_egress"
+        incs_unlock )
+    fi
     ;;
   -k|kill)
     shift
