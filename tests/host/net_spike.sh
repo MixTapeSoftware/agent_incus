@@ -42,6 +42,7 @@ check() { if [[ "$2" == "$3" ]]; then pass "$1"; else fail "$1 (expected: $2, go
 section() { echo ""; echo "== $1"; }
 
 HOST_PY_PID=""
+LISTENERS=""                    # host PIDs of the incus exec sessions holding listeners
 SVC_DIR=""
 TMP=""
 UFW_ADDED=0
@@ -58,6 +59,7 @@ cleanup() {
   echo ""; echo "== cleanup"
   [[ "$UFW_ADDED" == "1" ]] && ufw_rules delete >/dev/null 2>&1
   [[ -n "$HOST_PY_PID" ]] && kill "$HOST_PY_PID" 2>/dev/null
+  [[ -n "$LISTENERS" ]] && kill $LISTENERS 2>/dev/null
   [[ -n "$SVC_DIR" ]] && rmdir "$SVC_DIR" 2>/dev/null
   [[ -n "$TMP" ]] && rm -rf "$TMP"
   for i in "$A" "$B" "$P"; do incus delete --force "$i" >/dev/null 2>&1; done
@@ -171,9 +173,20 @@ for i in "$A" "$B" "$P"; do
 done
 incus exec "$P" -- apk add --no-cache -q tcpdump >/dev/null 2>&1 \
   || { fail "install tcpdump in $P"; exit 1; }
-listen() { incus exec "$1" -- sh -c "setsid socat TCP-LISTEN:$2,fork,reuseaddr SYSTEM:'echo ok' </dev/null >/dev/null 2>&1 &"; }
+# A process left in the background inside `incus exec` dies when exec
+# returns, so each listener keeps its exec session open from the host. Wait
+# until it's listening, so a missing listener can't pass for a blocked one.
+listen() {
+  local _
+  incus exec "$1" -- socat "TCP-LISTEN:$2,fork,reuseaddr" "SYSTEM:echo ok" </dev/null >/dev/null 2>&1 &
+  LISTENERS="$LISTENERS $!"
+  for _ in $(seq 1 50); do
+    incus exec "$1" -- ss -ltn 2>/dev/null | grep -q "[:.]$2 " && return 0
+    sleep 0.2
+  done
+  fail "a listener on $1:$2 started"
+}
 listen "$P" 443; listen "$P" 8443; listen "$A" 8080; listen "$A" 8081
-sleep 1
 # 0 when a TCP connection opens, nonzero when it is dropped or refused.
 connects() { incus exec "$1" -- timeout 7 socat -u /dev/null "TCP:$2:$3,connect-timeout=5${4:+,bind=$4}" >/dev/null 2>&1 && echo yes || echo no; }
 host_connects() { timeout 7 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1 && echo yes || echo no; }
@@ -181,7 +194,7 @@ host_connects() { timeout 7 bash -c "</dev/tcp/$1/$2" >/dev/null 2>&1 && echo ye
 # Report capture errors separately: they must never count as a filtered packet.
 sees_syn() {
   local source="$1" address="$2" capture_pid ready=0 rc=0 sender_rc=0 attempt
-  incus exec "$P" -- env LC_ALL=C timeout 8 tcpdump -l -n -i eth0 -c 1 \
+  incus exec "$P" -- env LC_ALL=C timeout 8 tcpdump -l -n -e -i eth0 -c 1 \
     "src host $address and dst host $P_IP and tcp dst port 443 and tcp[tcpflags] & tcp-syn != 0" \
     >"$TMP/syn.out" 2>"$TMP/syn.err" &
   capture_pid=$!
@@ -206,7 +219,7 @@ sees_syn() {
   # while GNU timeout returns 124. Inspect capture evidence in either case.
   case "$rc" in
     0|124|143)
-      if [[ -s "$TMP/syn.out" ]]; then echo yes
+      if [[ -s "$TMP/syn.out" ]]; then echo yes; echo "INFO P saw: $(head -1 "$TMP/syn.out")" >&2
       elif grep -q '^0 packets captured$' "$TMP/syn.err"; then echo no
       else echo error; fi ;;
     *) echo error ;;
@@ -223,7 +236,7 @@ diag() {
   done
   info "A's own devices: $(incus config show "$A" | awk '/^devices:/ {d=1} d' | tr -s ' ' | tr '\n' ';')"
   # A second listener and client, BusyBox nc, to rule socat in or out.
-  incus exec "$A" -- sh -c 'setsid nc -lk -p 8090 -e /bin/echo ok </dev/null >/dev/null 2>&1 &'; sleep 1
+  incus exec "$A" -- nc -lk -p 8090 -e /bin/echo ok </dev/null >/dev/null 2>&1 & LISTENERS="$LISTENERS $!"; sleep 1
   out="$(incus exec "$B" -- timeout 7 nc -w 5 "$A_IP" 8090 </dev/null 2>&1)"; rc=$?
   info "B to A:8090 with BusyBox nc: rc $rc, output: $(tr '\n' ';' <<< "$out")"
   out="$(incus exec "$B" -- timeout 7 socat -d -d -u /dev/null "TCP:$A_IP:8080,connect-timeout=5" 2>&1)"; rc=$?
@@ -283,7 +296,7 @@ incus config device override "$P" eth0 ipv4.address="$P_IP" security.acls="$ACL_
 incus start "$P" >/dev/null; sleep 3
 check "the override keeps ipv4_filtering" "true" "$(incus config device get "$P" eth0 security.ipv4_filtering 2>/dev/null)"
 check "the override keeps mac_filtering" "true" "$(incus config device get "$P" eth0 security.mac_filtering 2>/dev/null)"
-listen "$P" 443; listen "$P" 8443; sleep 1
+listen "$P" 443; listen "$P" 8443
 check "attached client A reaches P:443" "yes" "$(connects "$A" "$P_IP" 443)"
 check "unattached B cannot reach P:443" "no" "$(connects "$B" "$P_IP" 443)"
 check "A cannot reach P on another port (8443)" "no" "$(connects "$A" "$P_IP" 8443)"
@@ -300,6 +313,7 @@ section "spoofing"
 B_MAC="$(incus config get "$B" volatile.eth0.hwaddr)"; A_MAC="$(incus config get "$A" volatile.eth0.hwaddr)"
 incus exec "$B" -- ip addr add "$A_IP/32" dev eth0 2>/dev/null \
   || { fail "spoofing setup: could not assign A's address to B"; exit 1; }
+info "MACs: A=$A_MAC B=$B_MAC (the source MAC in a frame P saw says which instance sent it)"
 syn_control="$(sees_syn "$A" "$A_IP")"
 check "control: P observes A's SYN to port 443" "yes" "$syn_control"
 if [[ "$syn_control" == yes ]]; then
@@ -362,7 +376,10 @@ check "A, with its own ACL, still reaches P:443" "yes" "$(connects "$A" "$P_IP" 
 incus config device add "$A" spikefwd proxy "listen=tcp:127.0.0.1:$HOST_PORT" "connect=tcp:127.0.0.1:8081" >/dev/null \
   || fail "add a proxy device (incs -n style)"
 sleep 1
-check "incs -n style port forward still works under the ACL" "yes" "$(host_connects 127.0.0.1 "$HOST_PORT")"
+# Read the listener's reply: the proxy device accepts on the host even when
+# nothing answers behind it.
+check "incs -n style port forward still works under the ACL" "ok" \
+  "$(timeout 7 bash -c "exec 3<>/dev/tcp/127.0.0.1/$HOST_PORT && head -c 2 <&3" 2>/dev/null)"
 
 # --- IPv6 filtering with IPv6 off ------------------------------------------
 section "ipv6_filtering on a bridge with IPv6 off"
@@ -378,7 +395,7 @@ if [[ "$RESTART" == "1" ]]; then
   section "after restarting Incus"
   if sudo systemctl restart incus 2>/dev/null || sudo snap restart incus 2>/dev/null; then
     sleep 10
-    listen "$P" 443; listen "$A" 8080; sleep 1
+    listen "$P" 443; listen "$A" 8080
     check "after restart: A reaches P:443" "yes" "$(connects "$A" "$P_IP" 443)"
     check "after restart: B cannot reach P:443" "no" "$(connects "$B" "$P_IP" 443)"
     check "after restart: B cannot reach A:8080" "no" "$(connects "$B" "$A_IP" 8080)"
