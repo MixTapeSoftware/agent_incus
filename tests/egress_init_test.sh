@@ -68,7 +68,8 @@ fresh() {
   mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"
   rm -f "$SANDBOX/order"
 }
-init() { bash "$SANDBOX/repo/boxen.init" "$@" --no-tui -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
+# The fixtures have exact names; naming itself is in names_test.sh.
+init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.init" --name "$n" "$@" --no-tui -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
 cfg() { cat "$FAKE_INCUS_STATE/instances/$1/config/$2" 2>/dev/null; }
 stdin_all() { cat "$FAKE_INCUS_STATE"/exec-stdin/* 2>/dev/null | tr -d '\0'; }
 

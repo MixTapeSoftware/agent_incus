@@ -36,22 +36,35 @@ assert_absent() {
   [[ "$3" != *"$2"* ]] || { printf 'FAIL: %s\n%s\n' "$1" "$3"; exit 1; }
   PASS=$((PASS+1))
 }
+export BOXEN_HANDLE=tester
 dry_run() { bash "$REPO_ROOT/boxen.init" audit --no-tui --vm --no-copy --dry-run "$@"; }
 
-out="$(dry_run --agent claude --agent codex --agent grok)"
-for agent in 'Claude Code' Codex 'Grok Build'; do
-  assert_contains "select $agent" "[x] $agent" "$out"
+# One agent per container, built into its name.
+for pair in 'claude:Claude Code' 'codex:Codex' 'grok:Grok Build'; do
+  out="$(dry_run --agent "${pair%%:*}")"
+  assert_contains "select ${pair#*:}" "Agent:       ${pair#*:}" "$out"
+  assert_contains "${pair#*:} is in the name" "Container:   tester-${pair%%:*}-audit" "$out"
 done
-out="$(dry_run --claude --codex --grokbot)"
-for agent in 'Claude Code' Codex 'Grok Build'; do
-  assert_contains "flag for $agent" "[x] $agent" "$out"
-done
+out="$(dry_run --claude)"
+assert_contains 'an agent flag chooses it' 'Agent:       Claude Code' "$out"
 out="$(dry_run --agent grokbot)"
-assert_contains 'Grokbot alias' '[x] Grok Build' "$out"
+assert_contains 'Grokbot alias' 'Agent:       Grok Build' "$out"
+out="$(dry_run --agent claude --claude)"
+assert_contains 'naming the same agent twice is fine' 'Agent:       Claude Code' "$out"
 out="$(dry_run)"
+assert_contains 'with no agent chosen it is a shell' 'Agent:       Shell (no agent)' "$out"
+assert_contains 'and the name says shell' 'Container:   tester-shell-audit' "$out"
+out="$(dry_run --agent shell)"
+assert_contains '--agent shell chooses none' 'Container:   tester-shell-audit' "$out"
 for agent in 'Claude Code' Codex 'Grok Build'; do
-  assert_contains "$agent stays optional" "[ ] $agent" "$out"
+  assert_absent "$agent isn't in the plugin list" "] $agent" "$out"
 done
+if out="$(dry_run --agent claude --agent codex 2>&1)"; then echo 'FAIL: two agents accepted'; exit 1; fi
+assert_contains 'two agents are refused' 'One agent per container: Claude Code and Codex' "$out"
+if out="$(dry_run --claude --grokbot 2>&1)"; then echo 'FAIL: two agent flags accepted'; exit 1; fi
+assert_contains 'two agent flags are refused' 'One agent per container' "$out"
+if out="$(dry_run --agent claude --agent shell 2>&1)"; then echo 'FAIL: agent and shell accepted'; exit 1; fi
+assert_contains 'an agent and a shell are refused' 'One agent per container' "$out"
 if out="$(dry_run --agent nonexistent 2>&1)"; then echo 'FAIL: unknown agent accepted'; exit 1; fi
 assert_contains 'unknown agent error' 'Unknown coding agent: nonexistent' "$out"
 if out="$(dry_run --agent docker 2>&1)"; then echo 'FAIL: non-agent accepted'; exit 1; fi
@@ -68,9 +81,10 @@ PLUGIN_DEFAULT=0
 PLUGIN_AGENT_COMMAND="extra-cli"
 EXTRA
 out="$(dry_run --agent extra-cli)"
-assert_contains 'discover user agent executable' '[x] AAA Extra Agent' "$out"
+assert_contains 'discover user agent executable' 'Agent:       AAA Extra Agent' "$out"
+assert_contains 'its command names the container' 'Container:   tester-extra-cli-audit' "$out"
 out="$(dry_run --agent extra)"
-assert_contains 'discover user agent ID' '[x] AAA Extra Agent' "$out"
+assert_contains 'discover user agent ID' 'Agent:       AAA Extra Agent' "$out"
 
 # User overrides replace agent metadata instead of inheriting the built-in's.
 cat > "$XDG_DATA_HOME/boxen/plugins/50-codex.sh" <<'OVERRIDE'
@@ -83,9 +97,10 @@ if out="$(dry_run --agent codex 2>&1)"; then echo 'FAIL: inherited agent metadat
 assert_contains 'override clears agent metadata' 'Unknown coding agent: codex' "$out"
 if out="$(dry_run --codex 2>&1)"; then echo 'FAIL: inherited built-in CLI flag'; exit 1; fi
 assert_contains 'override removes built-in CLI flag' 'Unknown option: --codex' "$out"
-out="$(dry_run --claude --grok)"
-assert_contains 'override preserves other Claude flags' '[x] Claude Code' "$out"
-assert_contains 'override preserves other Grok flags' '[x] Grok Build' "$out"
+out="$(dry_run --claude)"
+assert_contains 'override preserves other Claude flags' 'Agent:       Claude Code' "$out"
+out="$(dry_run --grok)"
+assert_contains 'override preserves other Grok flags' 'Agent:       Grok Build' "$out"
 
 cat > "$XDG_DATA_HOME/boxen/plugins/50-grok.sh" <<'OVERRIDE'
 PLUGIN_ID="grok"
@@ -96,9 +111,9 @@ PLUGIN_CLI_FLAGS="--custom-grok"
 PLUGIN_AGENT_COMMAND="custom-grok-cli"
 OVERRIDE
 out="$(dry_run --custom-grok)"
-assert_contains 'override registers replacement flags' '[x] Custom Grok Agent' "$out"
+assert_contains 'override registers replacement flags' 'Agent:       Custom Grok Agent' "$out"
 out="$(dry_run --agent custom-grok)"
-assert_contains 'replacement flags select replacement agents' '[x] Custom Grok Agent' "$out"
+assert_contains 'replacement flags select replacement agents' 'Agent:       Custom Grok Agent' "$out"
 if out="$(dry_run --agent grokbot 2>&1)"; then echo 'FAIL: inherited built-in agent alias'; exit 1; fi
 assert_contains 'override removes built-in agent alias' 'Unknown coding agent: grokbot' "$out"
 

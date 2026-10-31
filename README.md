@@ -49,19 +49,16 @@ It then offers to install [Chadmux](https://github.com/chadfennell/chadmux), Cha
 ## Quick Start
 
 ```bash
-# Create a container with a copy of the current directory in /workspace.
-# Choose an agent; all three share the same instance setup
+# Create a container with a copy of the current directory in /workspace and
+# one coding agent. It's named HANDLE-AGENT-PROJECT, here chad-claude-my-project.
 bxn -i my-project --agent claude
-# Or: bxn -i my-project --agent codex
-# Or: bxn -i my-project --agent grok
+# Or: --agent codex, --agent grok, or --agent shell for none
 
-# Open a shell
+# Open a shell: the project alone finds it
 bxn my-project
 
-# Start the selected agent
+# Start the agent
 bxn my-project claude
-# Or: bxn my-project codex
-# Or: bxn my-project grok
 ```
 
 ## Scripts
@@ -129,7 +126,7 @@ Start, stop and delete run in the background, and the result appears below the t
 ## boxen.init Options
 
 ```
-Usage: boxen.init [OPTIONS] <container-name>
+Usage: boxen.init [OPTIONS] <project>
 
 Options:
   -p, --path PATH           Host directory to copy in (default: current directory)
@@ -138,7 +135,8 @@ Options:
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
   -t, --template            Save container as a reusable local template (empty workspace)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
-  --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
+  --agent NAME              The coding agent: claude, codex, grok, or shell for none
+  --name NAME               Use NAME exactly, instead of HANDLE-AGENT-PROJECT
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 Start with an empty workspace instead of copying the host directory
   --insecure-network        Use the default bridge: no isolation from other instances or the host
@@ -160,7 +158,7 @@ Options:
 3. Creates a user matching your host UID/GID (no sudo by default; use `bxn shell --with-sudo` for interactive sessions)
 4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
 5. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
-6. Presents an interactive TUI to select optional plugins (see below)
+6. Presents a picker for the coding agent, then one for optional plugins (see below)
 
 ### Default Packages
 
@@ -177,14 +175,32 @@ Every container is provisioned with the following packages before any optional p
 
 ### Coding Agents
 
-Select agents in the plugin picker or pass `--agent NAME`. Repeat the flag to
-install more than one in the same instance:
+A container has one coding agent, or none: agents sharing one copy of the
+code would work over each other. Pick it in the agent picker, which comes
+before the plugin picker and starts on "Shell (no agent)", or pass
+`--agent NAME` (`--agent shell` for none). Choosing two is refused.
 
 ```bash
-bxn -i project --agent claude --agent codex --agent grok
-bxn -i project-agent --agent codex
-bxn -i --from project-base project-grok --agent grok
+bxn -i web --agent claude          # chad-claude-web
+bxn -i web --agent claude          # chad-claude-web-1, a second agent on its own copy
+bxn -i web --agent codex           # chad-codex-web
+bxn -i web --agent shell           # chad-shell-web, for tests, git and servers
+bxn -i --from web-base web --agent grok
 ```
+
+**Names.** A container is named `HANDLE-AGENT-PROJECT`. Your handle is asked
+for once, the first time you create one (it defaults to your login name), and
+kept in `~/.config/boxen/handle`. `bxn handle` shows it, and `bxn handle NEW`
+changes it for new containers. When the name is taken, the new container is
+numbered: `-1`, then `-2`. `--name NAME` uses a name exactly, and a template
+(`-t`) keeps the name you give it, since it becomes the image `incus-init/NAME`.
+
+Every container is labelled `user.boxen=1`, with `user.boxen.handle`,
+`user.boxen.agent` and `user.boxen.project`, so `incus list user.boxen=1` lists
+them. Commands that take a container accept the project alone, or
+`AGENT-PROJECT`, when that finds exactly one of yours: `bxn web`,
+`bxn -n claude-web 3000`, `bxn egress log codex-web`. With several, they list
+them and ask you to name one.
 
 | Agent | Selection | Command inside the instance |
 |---|---|---|
@@ -194,7 +210,8 @@ bxn -i --from project-base project-grok --agent grok
 
 Here, the `grokbot` alias selects xAI's local **Grok Build** coding CLI. xAI's
 cloud **Grok Bot** service is a separate product and is not installed in Incus.
-`--agent grokbot` is accepted too. No coding agent is selected by default.
+`--agent grokbot` is accepted too. With `--no-tui` and no agent named, the
+container is a shell (no agent).
 
 Agent installers never rely on sudo inside the instance: system dependencies
 are provisioned from the host, and agent executables are installed for the instance user. The
@@ -314,17 +331,17 @@ graph LR
 
 ```bash
 # Agent container — no credentials
-bxn -i project-agent
+bxn -i project --agent claude                      # chad-claude-project
 
 # Dev container — with credentials
-bxn -i --1pass --gh-token project-dev
+bxn -i project --agent shell --1pass --gh-token    # chad-shell-project
 
 # Shell in with temporary sudo to install something
-bxn shell --with-sudo project-dev
+bxn shell --with-sudo shell-project
 
 # Save as reusable template, then spin up new containers instantly
 bxn -i --template project-base
-bxn -i --from project-base project-agent-2
+bxn -i --from project-base project --agent claude  # chad-claude-project-1
 ```
 
 Each container works on its own copy. Work moves between containers, and back to the host, through git.
@@ -349,15 +366,15 @@ This is the full flow we use day to day: tmux runs on the host with [Chadmux](ht
 ```bash
 tmux new -s project                     # One session per project, on the host
 
-bxn -i project-agent --agent claude   # First time only
-bxn -i --1pass --gh-token project-dev
+bxn -i project --agent claude         # First time only: chad-claude-project
+bxn -i project --agent shell --1pass --gh-token   # chad-shell-project
 
-bxn project-agent                      # Pane 1: the agent container
+bxn claude-project                     # Pane 1: the agent container
 claude                                  #   ...then start the agent inside it
 # prefix + %  (split), then:
-bxn project-dev                        # Pane 2: the dev container (tests, git, servers)
+bxn shell-project                      # Pane 2: the dev container (tests, git, servers)
 # prefix + "  (split), then:
-bxn -n project-dev 4000                # Pane 3 on the host: proxy the dev server to localhost:4000
+bxn -n shell-project 4000              # Pane 3 on the host: proxy the dev server to localhost:4000
 bxn status                             #   ...and check CPU, memory, and disk; space starts/stops
 ```
 
@@ -488,7 +505,7 @@ If you skipped the auth key, join later with:
 bxn shell --with-sudo project-dev "sudo tailscale up --operator=$USER"
 ```
 
-**Under the [egress allowlist](#egress-allowlist)** (the default for new containers), Tailscale relays through the container's proxy, and `*.tailscale.com` is on its list. The agent isn't Tailscale's operator, so it can't turn on an exit node (a way around the allowlist) or Funnel. Join as root from the host instead (`incus exec project-dev -- tailscale up --hostname=project-dev`), and change served ports from the host with `bxn serve`:
+**Under the [egress allowlist](#egress-allowlist)** (the default for new containers), Tailscale relays through the container's proxy, and `*.tailscale.com` is on its list. The agent isn't Tailscale's operator, so it can't turn on an exit node (a way around the allowlist) or Funnel. Join as root from the host instead (`incus exec chad-shell-project-dev -- tailscale up --hostname=chad-shell-project-dev`, with the container's full name), and change served ports from the host with `bxn serve`:
 
 ```bash
 bxn serve project-dev            # list the mappings
