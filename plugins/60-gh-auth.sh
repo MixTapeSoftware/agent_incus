@@ -1,6 +1,8 @@
 PLUGIN_ID="gh-auth"
 PLUGIN_NAME="GitHub Auth"
 PLUGIN_DESC="GitHub token & git credentials"
+# The git identity (user.name, user.email) is set for every container by
+# boxen.init, from the host; this plugin only handles the token.
 PLUGIN_DEFAULT=0
 PLUGIN_CLI_FLAGS="--gh-token"
 PLUGIN_NEEDS_PROMPT=1
@@ -12,18 +14,6 @@ plugin_prompt() {
   echo "Recommended scopes: Contents (read/write), Metadata (read)"
   read_secret GH_TOKEN_VALUE "Enter GitHub token: "
   if [[ -z "$GH_TOKEN_VALUE" ]]; then error "GitHub token required"; fi
-
-  local default_name default_email
-  default_name="$(git config --global user.name 2>/dev/null || true)"
-  default_email="$(git config --global user.email 2>/dev/null || true)"
-
-  read_value GH_USER_NAME "Git user.name [${default_name:-}]: "
-  GH_USER_NAME="${GH_USER_NAME:-$default_name}"
-  if [[ -z "$GH_USER_NAME" ]]; then error "Git user.name required"; fi
-
-  read_value GH_USER_EMAIL "Git user.email [${default_email:-}]: "
-  GH_USER_EMAIL="${GH_USER_EMAIL:-$default_email}"
-  if [[ -z "$GH_USER_EMAIL" ]]; then error "Git user.email required"; fi
 }
 
 plugin_is_installed() {
@@ -39,7 +29,7 @@ plugin_install() {
   # export line over stdin with %q quoting rather than interpolating the value
   # into a remote command string: a token/name/email containing a shell
   # metacharacter (notably a single quote) otherwise breaks the remote shell
-  # with `zsh:1: unmatched "`. Mirrors the safe pattern in bxn' cmd_set_env.
+  # with `zsh:1: unmatched "`. Mirrors the safe pattern in bxn's cmd_set_env.
   local export_line
   printf -v export_line 'export GH_TOKEN=%q\n' "$GH_TOKEN_VALUE"
   printf '%s' "$export_line" | incus exec "$CONTAINER_NAME" -- \
@@ -49,15 +39,11 @@ plugin_install() {
       cat >> ~/.zshenv
     '
 
-  log "Configuring git credential helper and identity..."
-  # Build the remote script on the host with %q quoting and run it from stdin,
-  # so values are never spliced into a command string and we don't depend on
-  # env surviving the `su -` login shell.
-  local git_script
-  printf -v git_script 'export GH_TOKEN=%q\ngh auth setup-git\ngit config --global user.name %q\ngit config --global user.email %q\n' \
-    "$GH_TOKEN_VALUE" "$GH_USER_NAME" "$GH_USER_EMAIL"
-  printf '%s' "$git_script" | incus exec "$CONTAINER_NAME" -- \
-    su - "$HOST_USER" -s /bin/sh
+  log "Configuring git's credential helper..."
+  # The token goes in on stdin, never into a command string, and doesn't
+  # depend on env surviving the `su -` login shell.
+  printf '%s\n' "$GH_TOKEN_VALUE" | incus exec "$CONTAINER_NAME" -- \
+    su - "$HOST_USER" -s /bin/sh -c 'IFS= read -r t && GH_TOKEN="$t" gh auth setup-git'
 
   unset GH_TOKEN_VALUE
 }
