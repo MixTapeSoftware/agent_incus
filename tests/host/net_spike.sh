@@ -100,10 +100,12 @@ info "server version: ${server_version:-unknown}"
 firewall="$(incus info 2>/dev/null | awk -F': *' 'tolower($1) ~ /firewall/ {print $2; exit}')"
 info "firewall driver: ${firewall:-not reported}"
 check "firewall is nftables" "nftables" "$firewall"
-exts="$(incus info 2>/dev/null)"
+# The server's own list; `incus info` doesn't print it on every version.
+info "incus info lists API extensions: $(incus info 2>/dev/null | grep -q '^api_extensions:' && echo yes || echo no)"
+exts="$(incus query /1.0 2>/dev/null)"
 for ext in network_bridge_acl_devices network_address_set; do
-  if grep -q -- "- $ext\$" <<< "$exts"; then pass "API extension $ext"; else
-    info "API extension $ext not listed; extensions mentioning it: $(grep -o -- "- [a-z_]*${ext#network_}[a-z_]*" <<< "$exts" | tr '\n' ' ')"
+  if grep -q -- "\"$ext\"" <<< "$exts"; then pass "API extension $ext"; else
+    fail "API extension $ext; the server's ACL and address-set extensions: $(grep -oE '"[a-z0-9_]*(acl|address_set)[a-z0-9_]*"' <<< "$exts" | tr -d '"' | sort -u | tr '\n' ' ')"
   fi
 done
 
@@ -211,8 +213,49 @@ sees_syn() {
   esac
 }
 
-check "control, no ACLs yet: B reaches P:443" "yes" "$(connects "$B" "$P_IP" 443)"
-check "control, no ACLs yet: B reaches A:8080" "yes" "$(connects "$B" "$A_IP" 8080)"
+# When a control fails, the checks after it can't be read. Dump enough to tell
+# a broken probe from traffic Incus drops.
+diag() {
+  section "diagnostics: a no-ACL control failed"
+  local i out rc hva hvb hvp cap_a cap_b
+  for i in "$A" "$B" "$P"; do
+    info "$i: $(incus exec "$i" -- sh -c 'ip -4 -o addr show dev eth0; ip -4 route; ip neigh; ss -ltn' 2>&1 | tr -s ' ' | tr '\n' ';')"
+  done
+  info "A's own devices: $(incus config show "$A" | awk '/^devices:/ {d=1} d' | tr -s ' ' | tr '\n' ';')"
+  # A second listener and client, BusyBox nc, to rule socat in or out.
+  incus exec "$A" -- sh -c 'setsid nc -lk -p 8090 -e /bin/echo ok </dev/null >/dev/null 2>&1 &'; sleep 1
+  out="$(incus exec "$B" -- timeout 7 nc -w 5 "$A_IP" 8090 </dev/null 2>&1)"; rc=$?
+  info "B to A:8090 with BusyBox nc: rc $rc, output: $(tr '\n' ';' <<< "$out")"
+  out="$(incus exec "$B" -- timeout 7 socat -d -d -u /dev/null "TCP:$A_IP:8080,connect-timeout=5" 2>&1)"; rc=$?
+  info "B to A:8080 with socat -d -d: rc $rc: $(tail -4 <<< "$out" | tr '\n' ';')"
+  out="$(host_connects "$A_IP" 8080)"; info "host to A:8080: $out"
+  hva="$(incus config get "$A" volatile.eth0.host_name)"; hvb="$(incus config get "$B" volatile.eth0.host_name)"
+  hvp="$(incus config get "$P" volatile.eth0.host_name)"
+  info "host-side ports: A=$hva B=$hvb P=$hvp"
+  if command -v tcpdump >/dev/null; then
+    # Both ends of one B to A:8080 attempt: which frames leave and arrive.
+    sudo timeout 9 tcpdump -l -n -e -i "$hvb" -c 10 "tcp port 8080 or arp" >"$TMP/cap.b" 2>&1 & cap_b=$!
+    sudo timeout 9 tcpdump -l -n -e -i "$hva" -c 10 "tcp port 8080 or arp" >"$TMP/cap.a" 2>&1 & cap_a=$!
+    sleep 2
+    incus exec "$B" -- timeout 7 socat -u /dev/null "TCP:$A_IP:8080,connect-timeout=5" >/dev/null 2>&1
+    wait "$cap_a" "$cap_b"
+    info "frames on B's port during B to A:8080: $(tr '\n' ';' < "$TMP/cap.b")"
+    info "frames on A's port during B to A:8080: $(tr '\n' ';' < "$TMP/cap.a")"
+  else
+    info "tcpdump not on the host: skipping the port captures"
+  fi
+  echo "INFO Incus's nftables rules for the spike:"
+  sudo nft list ruleset 2>&1 | awk -v a="$hva" -v b="$hvb" -v p="$hvp" '
+    /^table/ { t = ($0 ~ /incus/); if (t) print; next }
+    !t { next }
+    /^[[:space:]]*chain / { c = ($0 ~ /incs-spike/); if (c) print; next }
+    c || (a != "" && index($0, a)) || (b != "" && index($0, b)) || (p != "" && index($0, p)) { print }' | sed 's/^/  /'
+}
+
+ctl_p="$(connects "$B" "$P_IP" 443)"; ctl_a="$(connects "$B" "$A_IP" 8080)"
+check "control, no ACLs yet: B reaches P:443" "yes" "$ctl_p"
+check "control, no ACLs yet: B reaches A:8080" "yes" "$ctl_a"
+[[ "$ctl_p" == yes && "$ctl_a" == yes ]] || diag
 
 # --- IP pinning ------------------------------------------------------------
 section "address pinning under ipv4_filtering"
@@ -296,9 +339,11 @@ fi
 incus network acl create "$ACL_AGENT" >/dev/null
 incus network acl rule add "$ACL_AGENT" ingress action=allow "source=$GW" >/dev/null
 incus network acl rule add "$ACL_AGENT" egress action=reject "destination=$GW" >/dev/null
-incus config device override "$A" eth0 security.acls="$ACL_AGENT" \
-  security.acls.default.ingress.action=drop security.acls.default.egress.action=allow >/dev/null \
-  || fail "agent ACL override (live)"
+# A launched with its own eth0 (-d), so set it there, as incs does.
+agent_acl=(security.acls="$ACL_AGENT" security.acls.default.ingress.action=drop security.acls.default.egress.action=allow)
+incus config device set "$A" eth0 "${agent_acl[@]}" >/dev/null 2>&1 \
+  || incus config device override "$A" eth0 "${agent_acl[@]}" >/dev/null \
+  || fail "agent ACL on A's eth0 (live)"
 sleep 2
 check "B cannot reach A:8080" "no" "$(connects "$B" "$A_IP" 8080)"
 check "the host reaches A:8080" "yes" "$(host_connects "$A_IP" 8080)"
