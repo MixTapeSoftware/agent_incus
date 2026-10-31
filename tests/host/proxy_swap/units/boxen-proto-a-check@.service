@@ -1,0 +1,11 @@
+[Unit]
+Description=bxn proxy prototype: agent a, check copy of generation %i
+
+[Service]
+Environment=BOXEN_PROBE_PORT=4751
+EnvironmentFile=-/etc/boxen-proto/a/%i/env
+ExecStart=/usr/local/libexec/boxen-proto/boxen-proxy-run a %i
+TimeoutStopSec=3
+DynamicUser=yes
+ProtectSystem=strict
+NoNewPrivileges=yes

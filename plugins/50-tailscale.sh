@@ -72,7 +72,7 @@ plugin_install() {
 
   # Under an allowlist the agent mustn't control Tailscale: an operator could
   # turn on an exit node (around the allowlist) or Funnel. Serve mappings are
-  # changed from the host instead (incs serve).
+  # changed from the host instead (bxn serve).
   local operator=()
   if [[ "${EGRESS_MODE:-off}" == "off" ]]; then
     operator=(--operator="$HOST_USER")
@@ -105,12 +105,12 @@ plugin_install() {
   elif [[ "${EGRESS_MODE:-off}" == "off" ]]; then
     echo ""
     echo "  To join the tailnet, run:"
-    echo "    incs -s $CONTAINER_NAME \"sudo tailscale up --operator=$HOST_USER\""
+    echo "    bxn -s $CONTAINER_NAME \"sudo tailscale up --operator=$HOST_USER\""
   else
     echo ""
     echo "  To join the tailnet, run (as root; the agent can't control Tailscale):"
     echo "    incus exec $CONTAINER_NAME -- tailscale up --hostname=$CONTAINER_NAME"
-    echo "  Then expose a dev server with: incs serve $CONTAINER_NAME <port>"
+    echo "  Then expose a dev server with: bxn serve $CONTAINER_NAME <port>"
   fi
 }
 

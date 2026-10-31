@@ -5,7 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 fixture="$(mktemp -d)"
 trap 'rm -rf "$fixture"' EXIT
-mkdir -p "$fixture/bin" "$fixture/data/agent_incus/plugins"
+mkdir -p "$fixture/bin" "$fixture/data/boxen/plugins"
 export XDG_DATA_HOME="$fixture/data"
 cat > "$fixture/bin/incus" <<'INCUS'
 #!/bin/bash
@@ -36,7 +36,7 @@ assert_absent() {
   [[ "$3" != *"$2"* ]] || { printf 'FAIL: %s\n%s\n' "$1" "$3"; exit 1; }
   PASS=$((PASS+1))
 }
-dry_run() { bash "$REPO_ROOT/incus.init" audit --no-tui --vm --no-copy --dry-run "$@"; }
+dry_run() { bash "$REPO_ROOT/boxen.init" audit --no-tui --vm --no-copy --dry-run "$@"; }
 
 out="$(dry_run --agent claude --agent codex --agent grok)"
 for agent in 'Claude Code' Codex 'Grok Build'; do
@@ -60,7 +60,7 @@ if out="$(dry_run --agent 2>&1)"; then echo 'FAIL: missing agent accepted'; exit
 assert_contains 'missing argument' '--agent requires an argument' "$out"
 
 # A user agent without optional flags exercises empty metadata fields and sorting.
-cat > "$XDG_DATA_HOME/agent_incus/plugins/00-extra.sh" <<'EXTRA'
+cat > "$XDG_DATA_HOME/boxen/plugins/00-extra.sh" <<'EXTRA'
 PLUGIN_ID="extra"
 PLUGIN_NAME="AAA Extra Agent"
 PLUGIN_DESC="Test custom agent"
@@ -73,7 +73,7 @@ out="$(dry_run --agent extra)"
 assert_contains 'discover user agent ID' '[x] AAA Extra Agent' "$out"
 
 # User overrides replace agent metadata instead of inheriting the built-in's.
-cat > "$XDG_DATA_HOME/agent_incus/plugins/50-codex.sh" <<'OVERRIDE'
+cat > "$XDG_DATA_HOME/boxen/plugins/50-codex.sh" <<'OVERRIDE'
 PLUGIN_ID="codex"
 PLUGIN_NAME="Custom Codex Tool"
 PLUGIN_DESC="A non-agent override"
@@ -87,7 +87,7 @@ out="$(dry_run --claude --grok)"
 assert_contains 'override preserves other Claude flags' '[x] Claude Code' "$out"
 assert_contains 'override preserves other Grok flags' '[x] Grok Build' "$out"
 
-cat > "$XDG_DATA_HOME/agent_incus/plugins/50-grok.sh" <<'OVERRIDE'
+cat > "$XDG_DATA_HOME/boxen/plugins/50-grok.sh" <<'OVERRIDE'
 PLUGIN_ID="grok"
 PLUGIN_NAME="Custom Grok Agent"
 PLUGIN_DESC="A replacement agent with its own alias"
@@ -103,13 +103,13 @@ if out="$(dry_run --agent grokbot 2>&1)"; then echo 'FAIL: inherited built-in ag
 assert_contains 'override removes built-in agent alias' 'Unknown coding agent: grokbot' "$out"
 
 # Run the summary helper with multiple agents and an install failure.
-eval "$(awk '/^print_agent_launches\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/incus.init")"
+eval "$(awk '/^print_agent_launches\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
 PLUGIN_COUNT=3
 _P_SELECTED=(1 1 1)
 _P_ID=(claude-code codex grok)
 _P_AGENT_COMMAND=(claude codex grok)
 _P_NAME=('Claude Code' Codex 'Grok Build')
-eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/incus.init")"
+eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
 FAILED_PLUGIN_IDS=(codex)
 FAILED_PLUGIN_NAMES=(Codex)
 CONTAINER_NAME=audit CONTAINER_WORKSPACE='/work tree'
@@ -117,8 +117,8 @@ out="$(print_agent_launches)"
 assert_contains 'launch Claude' 'Start Claude Code:' "$out"
 assert_contains 'launch Grok' 'Start Grok Build:' "$out"
 assert_absent 'failed agents get no launch command' 'Start Codex:' "$out"
-# Replay a printed command through a harmless incs function to check quoting.
-incs() { printf 'launch_arg=%s\n' "$3"; }
+# Replay a printed command through a harmless bxn function to check quoting.
+bxn() { printf 'launch_arg=%s\n' "$3"; }
 line="$(printf '%s\n' "$out" | sed -n '2p')"
 out="$(eval "$line")"
 assert_contains 'launch command quotes custom workspace' 'launch_arg=cd /work\ tree && claude' "$out"
@@ -130,11 +130,11 @@ out="$(print_agent_launches)"
 assert_contains 'duplicate display name keeps successful agent launch' 'Start Claude Code:' "$out"
 assert_contains 'previously failed agent now launches after reset' 'Start Codex:' "$out"
 
-out="$(INCS_CONTAINER=generic CLAUDE_CONTAINER=legacy bash "$REPO_ROOT/incus.shell")"
+out="$(BOXEN_CONTAINER=generic CLAUDE_CONTAINER=legacy bash "$REPO_ROOT/boxen.shell")"
 assert_contains 'generic default instance' 'instance=generic' "$out"
-out="$(INCS_CONTAINER=generic CLAUDE_CONTAINER=legacy bash "$REPO_ROOT/incus.shell" explicit)"
+out="$(BOXEN_CONTAINER=generic CLAUDE_CONTAINER=legacy bash "$REPO_ROOT/boxen.shell" explicit)"
 assert_contains 'explicit instance wins' 'instance=explicit' "$out"
-out="$(INCS_CONTAINER='' CLAUDE_CONTAINER=legacy bash "$REPO_ROOT/incus.shell")"
+out="$(BOXEN_CONTAINER='' CLAUDE_CONTAINER=legacy bash "$REPO_ROOT/boxen.shell")"
 assert_contains 'legacy default still works' 'instance=legacy' "$out"
 
 for agent_dir in .agents .claude .grok; do

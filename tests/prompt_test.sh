@@ -36,8 +36,8 @@ PASTE_END="${ESC}[201~"
 # ===========================================================================
 echo "clean_pasted_value"
 # ===========================================================================
-# shellcheck source=../incus.prompt
-source "$REPO_ROOT/incus.prompt"
+# shellcheck source=../boxen.prompt
+source "$REPO_ROOT/boxen.prompt"
 
 clean() { printf '%s' "$1" | clean_pasted_value; }
 
@@ -88,7 +88,7 @@ assert_eq "read_value stores the cleaned value" "op://V/Item name/f" "$got"
 # ===========================================================================
 echo "plugin prompts"
 # ===========================================================================
-# Each plugin's prompt runs the way incus.init runs it, with the framework's
+# Each plugin's prompt runs the way boxen.init runs it, with the framework's
 # helpers stubbed and the pasted answer on stdin.
 run_prompt() {
   local plugin="$1" var="$2" input="$3"
@@ -96,8 +96,8 @@ run_prompt() {
     set -euo pipefail
     log() { :; }; warn() { :; }; error() { echo "ERROR: $1" >&2; exit 1; }
     selected_get() { echo 0; }
-    # shellcheck source=../incus.prompt
-    source "$REPO_ROOT/incus.prompt"
+    # shellcheck source=../boxen.prompt
+    source "$REPO_ROOT/boxen.prompt"
     # shellcheck disable=SC1090
     source "$REPO_ROOT/plugins/$plugin"
     plugin_prompt >/dev/null 2>&1 <<< "$input"
@@ -116,7 +116,7 @@ assert_eq "Tailscale auth key is cleaned" "tskey-auth-TS" \
 ")"
 
 # ===========================================================================
-echo "incs -e"
+echo "bxn -e"
 # ===========================================================================
 SANDBOX="$(mktemp -d)"
 trap 'rm -rf "$SANDBOX"' EXIT
@@ -129,15 +129,15 @@ mkdir -p "$FAKE_INCUS_STATE"
 USER_NAME="$(id -un)"
 
 incus launch images:ubuntu/24.04 proj
-printf '%s\n' "${FOCUS_OUT}sk-live-VALUE${FOCUS_IN}" | bash "$REPO_ROOT/incs" -e proj OPENAI_API_KEY >/dev/null 2>&1
-assert_eq "incs -e stores the cleaned value in the incus environment" \
+printf '%s\n' "${FOCUS_OUT}sk-live-VALUE${FOCUS_IN}" | bash "$REPO_ROOT/bxn" -e proj OPENAI_API_KEY >/dev/null 2>&1
+assert_eq "bxn -e stores the cleaned value in the incus environment" \
   "sk-live-VALUE" "$(incus config get proj environment.OPENAI_API_KEY)"
-assert_eq "incs -e writes the cleaned value to ~/.zshenv" \
+assert_eq "bxn -e writes the cleaned value to ~/.zshenv" \
   "export OPENAI_API_KEY=sk-live-VALUE" \
   "$(grep '^export OPENAI_API_KEY=' "$FAKE_INCUS_STATE/instances/proj/root/home/$USER_NAME/.zshenv" 2>/dev/null || true)"
 
-out="$(printf '%s\n' "${FOCUS_OUT}${FOCUS_IN}" | bash "$REPO_ROOT/incs" -e proj EMPTY_ONE 2>&1)" && rc=0 || rc=$?
-assert_eq "incs -e refuses a value that was only terminal noise" "1" "$rc"
+out="$(printf '%s\n' "${FOCUS_OUT}${FOCUS_IN}" | bash "$REPO_ROOT/bxn" -e proj EMPTY_ONE 2>&1)" && rc=0 || rc=$?
+assert_eq "bxn -e refuses a value that was only terminal noise" "1" "$rc"
 
 echo ""
 echo "Passed: $PASS    Failed: $FAIL"

@@ -1,0 +1,7 @@
+[Unit]
+Description=bxn proxy prototype: generation acks
+
+[Socket]
+ListenStream=/run/boxen-proto-ack.sock
+Accept=yes
+SocketMode=0666

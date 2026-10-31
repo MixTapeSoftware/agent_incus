@@ -1,8 +1,8 @@
-# incus.envscan
+# boxen.envscan
 # Detect .env* files in the workspace about to be copied in, format a warning,
 # and gate the launch on user acknowledgement.
 #
-# Sourced by incus.init — inherits colors, log/warn/error, set -euo pipefail.
+# Sourced by boxen.init — inherits colors, log/warn/error, set -euo pipefail.
 # Defines functions only; no top-level work, so it is safe to source from
 # tests without triggering side effects.
 

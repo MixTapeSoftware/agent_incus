@@ -11,7 +11,7 @@ SMOKESCREEN_COMMIT="609eb8931420453daf5893509be0b25b21bd9edb"   # v0.1.0
 GO_VERSION="1.26.10"
 GO_SHA256_AMD64="ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5"
 GO_SHA256_ARM64="3f4227ce7b206a513e794f1393adb473a07b46e94d18bd15d1c684bbb7319797"
-OUT="/usr/local/libexec/incs/smokescreen"
+OUT="/usr/local/libexec/boxen/smokescreen"
 
 case "$(dpkg --print-architecture)" in
   amd64) arch=amd64; sum="$GO_SHA256_AMD64" ;;

@@ -12,9 +12,9 @@ error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 
 usage() {
   cat <<'EOF'
-Usage: incs new-plugin <slug> [options]
+Usage: bxn new-plugin <slug> [options]
 
-Generates a new agent-incus plugin from a template.
+Generates a new boxen plugin from a template.
 
 Arguments:
   slug                  Plugin ID (kebab-case, e.g. "my-tool"). Used as
@@ -32,13 +32,13 @@ Options:
   -h, --help            Show this help
 
 Destinations:
-  default      ${XDG_DATA_HOME:-~/.local/share}/agent_incus/plugins/
+  default      ${XDG_DATA_HOME:-~/.local/share}/boxen/plugins/
   --builtin    <repo>/plugins/
 
 Examples:
-  incs new-plugin my-tool
-  incs new-plugin my-tool --name "My Tool" --desc "Installs my-tool"
-  incs new-plugin docker-buildx --builtin --prefix 11
+  bxn new-plugin my-tool
+  bxn new-plugin my-tool --name "My Tool" --desc "Installs my-tool"
+  bxn new-plugin docker-buildx --builtin --prefix 11
 EOF
   exit 0
 }
@@ -93,7 +93,7 @@ if [[ "$BUILTIN" == "1" ]]; then
   SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
   DEST_DIR="$SCRIPT_DIR/plugins"
 else
-  DEST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agent_incus/plugins"
+  DEST_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/boxen/plugins"
 fi
 
 DEST_FILE="$DEST_DIR/${PREFIX}-${SLUG}.sh"

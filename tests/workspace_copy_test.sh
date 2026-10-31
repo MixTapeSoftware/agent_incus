@@ -1,7 +1,7 @@
 #!/bin/bash
 # tests/workspace_copy_test.sh
 # The host directory is copied into the container once and never mounted.
-# Runs the real copy_workspace from incus.init against the fake `incus`, and
+# Runs the real copy_workspace from boxen.init against the fake `incus`, and
 # checks that the options for mounting are gone from the CLI.
 # Run: bash tests/workspace_copy_test.sh
 
@@ -34,13 +34,13 @@ chmod +x "$SANDBOX/bin/incus"
 export PATH="$SANDBOX/bin:$PATH"
 
 extract_fn() {
-  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/incus.init"
+  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/boxen.init"
 }
 log()   { echo "[+] $1"; }
 warn()  { echo "[!] $1"; }
 error() { echo "[ERROR] $1" >&2; exit 1; }
 eval "$(extract_fn copy_workspace)"
-declare -F copy_workspace >/dev/null || { echo "copy_workspace not found in incus.init"; exit 1; }
+declare -F copy_workspace >/dev/null || { echo "copy_workspace not found in boxen.init"; exit 1; }
 
 # A host project: a git repo with a commit, an uncommitted edit and an
 # untracked file, all of which should arrive.
@@ -123,7 +123,7 @@ assert_contains "not from a template: says why" "is not empty inside the contain
 # ===========================================================================
 echo "the CLI"
 # ===========================================================================
-help="$(bash "$REPO_ROOT/incus.init" --help 2>&1 || true)"
+help="$(bash "$REPO_ROOT/boxen.init" --help 2>&1 || true)"
 assert_contains "help: --path copies" "Host directory to copy in" "$help"
 assert_contains "help: --workspace" "-w, --workspace PATH" "$help"
 assert_contains "help: --no-copy is not VM-only" "Start with an empty workspace" "$help"
@@ -131,12 +131,12 @@ for gone in "--no-mount" "--git-rw" "--mount-path" "mount"; do
   assert_not_contains "help: no $gone" "$gone" "$help"
 done
 for flag in --no-mount --git-rw --mount-path; do
-  out="$(bash "$REPO_ROOT/incus.init" "$flag" x box 2>&1)" && rc=0 || rc=$?
+  out="$(bash "$REPO_ROOT/boxen.init" "$flag" x box 2>&1)" && rc=0 || rc=$?
   assert_eq "$flag: rejected" "1" "$rc"
   assert_contains "$flag: as an unknown option" "Unknown option: $flag" "$out"
 done
 for ws in src /; do
-  out="$(bash "$REPO_ROOT/incus.init" -w "$ws" newbox 2>&1)" && rc=0 || rc=$?
+  out="$(bash "$REPO_ROOT/boxen.init" -w "$ws" newbox 2>&1)" && rc=0 || rc=$?
   assert_eq "--workspace $ws: rejected" "1" "$rc"
   assert_contains "--workspace $ws: says it must be absolute" "--workspace must be an absolute path" "$out"
 done

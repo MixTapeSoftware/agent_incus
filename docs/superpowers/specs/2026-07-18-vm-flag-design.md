@@ -1,12 +1,12 @@
-# `--vm` flag for incus.init — design
+# `--vm` flag for boxen.init — design
 
 **Date:** 2026-07-18
 **Status:** approved (design), pending implementation plan
-**Type:** agent-incus core feature (`incus.init`)
+**Type:** boxen core feature (`boxen.init`)
 
 ## Goal
 
-Let `incs` provision an Incus **virtual machine** (KVM, own kernel) instead of a
+Let `bxn` provision an Incus **virtual machine** (KVM, own kernel) instead of a
 system container, via an opt-in `--vm` flag. VMs are the user's intended
 long-term default ("all-in on VMs" with sealed workspaces); this change ships VM
 support opt-in now so it can be dogfooded before the default is flipped in a
@@ -152,18 +152,18 @@ disk image.
 Full end-to-end needs an Incus host with KVM (not available in the authoring
 env), so:
 
-- **Static:** `bash -n incus.init`; `--dry-run` with `--vm` prints the `Type: VM
+- **Static:** `bash -n boxen.init`; `--dry-run` with `--vm` prints the `Type: VM
   (...)` line and correct workspace description; `--dry-run --vm --no-copy`
   shows `sealed`; VM-only flags without `--vm` emit the ignore warning.
 - **On-host acceptance:**
-  - `incs -vm foo` → a VM boots, `incs foo` shells in, `/workspace` contains the
+  - `bxn -vm foo` → a VM boots, `bxn foo` shells in, `/workspace` contains the
     copied tree owned by you, `git status` works (safe.directory registered).
-  - `incs -vm --no-copy foo` → `/workspace` is empty and owned by you.
-  - `incs -vm --vm-memory 8GiB --vm-cpus 8 foo` → `incus config show foo`
+  - `bxn -vm --no-copy foo` → `/workspace` is empty and owned by you.
+  - `bxn -vm --vm-memory 8GiB --vm-cpus 8 foo` → `incus config show foo`
     reflects the overrides.
-  - `incs -vm -t base` then `incs -vm --from base bar` → template round-trips;
-    `incs --from base bar` (no `--vm`) errors with the mismatch message.
-  - Container path unchanged: `incs foo` still mounts/idmaps exactly as before.
+  - `bxn -vm -t base` then `bxn -vm --from base bar` → template round-trips;
+    `bxn --from base bar` (no `--vm`) errors with the mismatch message.
+  - Container path unchanged: `bxn foo` still mounts/idmaps exactly as before.
 
 ## Out of scope
 

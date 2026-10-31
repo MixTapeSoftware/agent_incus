@@ -1,14 +1,14 @@
 #!/bin/bash
 cd "$(dirname "$0")"
-D=/etc/incs-proto/a
+D=/etc/boxen-proto/a
 no_dns() { echo 'resolver_addresses: ["127.0.0.1:9"]' | sudo tee -a "$D/$1/config.yaml" >/dev/null; }
-skip_static() { echo 'INCS_PROTO_SKIP_STATIC=1' | sudo tee "$D/$1/env" >/dev/null; }
-rec() { sudo journalctl -u "incs-proto-a-check@$1.service" -o cat --no-pager | grep 'incs-probe' | tail -1 \
+skip_static() { echo 'BOXEN_PROTO_SKIP_STATIC=1' | sudo tee "$D/$1/env" >/dev/null; }
+rec() { sudo journalctl -u "boxen-proto-a-check@$1.service" -o cat --no-pager | grep 'boxen-probe' | tail -1 \
   | python3 -c 'import json,sys; r=json.loads(sys.stdin.read() or "{}"); print({k: r.get(k) for k in ("allow","enforce_would_deny","decision_reason","error")})' 2>/dev/null; }
 
 echo "== case 4: allowlist left out, wrapper on"
 ./proto-ctl gen 30 enforce h1.proto.test >/dev/null; sudo rm "$D/30/acl.yaml"
-./proto-ctl widen 30; sudo journalctl -u incs-proto-a-check@30.service -o cat --no-pager | grep -m1 refusing
+./proto-ctl widen 30; sudo journalctl -u boxen-proto-a-check@30.service -o cat --no-pager | grep -m1 refusing
 
 echo "== case 5, outside DNS unavailable; wrapper's own check bypassed for the bad ones"
 ./proto-ctl gen 31 enforce h1.proto.test >/dev/null; no_dns 31

@@ -39,7 +39,7 @@ plugin_install() {
   # export line over stdin with %q quoting rather than interpolating the value
   # into a remote command string: a token/name/email containing a shell
   # metacharacter (notably a single quote) otherwise breaks the remote shell
-  # with `zsh:1: unmatched "`. Mirrors the safe pattern in incs' cmd_set_env.
+  # with `zsh:1: unmatched "`. Mirrors the safe pattern in bxn' cmd_set_env.
   local export_line
   printf -v export_line 'export GH_TOKEN=%q\n' "$GH_TOKEN_VALUE"
   printf '%s' "$export_line" | incus exec "$CONTAINER_NAME" -- \

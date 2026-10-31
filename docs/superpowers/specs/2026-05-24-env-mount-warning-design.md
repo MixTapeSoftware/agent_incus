@@ -2,8 +2,8 @@
 
 ## Problem
 
-`incs` bind-mounts the user's current directory into the container at
-`/workspace` (incus.init:761-769). That mount is live and unfiltered: anything
+`bxn` bind-mounts the user's current directory into the container at
+`/workspace` (boxen.init:761-769). That mount is live and unfiltered: anything
 in the directory — including `.env` files containing plaintext secrets — is
 readable by every process in the container, including any coding agent the
 container is provisioned to run.
@@ -28,11 +28,11 @@ the design cannot deliver.
 
 ## Detection
 
-Runs once, after workspace path validation (incus.init:582-586) and before
-the MAP_USER prompt (incus.init:600).
+Runs once, after workspace path validation (boxen.init:582-586) and before
+the MAP_USER prompt (boxen.init:600).
 
 - Skipped when `NO_MOUNT=1` — no host mount, nothing to warn about. This also
-  covers `SAVE_TEMPLATE=1`, which forces `NO_MOUNT=1` (incus.init:588-590).
+  covers `SAVE_TEMPLATE=1`, which forces `NO_MOUNT=1` (boxen.init:588-590).
 - Recursive scan: `find "$WORKSPACE_PATH" -type f -name '.env*'`.
 - Path exclusions (skip dependency/build trees that often vendor unrelated
   `.env` files): `node_modules`, `.git`, `vendor`, `target`, `dist`, `build`.
@@ -45,7 +45,7 @@ If `ENV_FILES` is empty, the rest of the feature is a no-op.
 ## Warning block
 
 Printed to stderr via the existing `warn()` helper (yellow `WARN:` prefix,
-incus.init:12-15) when `ENV_FILES` is non-empty. Paths are shown relative to
+boxen.init:12-15) when `ENV_FILES` is non-empty. Paths are shown relative to
 `WORKSPACE_PATH`, sorted alphabetically (`LC_ALL=C`) so the listing is
 stable across filesystems and locales. If the list exceeds 20 entries, it
 is truncated with a `…and N more` line so the warning stays readable.
@@ -68,7 +68,7 @@ WARN: Safer pattern: use the 1Password CLI to hydrate env at runtime
 
 - **Interactive** (`[[ -t 0 ]]` is true): `read -rp "Type 'yes' to continue, Ctrl-C to abort: "`
   in a loop. Only the exact string `yes` proceeds. Anything else re-prompts.
-  Ctrl-C aborts via the existing cleanup trap (incus.init:216-228). A failed
+  Ctrl-C aborts via the existing cleanup trap (boxen.init:216-228). A failed
   `read` (e.g., Ctrl-D / EOF) is treated as abort, not as an empty re-prompt,
   so closed stdin can't trap the loop.
 - **Non-interactive**: `error()` out immediately with a message that instructs
@@ -82,12 +82,12 @@ WARN: Safer pattern: use the 1Password CLI to hydrate env at runtime
 The warning block is still printed (the user should still see what's being
 exposed). Suitable for `--no-tui`, scripted, and CI runs.
 
-Parsed in the existing argument loop (incus.init:540-555) by setting
+Parsed in the existing argument loop (boxen.init:540-555) by setting
 `ACK_ENV=1`. Default `ACK_ENV=0`.
 
 ## Dry-run integration
 
-The existing dry-run summary (incus.init:620-640) gains a block when
+The existing dry-run summary (boxen.init:620-640) gains a block when
 `ENV_FILES` is non-empty, inserted immediately after the `Workspace:` line so
 it sits next to the mount info it qualifies:
 
@@ -105,7 +105,7 @@ container creation.
 
 ## Help text
 
-Add `--ack-env` to the usage block (incus.init:31-50) with a one-line
+Add `--ack-env` to the usage block (boxen.init:31-50) with a one-line
 description: `--ack-env  Acknowledge .env files in the workspace (skip prompt)`.
 
 ## Out of scope

@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# incus.init
+# boxen.init
 # Creates an Incus instance with optional coding agents and a copy of your
 # workspace.
 #
@@ -51,16 +51,16 @@ Options:
   --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
   --no-tui                  Skip interactive plugin selector, use defaults
   --insecure-network        Use the default bridge: no isolation from other
-                            instances or the host (also INCS_INSECURE_NETWORK=1)
+                            instances or the host (also BOXEN_INSECURE_NETWORK=1)
   --egress MODE             Internet allowlist: enforce (default), report or off
-  --egress-container NAME   Run this container's proxy in incs-egress-NAME
+  --egress-container NAME   Run this container's proxy in boxen-egress-NAME
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
 
-Plugins are defined in the plugins/ directory (or ~/.local/share/agent_incus/plugins/
+Plugins are defined in the plugins/ directory (or ~/.local/share/boxen/plugins/
 for user plugins). Some provide CLI flags
 (e.g. --1pass, --gh-token, --entire) to pre-select them without the TUI.
-Drop a new .sh file in plugins/ (or ~/.local/share/agent_incus/plugins/) to add your own.
+Drop a new .sh file in plugins/ (or ~/.local/share/boxen/plugins/) to add your own.
 EOF
   exit 1
 }
@@ -181,17 +181,17 @@ cleanup_on_exit() {
       # No answer (stdin closed) keeps the container: never delete unasked.
       read -rp "Delete it? [Y/n] " reply || reply="n"
       if [[ ! "$reply" =~ ^[Nn]$ ]]; then
-        egress="$(incus config get "$CONTAINER_NAME" user.incs.egress.container 2>/dev/null)" || egress=""
+        egress="$(incus config get "$CONTAINER_NAME" user.boxen.egress.container 2>/dev/null)" || egress=""
         if incus delete --force "$CONTAINER_NAME"; then
           log "Deleted $CONTAINER_NAME"
           if [[ -n "$egress" ]]; then
             # A build can fail while holding the network lock. Reuse our own
             # lock, and isolate error() so cleanup preserves the build's status.
             (
-              if [[ "$(cat "$INCS_LOCK_DIR/pid" 2>/dev/null)" != "$$" ]]; then
-                incs_lock || exit 1
+              if [[ "$(cat "$BOXEN_LOCK_DIR/pid" 2>/dev/null)" != "$$" ]]; then
+                boxen_lock || exit 1
               fi
-              trap incs_unlock EXIT
+              trap boxen_unlock EXIT
               egress_forget "$CONTAINER_NAME" "$egress"
             ) || warn "Could not remove $CONTAINER_NAME's proxy from $egress"
           fi
@@ -199,7 +199,7 @@ cleanup_on_exit() {
           warn "Could not delete '$CONTAINER_NAME'"
         fi
       else
-        warn "Container left in place. Clean up manually with: incs -d $CONTAINER_NAME"
+        warn "Container left in place. Clean up manually with: bxn -d $CONTAINER_NAME"
       fi
     fi
   fi
@@ -225,17 +225,17 @@ VM_DISK="20GiB"
 VM_MEMORY="4GiB"
 VM_CPUS="4"
 READY_TIMEOUT=30
-INSECURE_NETWORK="${INCS_INSECURE_NETWORK:-0}"
+INSECURE_NETWORK="${BOXEN_INSECURE_NETWORK:-0}"
 EGRESS_MODE=""
 EGRESS_GROUP=""
 
 # ---------------------------------------------------------------------------
 # Plugin discovery — reads built-in plugins/*.sh plus user plugins from
-# ${XDG_DATA_HOME:-~/.local/share}/agent_incus/plugins/*.sh
+# ${XDG_DATA_HOME:-~/.local/share}/boxen/plugins/*.sh
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 BUILTIN_PLUGINS_DIR="$SCRIPT_DIR/plugins"
-USER_PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agent_incus/plugins"
+USER_PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/boxen/plugins"
 
 # Parallel arrays (bash 3.2 compatible — macOS /bin/bash has no associative arrays)
 _P_ID=() _P_NAME=() _P_DESC=() _P_FILE=() _P_SELECTED=() _P_AGENT_COMMAND=()
@@ -294,7 +294,7 @@ print_agent_launches() {
     _plugin_failed "${_P_ID[$i]}" && continue
     printf 'Start %s:\n' "${_P_NAME[$i]}"
     printf -v launch 'cd %q && %q' "$CONTAINER_WORKSPACE" "${_P_AGENT_COMMAND[$i]}"
-    printf '  incs -s %q %q\n' "$CONTAINER_NAME" "$launch"
+    printf '  bxn -s %q %q\n' "$CONTAINER_NAME" "$launch"
   done
 }
 
@@ -613,7 +613,7 @@ stash_tailscale_state() {
     inactive|failed|unknown) ;;
     *) error "Could not stop tailscaled in $CONTAINER_NAME. No template saved: it might write the node key back." ;;
   esac
-  TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")"
+  TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/boxen-tailscale.XXXXXX")"
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$TS_STATE_BACKUP"
   incus exec "$CONTAINER_NAME" -- rm -rf /var/lib/tailscale
 }
@@ -687,17 +687,17 @@ _selected_plugin_hosts() {
 }
 
 # The lock, between a fresh build's open and locked phases: the container's
-# proxy, then the same lockdown `incs egress mode` uses (stop, locked card, a
+# proxy, then the same lockdown `bxn egress mode` uses (stop, locked card, a
 # new address, a verified proxy, start).
 lock_build() {
   log "Turning on the allowlist ($EGRESS_MODE) before the workspace and credentials go in..."
-  incs_lock
+  boxen_lock
   egress_ensure "$EGRESS_CONTAINER"
   egress_register "$CONTAINER_NAME" "$EGRESS_CONTAINER"
   egress_write_proxy_env "$CONTAINER_NAME"
   egress_lockdown "$CONTAINER_NAME"
-  incs_unlock
-  incus config set "$CONTAINER_NAME" user.incs.egress.build=locked
+  boxen_unlock
+  incus config set "$CONTAINER_NAME" user.boxen.egress.build=locked
   NET_VIA_PROXY=1
   wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
   wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
@@ -722,7 +722,7 @@ fi
 GITCFG
   egress_write_notices "$CONTAINER_NAME" "$HOST_USER"
   egress_commit "$CONTAINER_NAME"
-  incus config set "$CONTAINER_NAME" user.incs.egress.build=done
+  incus config set "$CONTAINER_NAME" user.boxen.egress.build=done
 }
 
 # Node's built-in fetch reads proxy settings only from v22.21 and v24.
@@ -834,16 +834,16 @@ done
 # ---------------------------------------------------------------------------
 # macOS pre-flight (noop on Linux)
 # ---------------------------------------------------------------------------
-source "$SCRIPT_DIR/incus.macos.setup"
-source "$SCRIPT_DIR/incus.envscan"
+source "$SCRIPT_DIR/boxen.macos.setup"
+source "$SCRIPT_DIR/boxen.envscan"
 # read_secret / read_value, for plugin prompts that take pasted values.
-source "$SCRIPT_DIR/incus.prompt"
-# shellcheck source=incus.profile
-source "$SCRIPT_DIR/incus.profile"
-# shellcheck source=incus.net
-source "$SCRIPT_DIR/incus.net"
-# shellcheck source=incus.egress
-source "$SCRIPT_DIR/incus.egress"
+source "$SCRIPT_DIR/boxen.prompt"
+# shellcheck source=boxen.profile
+source "$SCRIPT_DIR/boxen.profile"
+# shellcheck source=boxen.net
+source "$SCRIPT_DIR/boxen.net"
+# shellcheck source=boxen.egress
+source "$SCRIPT_DIR/boxen.egress"
 
 # ---------------------------------------------------------------------------
 # Validate
@@ -993,7 +993,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if [[ "$INSECURE_NETWORK" == "1" ]]; then
     echo "Network:     default bridge, not isolated (--insecure-network)"
   else
-    echo "Network:     $INCS_NET, isolated from other instances and the host"
+    echo "Network:     $BOXEN_NET, isolated from other instances and the host"
   fi
   if [[ "$LOCKED_BUILD" == "1" ]]; then
     echo "Egress:      $EGRESS_MODE (allowlist), proxy in $EGRESS_CONTAINER"
@@ -1046,24 +1046,24 @@ trap 'exit 129' HUP
 
 ensure_profile
 
-# The isolated bridge, and this instance's address on it (incus.net).
+# The isolated bridge, and this instance's address on it (boxen.net).
 NET_ARGS=()
 if [[ "$INSECURE_NETWORK" == "1" ]]; then
   warn "--insecure-network: $CONTAINER_NAME goes on the default bridge, where instances can reach each other and the host"
 else
   net_preflight
-  incs_lock
+  boxen_lock
   ensure_net
   NET_IP="$(net_next_address)"
-  incs_unlock
-  NET_ARGS=(-p "$INCS_NET_PROFILE" -d "eth0,ipv4.address=$NET_IP")
+  boxen_unlock
+  NET_ARGS=(-p "$BOXEN_NET_PROFILE" -d "eth0,ipv4.address=$NET_IP")
 fi
 
 # ---------------------------------------------------------------------------
 # Create container
 # ---------------------------------------------------------------------------
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
-# Under an allowlist it's created stopped, so incs decides when it first runs.
+# Under an allowlist it's created stopped, so bxn decides when it first runs.
 LAUNCH=launch
 [[ "$LOCKED_BUILD" == "1" ]] && LAUNCH=init
 if [[ "$IS_VM" == "1" ]]; then
@@ -1076,22 +1076,22 @@ if [[ "$IS_VM" == "1" ]]; then
 else
   incus "$LAUNCH" "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
 fi
-incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
+incus config set "$CONTAINER_NAME" user.managed-by=boxen
 if [[ "$INSECURE_NETWORK" == "1" ]]; then
-  incus config set "$CONTAINER_NAME" user.incs.net=open
+  incus config set "$CONTAINER_NAME" user.boxen.net=open
 else
-  incus config set "$CONTAINER_NAME" user.incs.net=isolated
+  incus config set "$CONTAINER_NAME" user.boxen.net=isolated
 fi
-# incus.shell starts sessions here.
-incus config set "$CONTAINER_NAME" user.agent-incus.workspace="$CONTAINER_WORKSPACE"
+# boxen.shell starts sessions here.
+incus config set "$CONTAINER_NAME" user.boxen.workspace="$CONTAINER_WORKSPACE"
 
 if [[ "$LOCKED_BUILD" == "1" ]]; then
   # Kept from starting on its own until the build finishes; the original
   # autostart (never set) comes back when the lock commits. The builder's PID
   # and boot tell a healthy build from an abandoned one.
-  incus config set "$CONTAINER_NAME" boot.autostart=false user.incs.egress.autostart-saved=unset \
-    "user.incs.egress=$EGRESS_MODE" "user.incs.egress.builder=$$@$(egress_boot_id)" \
-    "user.incs.egress.build=$([[ "$FROM_BASE_IMAGE" == "1" ]] && echo locked || echo open)"
+  incus config set "$CONTAINER_NAME" boot.autostart=false user.boxen.egress.autostart-saved=unset \
+    "user.boxen.egress=$EGRESS_MODE" "user.boxen.egress.builder=$$@$(egress_boot_id)" \
+    "user.boxen.egress.build=$([[ "$FROM_BASE_IMAGE" == "1" ]] && echo locked || echo open)"
   # read -a splits on spaces without pathname expansion, so a wildcard such
   # as *.tailscale.com can't match files in the current directory.
   read -r -a _plugin_hosts <<< "$(_selected_plugin_hosts | tr '\n' ' ')"
@@ -1100,9 +1100,9 @@ if [[ "$LOCKED_BUILD" == "1" ]]; then
     # A template may hold logins, credential files or startup services, so it
     # never runs open: locked card and a verified proxy before its first start.
     log "Locking $CONTAINER_NAME's network ($EGRESS_MODE) before its first start..."
-    incs_lock
+    boxen_lock
     egress_prepare_unstarted "$CONTAINER_NAME" "$EGRESS_CONTAINER" "$EGRESS_MODE"
-    incs_unlock
+    boxen_unlock
     NET_VIA_PROXY=1
   fi
   incus start "$CONTAINER_NAME"
@@ -1173,7 +1173,7 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 
   id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
 
-  # Group-gated sudo: the user is not a member of _sudo. incus.shell adds the
+  # Group-gated sudo: the user is not a member of _sudo. boxen.shell adds the
   # group to a single session when asked (--with-sudo).
   groupadd -f _sudo
   echo '%_sudo ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/_sudo
@@ -1230,7 +1230,7 @@ if [[ "$FROM_BASE_IMAGE" == "0" ]]; then
     set -e
 
     # Auto-cd to the workspace on login, unless the session already chose a
-    # directory (incus.shell passes --cwd).
+    # directory (boxen.shell passes --cwd).
     touch ~/.zshrc
     printf 'if [[ $PWD == "$HOME" && -d %q ]]; then\n    cd %q\nfi\n' "$1" "$1" >> ~/.zprofile
 ZSHEOF
@@ -1417,7 +1417,7 @@ done
 echo "========================================"
 echo ""
 echo "Shell in:"
-echo "  incs $CONTAINER_NAME"
+echo "  bxn $CONTAINER_NAME"
 echo ""
 print_agent_launches
 

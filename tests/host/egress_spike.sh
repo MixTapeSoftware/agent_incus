@@ -8,7 +8,7 @@
 #      neither answers nor advertises DNS.
 #   2. Whether a connection a container opened while open survives locking
 #      the container down, and then a restart. If it survives the restart,
-#      incs has to clear the host's connection tracking, or give the
+#      bxn has to clear the host's connection tracking, or give the
 #      container a new IP.
 #   3. If it survives, whether a new IP on lock ends it: the old flow resent
 #      from the new IP, and from the old IP as root inside the container.
@@ -16,7 +16,7 @@
 #   bash tests/host/egress_spike.sh              # about 2 minutes
 #   bash tests/host/egress_spike.sh --restart    # also restarts Incus (sudo) and re-checks DNS
 #
-# It creates only throwaway objects named incs-spike*, refuses to start if any
+# It creates only throwaway objects named boxen-spike*, refuses to start if any
 # already exist, and deletes them all on exit. It also runs a small Python
 # listener on the host for the connection test. Needs python3 on the host.
 # If ufw is active, it adds narrow rules for its bridge with sudo and removes
@@ -29,10 +29,10 @@ set -uo pipefail
 RESTART=0
 [[ "${1:-}" == "--restart" ]] && RESTART=1
 
-NET=incs-spike1                 # a bridge name must be 15 characters or fewer
-PROFILE=incs-spike-egress
-X=incs-spike-x
-ACL_LOCK=incs-spike-lock
+NET=boxen-spike1                 # a bridge name must be 15 characters or fewer
+PROFILE=boxen-spike-egress
+X=boxen-spike-x
+ACL_LOCK=boxen-spike-lock
 IMAGE=images:alpine/3.24
 UDP_PORT=47990
 TCP_PORT=47991
@@ -70,7 +70,7 @@ cleanup() {
   incus profile delete "$PROFILE" >/dev/null 2>&1
   incus network delete "$NET" >/dev/null 2>&1
   [[ -n "$TMP" ]] && rm -rf "$TMP"
-  echo "removed incs-spike objects"
+  echo "removed boxen-spike objects"
 }
 
 # --- preflight -------------------------------------------------------------
@@ -291,17 +291,17 @@ sleep 1
 old_ok="$([[ "$(seen_since "$t2" udp "$OLD_SPORT")" -gt 0 ]] && echo yes || echo no)"
 new_ok="$([[ "$(seen_since "$t2" udp "$NEW_SPORT")" -gt 0 ]] && echo yes || echo no)"
 check "control: a fresh UDP flow after the restart is blocked" "no" "$new_ok"
-# Either answer is about the host, not a defect: incs moves the container to a
+# Either answer is about the host, not a defect: bxn moves the container to a
 # new address on lock either way, and the next section checks that, always.
 info "the old UDP flow after the restart: $([[ "$old_ok" == yes ]] && echo "still gets through" || echo blocked)"
 if [[ "$old_ok" == yes ]]; then
-  info "RESULT: the host's connection tracking outlives the restart. incs must clear it, or give the container a new IP."
+  info "RESULT: the host's connection tracking outlives the restart. bxn must clear it, or give the container a new IP."
 else
   info "RESULT: a restart is enough to end old flows on this host."
 fi
 
 # --- 3. a new IP on lock -----------------------------------------------------
-# The fix incs would use: lock = a new address. The host's old entries are
+# The fix bxn would use: lock = a new address. The host's old entries are
 # keyed on the old address, and IPv4 filtering should stop the container from
 # sending from an address it no longer holds, even as root inside it.
 section "a new IP on lock"
@@ -354,7 +354,7 @@ if incus exec "$X" -- ip addr add "$X_IP/${GW_CIDR#*/}" dev eth0 >/dev/null 2>"$
     if [[ "$spoof_seen" == "0" ]]; then
       info "RESULT: a new IP on lock ends old flows without root on the host."
     else
-      info "RESULT: IPv4 filtering didn't stop the old address. A new IP isn't enough; incs needs to clear connection tracking."
+      info "RESULT: IPv4 filtering didn't stop the old address. A new IP isn't enough; bxn needs to clear connection tracking."
     fi
   fi
 else

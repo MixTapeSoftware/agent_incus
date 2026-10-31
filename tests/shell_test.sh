@@ -1,6 +1,6 @@
 #!/bin/bash
 # tests/shell_test.sh
-# Behavior tests for incus.shell argument parsing and --with-sudo, against the
+# Behavior tests for boxen.shell argument parsing and --with-sudo, against the
 # stateful fake `incus`.
 # Run: bash tests/shell_test.sh
 
@@ -46,12 +46,12 @@ fresh_box() {
 # The container user: primary group first, then docker.
 with_user_groups() { echo "$USER_GID $DOCKER_GID" > "$FAKE_INCUS_STATE/instances/box/root/etc/id-G"; }
 with_sudo_group()  { echo "_sudo:x:$SUDO_GID:" > "$FAKE_INCUS_STATE/instances/box/root/etc/group"; }
-shell() { bash "$REPO_ROOT/incus.shell" "$@"; }
+shell() { bash "$REPO_ROOT/boxen.shell" "$@"; }
 last_call() { tail -1 "$FAKE_INCUS_STATE/calls.log"; }
 # The command incus runs inside the container (everything after the first --).
 launched() { local c; c="$(last_call)"; echo "${c#* -- }"; }
 
-echo "incus.shell"
+echo "boxen.shell"
 
 fresh_box; with_user_groups; with_sudo_group
 shell box >/dev/null 2>&1
@@ -92,7 +92,7 @@ shell box >/dev/null 2>&1
 assert_contains "no recorded workspace: starts in /workspace" " --cwd /workspace " "$(last_call)"
 
 fresh_box; with_user_groups
-incus config set box user.agent-incus.workspace=/src
+incus config set box user.boxen.workspace=/src
 shell box >/dev/null 2>&1
 assert_contains "recorded workspace: starts there" " --cwd /src " "$(last_call)"
 

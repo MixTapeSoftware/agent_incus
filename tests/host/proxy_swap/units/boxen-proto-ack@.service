@@ -1,5 +1,5 @@
 [Unit]
-Description=incs proxy prototype: record one generation ack
+Description=bxn proxy prototype: record one generation ack
 
 [Service]
 ExecStart=/bin/cat

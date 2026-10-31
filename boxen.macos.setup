@@ -1,6 +1,6 @@
-# incus.macos.setup
+# boxen.macos.setup
 # macOS pre-flight: ensures Colima + Incus are installed and running.
-# Sourced by incus.init — inherits colors, log/warn/error, and set -euo pipefail.
+# Sourced by boxen.init — inherits colors, log/warn/error, and set -euo pipefail.
 
 # ---------------------------------------------------------------------------
 # Skip on Linux
@@ -15,7 +15,7 @@ fi
 COLIMA_CPUS="${COLIMA_CPUS:-4}"
 COLIMA_MEMORY="${COLIMA_MEMORY:-8}"
 COLIMA_DISK="${COLIMA_DISK:-100}"
-COLIMA_PROFILE="${COLIMA_PROFILE:-agent-incus}"
+COLIMA_PROFILE="${COLIMA_PROFILE:-boxen}"
 
 # ---------------------------------------------------------------------------
 # Check Colima

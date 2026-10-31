@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# incs.egress
-# `incs egress`: which internet hosts each container may reach. Each
+# bxn.egress
+# `bxn egress`: which internet hosts each container may reach. Each
 # container's traffic goes through its own proxy in an egress container
-# (incus.egress), and its network card lets it reach nothing else.
+# (boxen.egress), and its network card lets it reach nothing else.
 
-_incs_resolve() {
+_boxen_resolve() {
   if command -v realpath >/dev/null 2>&1; then realpath "$1"; return; fi
   local p="$1" link
   while [[ -L "$p" ]]; do
@@ -15,7 +15,7 @@ _incs_resolve() {
   done
   echo "$p"
 }
-SCRIPT_DIR="$(cd "$(dirname "$(_incs_resolve "${BASH_SOURCE[0]}")")" && pwd)"
+SCRIPT_DIR="$(cd "$(dirname "$(_boxen_resolve "${BASH_SOURCE[0]}")")" && pwd)"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -25,14 +25,14 @@ log()  { echo -e "${GREEN}[+]${NC} $1" >&2; }
 warn() { echo -e "${YELLOW}[!]${NC} $1" >&2; }
 error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 
-# shellcheck source=incus.net
-source "$SCRIPT_DIR/incus.net"
-# shellcheck source=incus.egress
-source "$SCRIPT_DIR/incus.egress"
+# shellcheck source=boxen.net
+source "$SCRIPT_DIR/boxen.net"
+# shellcheck source=boxen.egress
+source "$SCRIPT_DIR/boxen.egress"
 
 usage() {
   cat <<'EOF'
-Usage: incs egress <command> [args...]
+Usage: bxn egress <command> [args...]
 
   ls [<container>]                     Each container's mode and proxy; with a
                                        name, its hosts and where each comes from
@@ -79,8 +79,8 @@ need_container() {
 # Containers with an allowlist proxy.
 allowlisted() {
   local c
-  for c in $(incus list user.managed-by=agent-incus --format csv --columns n 2>/dev/null); do
-    [[ -n "$(incus config get "$c" user.incs.egress.container 2>/dev/null)" ]] && echo "$c"
+  for c in $(incus list user.managed-by=boxen --format csv --columns n 2>/dev/null); do
+    [[ -n "$(incus config get "$c" user.boxen.egress.container 2>/dev/null)" ]] && echo "$c"
   done
   return 0
 }
@@ -89,10 +89,10 @@ allowlisted() {
 # unchanged until a mode says otherwise.
 attach() {
   local c="$1" group="$2" egress
-  [[ "$(incus config get "$c" user.incs.role 2>/dev/null)" != "egress" ]] || error "$c is an egress container"
-  [[ "$(incus config get "$c" user.incs.net 2>/dev/null)" == "isolated" ]] ||
-    error "$c is on the default bridge, so its traffic can't be confined. Recreate it with incs -i (new instances join $INCS_NET)."
-  egress="$(incus config get "$c" user.incs.egress.container 2>/dev/null)"
+  [[ "$(incus config get "$c" user.boxen.role 2>/dev/null)" != "egress" ]] || error "$c is an egress container"
+  [[ "$(incus config get "$c" user.boxen.net 2>/dev/null)" == "isolated" ]] ||
+    error "$c is on the default bridge, so its traffic can't be confined. Recreate it with bxn -i (new instances join $BOXEN_NET)."
+  egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
   if [[ -n "$egress" ]]; then
     [[ -z "$group" || "$(egress_name "$group")" == "$egress" ]] ||
       error "$c already uses $egress. Moving it isn't supported yet."
@@ -145,11 +145,11 @@ cmd_mode() {
   done
   need_container "$c"
   case "$mode" in enforce | report | off) ;; *) usage 1 ;; esac
-  incs_lock
+  boxen_lock
   attach "$c" "$group"
-  incus config set "$c" "user.incs.egress=$mode" >/dev/null
-  converge_one "$c" || { incs_unlock; return 1; }
-  incs_unlock
+  incus config set "$c" "user.boxen.egress=$mode" >/dev/null
+  converge_one "$c" || { boxen_unlock; return 1; }
+  boxen_unlock
 }
 
 # Usage: edit_hosts add|rm <container> <host>...
@@ -158,9 +158,9 @@ edit_hosts() {
   shift 2
   [[ $# -gt 0 ]] || usage 1
   for h in "$@"; do
-    out+=("$(egress_host "$h")") || error "Not a hostname incs accepts: $h"
+    out+=("$(egress_host "$h")") || error "Not a hostname bxn accepts: $h"
   done
-  list="$(egress_split "$(incus config get "$c" user.incs.egress.allow 2>/dev/null)")"
+  list="$(egress_split "$(incus config get "$c" user.boxen.egress.allow 2>/dev/null)")"
   if [[ "$op" == add ]]; then
     list="$(printf '%s\n' "$list" "${out[@]}" | sed '/^$/d' | LC_ALL=C sort -u)"
   else
@@ -170,7 +170,7 @@ edit_hosts() {
     done
   fi
   keep="$(printf '%s\n' "$list" | sed '/^$/d' | tr '\n' ',' | sed 's/,$//')"
-  incus config set "$c" "user.incs.egress.allow=$keep" >/dev/null
+  incus config set "$c" "user.boxen.egress.allow=$keep" >/dev/null
   if [[ "$op" == rm ]]; then
     for h in "${out[@]}"; do
       if egress_hosts "$c" | grep -qxF -- "$h"; then
@@ -187,8 +187,8 @@ hosts_with_sources() {
   {
     egress_read_hosts "$EGRESS_APPROVED" | sed 's/$/	baseline/'
     egress_read_hosts "$EGRESS_USER_HOSTS" | sed 's/$/	your additions/'
-    egress_split "$(incus config get "$c" user.incs.egress.plugin-allow 2>/dev/null)" | sed 's/$/	plugins/'
-    egress_split "$(incus config get "$c" user.incs.egress.allow 2>/dev/null)" | sed "s/\$/\t$c/"
+    egress_split "$(incus config get "$c" user.boxen.egress.plugin-allow 2>/dev/null)" | sed 's/$/	plugins/'
+    egress_split "$(incus config get "$c" user.boxen.egress.allow 2>/dev/null)" | sed "s/\$/\t$c/"
   } | awk -F'\t' '!($1 in s) { order[++n] = $1; s[$1] = $2; next } { s[$1] = s[$1] ", " $2 }
                    END { for (i = 1; i <= n; i++) print order[i] "\t" s[order[i]] }' | LC_ALL=C sort
 }
@@ -209,11 +209,11 @@ cmd_allow_rm() {
   fi
   c="${1:-}"; shift || true
   need_container "$c"
-  incs_lock
+  boxen_lock
   attach "$c" ""
   edit_hosts "$op" "$c" "$@"
-  converge_one "$c" || { incs_unlock; return 1; }
-  incs_unlock
+  converge_one "$c" || { boxen_unlock; return 1; }
+  boxen_unlock
 }
 
 # --all changes your baseline additions, then every allowlisted container.
@@ -221,31 +221,31 @@ all_hosts() {
   local op="$1" h out=() list cs c failed=""
   shift
   [[ $# -gt 0 ]] || usage 1
-  for h in "$@"; do out+=("$(egress_host "$h")") || error "Not a hostname incs accepts: $h"; done
+  for h in "$@"; do out+=("$(egress_host "$h")") || error "Not a hostname bxn accepts: $h"; done
   cs="$(allowlisted | tr '\n' ' ')"
   if [[ "$op" == add ]]; then
     confirm "Allow ${out[*]} for every container (${cs:-none yet})?" || error "Nothing changed"
   else
     confirm "Remove ${out[*]} from your baseline additions? Open connections through the proxy end for: ${cs:-none}." || error "Nothing changed"
   fi
-  incs_lock
-  mkdir -p "$INCS_CONFIG_DIR"
+  boxen_lock
+  mkdir -p "$BOXEN_CONFIG_DIR"
   list="$(egress_read_hosts "$EGRESS_USER_HOSTS")"
   if [[ "$op" == add ]]; then
     list="$(printf '%s\n' "$list" "${out[@]}" | sed '/^$/d' | LC_ALL=C sort -u)"
   else
     for h in "${out[@]}"; do
       grep -qxF -- "$h" <<< "$list" ||
-        warn "$h isn't in your additions. Hosts in the approved baseline stay; incs egress refresh reviews it."
+        warn "$h isn't in your additions. Hosts in the approved baseline stay; bxn egress refresh reviews it."
       list="$(grep -vxF -- "$h" <<< "$list" || true)"
     done
   fi
-  { echo "# Your additions to the egress baseline, for every container. Managed by incs egress allow/rm --all."
+  { echo "# Your additions to the egress baseline, for every container. Managed by bxn egress allow/rm --all."
     printf '%s\n' "$list" | sed '/^$/d'; } > "$EGRESS_USER_HOSTS.new"
   mv "$EGRESS_USER_HOSTS.new" "$EGRESS_USER_HOSTS"
   for c in $cs; do converge_one "$c" || failed="$failed $c"; done
-  incs_unlock
-  [[ -z "$failed" ]] || error "Changes did not finish for:$failed. Retry: incs egress refresh --all"
+  boxen_unlock
+  [[ -z "$failed" ]] || error "Changes did not finish for:$failed. Retry: bxn egress refresh --all"
 }
 
 cmd_ls() {
@@ -258,8 +258,8 @@ cmd_ls() {
   fi
   if [[ -n "$c" ]]; then
     need_container "$c"
-    egress="$(incus config get "$c" user.incs.egress.container 2>/dev/null)"
-    [[ -n "$egress" ]] || { echo "$c: no allowlist (set one with: incs egress mode $c enforce)"; return 0; }
+    egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
+    [[ -n "$egress" ]] || { echo "$c: no allowlist (set one with: bxn egress mode $c enforce)"; return 0; }
     status_line "$c"
     echo ""
     printf '%-50s  %s\n' HOST FROM
@@ -274,16 +274,16 @@ cmd_ls() {
 # One line: name, desired mode, active state, proxy and anything to fix.
 status_line() {
   local c="$1" egress mode active port notes="" st
-  egress="$(incus config get "$c" user.incs.egress.container)"
-  mode="$(incus config get "$c" user.incs.egress 2>/dev/null)"; mode="${mode:-enforce}"
-  active="$(incus config get "$c" user.incs.egress.active 2>/dev/null)"
-  port="$(incus config get "$c" user.incs.egress.port 2>/dev/null)"
-  [[ -n "$(egress_transition "$c")" ]] && notes+="change interrupted: incs egress refresh $c; "
-  egress_build_abandoned "$c" && notes+="build abandoned ($(incus config get "$c" user.incs.egress.build)): rebuild or delete it; "
+  egress="$(incus config get "$c" user.boxen.egress.container)"
+  mode="$(incus config get "$c" user.boxen.egress 2>/dev/null)"; mode="${mode:-enforce}"
+  active="$(incus config get "$c" user.boxen.egress.active 2>/dev/null)"
+  port="$(incus config get "$c" user.boxen.egress.port 2>/dev/null)"
+  [[ -n "$(egress_transition "$c")" ]] && notes+="change interrupted: bxn egress refresh $c; "
+  egress_build_abandoned "$c" && notes+="build abandoned ($(incus config get "$c" user.boxen.egress.build)): rebuild or delete it; "
   if [[ "${active%%:*}" != "$mode" ]]; then
-    notes+="wants $mode: incs egress refresh $c; "
+    notes+="wants $mode: bxn egress refresh $c; "
   elif [[ "${active#*:}" != "$(egress_hosts "$c" | egress_policy_id "$mode")" ]]; then
-    notes+="hosts changed since applied: incs egress refresh $c; "
+    notes+="hosts changed since applied: bxn egress refresh $c; "
   fi
   if [[ "$mode" != off ]] && ! egress_nic_is_restricted "$c"; then notes+="card not locked; "; fi
   if egress_running "$egress"; then
@@ -295,20 +295,20 @@ status_line() {
   else
     notes+="$egress is stopped: no internet; "
   fi
-  [[ -n "$(incus config get "$c" user.incs.egress.plugin-allow 2>/dev/null | grep -F '*.tailscale.com' || true)" ]] &&
+  [[ -n "$(incus config get "$c" user.boxen.egress.plugin-allow 2>/dev/null | grep -F '*.tailscale.com' || true)" ]] &&
     notes+="Tailscale: not confined against a determined agent; "
   printf '%-28s %-8s %-18s %-22s %s\n' "$c" "$mode" "${active:--}" "$egress:$port" "${notes%; }"
 }
 
-# ufw can drop the bridge's DHCP and forwarding; incs added rules once.
+# ufw can drop the bridge's DHCP and forwarding; bxn added rules once.
 ufw_note() {
   [[ "$(uname -s)" == "Linux" ]] && command -v ufw >/dev/null 2>&1 || return 0
-  grep -q '^ENABLED=yes' "$INCS_UFW_CONF" 2>/dev/null || return 0
-  [[ "$(incus network get "$INCS_NET" user.incs.ufw 2>/dev/null)" == "1" ]] && return 0
+  grep -q '^ENABLED=yes' "$BOXEN_UFW_CONF" 2>/dev/null || return 0
+  [[ "$(incus network get "$BOXEN_NET" user.boxen.ufw 2>/dev/null)" == "1" ]] && return 0
   echo ""
-  warn "ufw is on, but incs hasn't added its rules for $INCS_NET:
-  sudo ufw allow in on $INCS_NET to any port 67 proto udp
-  sudo ufw route allow in on $INCS_NET"
+  warn "ufw is on, but bxn hasn't added its rules for $BOXEN_NET:
+  sudo ufw allow in on $BOXEN_NET to any port 67 proto udp
+  sudo ufw route allow in on $BOXEN_NET"
 }
 
 cmd_log() {
@@ -322,7 +322,7 @@ cmd_log() {
     esac
   done
   need_container "$c"
-  egress="$(incus config get "$c" user.incs.egress.container 2>/dev/null)"
+  egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
   [[ -n "$egress" ]] || error "$c has no allowlist"
   egress_running "$egress" || error "$egress is stopped"
   if [[ "$raw" == 1 ]]; then
@@ -340,7 +340,7 @@ cmd_log() {
     awk -F'\t' 'BEGIN { printf "%-50s %-6s %-12s %6s  %s\n", "HOST", "PORT", "DECISION", "HITS", "LAST" }
       { printf "%-50s %-6s %-12s %6s  %s\n", $2, $3, $4, $5, $6 }'
   echo ""
-  echo "Allow a host: incs egress allow $c <host>"
+  echo "Allow a host: bxn egress allow $c <host>"
 }
 
 cmd_refresh() {
@@ -363,21 +363,21 @@ cmd_refresh() {
     --all) cs="$(allowlisted)" ;;
     *) need_container "$target"; cs="$target" ;;
   esac
-  incs_lock
+  boxen_lock
   for c in $cs; do
-    [[ -n "$(incus config get "$c" user.incs.egress.container 2>/dev/null)" ]] || { warn "$c has no allowlist"; continue; }
+    [[ -n "$(incus config get "$c" user.boxen.egress.container 2>/dev/null)" ]] || { warn "$c has no allowlist"; continue; }
     if egress_build_abandoned "$c"; then
       if egress_running "$c" && ! incus stop "$c" --force >/dev/null 2>&1; then
-        warn "$c's build was abandoned ($(incus config get "$c" user.incs.egress.build)), and it couldn't be stopped. Stop it: incus stop --force $c"
+        warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)), and it couldn't be stopped. Stop it: incus stop --force $c"
         continue
       fi
-      warn "$c's build was abandoned ($(incus config get "$c" user.incs.egress.build)); it's stopped. Rebuild it, or delete it: incs -d $c"
+      warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)); it's stopped. Rebuild it, or delete it: bxn -d $c"
       continue
     fi
     converge_one "$c" || failed="$failed $c"
   done
-  incs_unlock
-  [[ -z "$failed" ]] || error "Changes did not finish for:$failed. Retry: incs egress refresh --all"
+  boxen_unlock
+  [[ -z "$failed" ]] || error "Changes did not finish for:$failed. Retry: bxn egress refresh --all"
 }
 
 args=()

@@ -1,0 +1,7 @@
+[Unit]
+Description=bxn proxy prototype: agent a's listening socket
+
+[Socket]
+ListenStream=127.0.0.1:4750
+Backlog=512
+Service=boxen-proto-a-hold.service

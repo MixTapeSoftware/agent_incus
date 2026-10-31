@@ -1,6 +1,6 @@
 #!/bin/bash
 # tests/init_cleanup_test.sh
-# incus.init gives the user passwordless sudo while plugins install. These
+# boxen.init gives the user passwordless sudo while plugins install. These
 # tests run its real exit handling against the fake `incus` and check the
 # grant is taken back on every way out of a failed build.
 # Run: bash tests/init_cleanup_test.sh
@@ -29,9 +29,9 @@ cp "$SCRIPT_DIR/lib/fake_incus" "$SANDBOX/bin/incus"
 chmod +x "$SANDBOX/bin/incus"
 export PATH="$SANDBOX/bin:$PATH"
 
-# The real functions and trap lines, lifted out of incus.init.
+# The real functions and trap lines, lifted out of boxen.init.
 extract_fn() {
-  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/incus.init"
+  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/boxen.init"
 }
 {
   echo 'set -euo pipefail'
@@ -42,7 +42,7 @@ extract_fn() {
   extract_fn restore_tailscale_state
   extract_fn cleanup_on_exit
   echo 'CONTAINER_NAME=box; HOST_USER=dev; BUILD_SUDO_GRANTED="${GRANTED:-1}"; TS_STATE_BACKUP=""'
-  grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/incus.init" || true
+  grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/boxen.init" || true
   echo 'eval "$BODY"'
 } > "$SANDBOX/harness.sh"
 assert_eq "harness found the exit trap and three signal traps" \
@@ -63,7 +63,7 @@ revoked() {
 }
 exists()  { incus info box >/dev/null 2>&1 && echo yes || echo no; }
 
-echo "incus.init exit handling"
+echo "boxen.init exit handling"
 
 # error() exits directly; an ERR trap never ran for it.
 fresh_box

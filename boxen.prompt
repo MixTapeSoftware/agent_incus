@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# incus.prompt
+# boxen.prompt
 # Reading pasted values from a terminal.
 #
 # Terminals can wrap a paste in escape sequences the user never sees. Focus
@@ -10,7 +10,7 @@
 # into a config file can make that file unparseable.
 #
 # Every prompt that takes a pasted value should use read_secret or read_value.
-# Sourced by incs and incus.init (and so every plugin).
+# Sourced by bxn and boxen.init (and so every plugin).
 # Kept compatible with bash 3.2 and BSD sed (macOS).
 
 # Filter: drop terminal escape sequences and control characters, then trim

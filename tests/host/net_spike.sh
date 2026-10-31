@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 # tests/host/net_spike.sh
-# Spike for the network lockdown plan (N1). Before incs builds on Incus
+# Spike for the network lockdown plan (N1). Before bxn builds on Incus
 # network ACLs, address sets and IP/MAC filtering, check on a real host that
 # they do what the plan assumes. The bridge is the one the egress design
 # settled on: a /16 with no DNS server, public resolvers handed out by DHCP,
-# and addresses set by incs at launch. Run it on a machine with Incus:
+# and addresses set by bxn at launch. Run it on a machine with Incus:
 #
 #   bash tests/host/net_spike.sh              # about 3 minutes
 #   bash tests/host/net_spike.sh --restart    # also restarts Incus (sudo) and re-checks
 #
-# It creates only throwaway objects named incs-spike*, refuses to start if any
+# It creates only throwaway objects named boxen-spike*, refuses to start if any
 # already exist, and deletes them all on exit. If ufw is active, it adds narrow
 # rules for its bridge with sudo and removes them on exit.
 # Prints PASS/FAIL for what the plan relies on and INFO for what it needs to
@@ -20,15 +20,15 @@ set -uo pipefail
 RESTART=0
 [[ "${1:-}" == "--restart" ]] && RESTART=1
 
-NET=incs-spike0                 # a bridge name must be 15 characters or fewer
-PROFILE=incs-spike-net
-A=incs-spike-a                  # an agent attached to the proxy
-B=incs-spike-b                  # an agent not attached to it
-P=incs-spike-p                  # stands in for a proxy, listening on 443
-SET=incs-spike-clients          # address set: the proxy's attached clients
-ACL_P=incs-spike-p-in           # proxy ingress: 443 from the set only
-ACL_PREC=incs-spike-prec        # allow and drop on the same port: which wins?
-ACL_AGENT=incs-spike-agent      # agent: ingress from the host only, no egress to the host
+NET=boxen-spike0                 # a bridge name must be 15 characters or fewer
+PROFILE=boxen-spike-net
+A=boxen-spike-a                  # an agent attached to the proxy
+B=boxen-spike-b                  # an agent not attached to it
+P=boxen-spike-p                  # stands in for a proxy, listening on 443
+SET=boxen-spike-clients          # address set: the proxy's attached clients
+ACL_P=boxen-spike-p-in           # proxy ingress: 443 from the set only
+ACL_PREC=boxen-spike-prec        # allow and drop on the same port: which wins?
+ACL_AGENT=boxen-spike-agent      # agent: ingress from the host only, no egress to the host
 IMAGE=images:alpine/3.24
 HOST_PORT=47999                 # host side of the proxy-device check
 HOST_SVC_PORT=47998             # a host service on the bridge address
@@ -47,7 +47,7 @@ SVC_DIR=""
 TMP=""
 UFW_ADDED=0
 # ufw denies incoming and routed traffic by default, which drops DHCP on a new
-# bridge. These open what incs will (DHCP in, forwarding out) plus the host
+# bridge. These open what bxn will (DHCP in, forwarding out) plus the host
 # service, so the ACL is what blocks it rather than ufw. No DNS (53).
 ufw_rules() {
   local verb="$1"
@@ -71,7 +71,7 @@ cleanup() {
     incus network acl delete "$(printf 'a%.0s' $(seq 1 "$n"))" >/dev/null 2>&1
     incus network address-set delete "$(printf 's%.0s' $(seq 1 "$n"))" >/dev/null 2>&1
   done
-  echo "removed incs-spike objects"
+  echo "removed boxen-spike objects"
 }
 
 # --- preflight -------------------------------------------------------------
@@ -124,7 +124,7 @@ done
 
 # --- bridge, profile, instances --------------------------------------------
 section "bridge and instances"
-# A /16 no route on the host already covers, like incs picks.
+# A /16 no route on the host already covers, like bxn picks.
 OCT=""
 for o in $(seq 230 250); do
   ip -4 route 2>/dev/null | grep -q "^10\.$o\." && continue
@@ -134,19 +134,19 @@ done
 [[ -n "$OCT" ]] || { fail "find a free 10.x.0.0/16"; exit 1; }
 if incus network create "$NET" "ipv4.address=10.$OCT.0.1/16" ipv4.nat=true ipv6.address=none \
      "ipv4.dhcp.ranges=10.$OCT.255.10-10.$OCT.255.250" \
-     "raw.dnsmasq=$(printf 'port=0\ndhcp-option=option:dns-server,%s' "$RESOLVERS")" >/dev/null 2>/tmp/incs-spike-err.$$; then
+     "raw.dnsmasq=$(printf 'port=0\ndhcp-option=option:dns-server,%s' "$RESOLVERS")" >/dev/null 2>/tmp/boxen-spike-err.$$; then
   pass "create a /16 bridge with no DNS and public resolvers over DHCP"
 else
-  fail "create the bridge: $(cat /tmp/incs-spike-err.$$)"; rm -f /tmp/incs-spike-err.$$; exit 1
+  fail "create the bridge: $(cat /tmp/boxen-spike-err.$$)"; rm -f /tmp/boxen-spike-err.$$; exit 1
 fi
-rm -f /tmp/incs-spike-err.$$
+rm -f /tmp/boxen-spike-err.$$
 GW_CIDR="$(incus network get "$NET" ipv4.address)"; GW="${GW_CIDR%/*}"
 info "bridge $NET: $GW_CIDR, IPv6 off, DHCP pool 10.$OCT.255.10-250"
 incus profile create "$PROFILE" >/dev/null
 incus profile device add "$PROFILE" eth0 nic network="$NET" \
   security.ipv4_filtering=true security.mac_filtering=true >/dev/null || { fail "profile NIC with filtering"; exit 1; }
 
-# incs sets each address at launch, outside the DHCP pool. P takes a pool
+# bxn sets each address at launch, outside the DHCP pool. P takes a pool
 # address, as a control for DHCP itself.
 A_WANT="10.$OCT.0.10"; B_WANT="10.$OCT.0.11"
 incus launch "$IMAGE" "$A" -p default -p "$PROFILE" -d "eth0,ipv4.address=$A_WANT" >/dev/null || { fail "launch $A with a set address"; exit 1; }
@@ -267,7 +267,7 @@ diag() {
   sudo nft list ruleset 2>&1 | awk -v a="$hva" -v b="$hvb" -v p="$hvp" '
     /^table/ { t = ($0 ~ /incus/); if (t) print; next }
     !t { next }
-    /^[[:space:]]*chain / { c = ($0 ~ /incs-spike/); if (c) print; next }
+    /^[[:space:]]*chain / { c = ($0 ~ /boxen-spike/); if (c) print; next }
     c || (a != "" && index($0, a)) || (b != "" && index($0, b)) || (p != "" && index($0, p)) { print }' | sed 's/^/  /'
 }
 
@@ -304,7 +304,7 @@ check "the override keeps ipv4_filtering" "true" "$(incus config device get "$P"
 check "the override keeps mac_filtering" "true" "$(incus config device get "$P" eth0 security.mac_filtering 2>/dev/null)"
 listen "$P" 443; listen "$P" 8443
 # P has just restarted with its ACL. Allow it a few seconds to settle, and say
-# when it needed them: incs would see the same after starting a proxy.
+# when it needed them: bxn would see the same after starting a proxy.
 connects_settled() {
   local n
   for n in 1 2 3 4 5; do
@@ -372,7 +372,7 @@ fi
 incus network acl create "$ACL_AGENT" >/dev/null
 incus network acl rule add "$ACL_AGENT" ingress action=allow "source=$GW" >/dev/null
 incus network acl rule add "$ACL_AGENT" egress action=reject "destination=$GW" >/dev/null
-# A launched with its own eth0 (-d), so set it there, as incs does.
+# A launched with its own eth0 (-d), so set it there, as bxn does.
 agent_acl=(security.acls="$ACL_AGENT" security.acls.default.ingress.action=drop security.acls.default.egress.action=allow)
 incus config device set "$A" eth0 "${agent_acl[@]}" >/dev/null 2>&1 \
   || incus config device override "$A" eth0 "${agent_acl[@]}" >/dev/null \
@@ -393,11 +393,11 @@ check "A still reaches the internet" "yes" \
   "$(incus exec "$A" -- timeout 15 curl -s -o /dev/null https://example.com && echo yes || echo no)"
 check "A, with its own ACL, still reaches P:443" "yes" "$(connects "$A" "$P_IP" 443)"
 incus config device add "$A" spikefwd proxy "listen=tcp:127.0.0.1:$HOST_PORT" "connect=tcp:127.0.0.1:8081" >/dev/null \
-  || fail "add a proxy device (incs -n style)"
+  || fail "add a proxy device (bxn -n style)"
 sleep 1
 # Read the listener's reply: the proxy device accepts on the host even when
 # nothing answers behind it.
-check "incs -n style port forward still works under the ACL" "ok" \
+check "bxn -n style port forward still works under the ACL" "ok" \
   "$(timeout 7 bash -c "exec 3<>/dev/tcp/127.0.0.1/$HOST_PORT && head -c 2 <&3" 2>/dev/null)"
 
 # --- IPv6 filtering with IPv6 off ------------------------------------------
