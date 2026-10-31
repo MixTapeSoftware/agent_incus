@@ -1,0 +1,31 @@
+incs.egress
+  s_fea6d8ad3495bc::t_6f9f14345381eb 133,151,215,221,246,248,341,371,374
+incus.egress
+  s_3d37da3450aa17::t_c3b1dd9840444c 397-398,522,531-532,544-549
+tests/egress_cli_test.sh
+  s_3d37da3450aa17::t_4c7b20ad00002e 196-245
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c67d9a78520e428099d3a318ff1077bd1d4cc3c9",
+  "prompts": {},
+  "sessions": {
+    "s_3d37da3450aa17": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18f54-ea57-7f13-8c55-2a400ff74207",
+        "model": "unknown"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    },
+    "s_fea6d8ad3495bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18f58-693d-7101-a9cd-0783ad5a93b5",
+        "model": "unknown"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
