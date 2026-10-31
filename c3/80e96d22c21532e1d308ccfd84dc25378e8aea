@@ -1,0 +1,26 @@
+egress/incs-egress-ctl
+  h_f7177274f18031 51,115,124-126,158,388
+incus.egress
+  h_f7177274f18031 243,270-271
+tests/egress_test.sh
+  h_f7177274f18031 164-170
+tests/egress_units_test.sh
+  h_f7177274f18031 1-30
+tests/host/egress_spike.sh
+  h_f7177274f18031 80,100-108
+tests/host/net_spike.sh
+  h_f7177274f18031 46,62,90,170-171,178-212,258-266
+tests/host_spike_probe_test.sh
+  h_f7177274f18031 1-97
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "c380e96d22c21532e1d308ccfd84dc25378e8aea",
+  "prompts": {},
+  "humans": {
+    "h_f7177274f18031": {
+      "author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
