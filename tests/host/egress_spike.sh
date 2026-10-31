@@ -96,7 +96,15 @@ ip_of() { incus list "^$1\$" -c 4 --format csv | grep -oE '[0-9]+(\.[0-9]+){3}' 
 wait_ip() { for _ in $(seq 1 60); do [[ -n "$(ip_of "$1")" ]] && return 0; sleep 1; done; return 1; }
 # 0 when a TCP connection opens, nonzero when it is dropped or refused.
 connects() { incus exec "$X" -- timeout 7 socat -u /dev/null "TCP:$1:$2,connect-timeout=5" >/dev/null 2>&1 && echo yes || echo no; }
-dns_listeners() { ss -Hlnu 2>/dev/null | awk -v gw="$GW" '$4 == gw":53"'; ss -Hlnt 2>/dev/null | awk -v gw="$GW" '$4 == gw":53"'; }
+dns_listeners() {
+  { ss -Hlnu 2>/dev/null; ss -Hlnt 2>/dev/null; } | awk -v gw="$GW" '
+    $4 ~ /:53$/ {
+      address=$4
+      sub(/:53$/, "", address)
+      sub(/%.*/, "", address)
+      if (address == gw || address == "0.0.0.0" || address == "*" || address == "[::]") print
+    }'
+}
 
 # --- 1. a bridge with no DNS -------------------------------------------------
 section "bridge with DNS turned off"
