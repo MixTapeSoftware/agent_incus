@@ -110,6 +110,12 @@ bash "$SANDBOX/repo/bxn" -k fakeagent-web >/dev/null
 assert_eq "bxn commands take the short form" "stop chad-fakeagent-web" "$(grep -E '^stop ' "$FAKE_INCUS_STATE/calls.log" | tail -1)"
 bash "$SANDBOX/repo/bxn" egress ls fakeagent-web >/dev/null 2>&1 || true
 assert_eq "so does bxn egress" "yes" "$(grep -q 'chad-fakeagent-web' "$FAKE_INCUS_STATE/calls.log" && echo yes || echo no)"
+build fakeagent-web
+assert_eq "a project named like AGENT-PROJECT" "yes" "$(exists chad-shell-fakeagent-web)"
+out="$(names 'names_resolve fakeagent-web' 2>&1)" && rc=0 || rc=$?
+assert_eq "is two containers: the project and the agent's" "1" "$rc"
+assert_contains "and both are listed" "chad-fakeagent-web chad-shell-fakeagent-web" "$out"
+incus delete --force chad-shell-fakeagent-web
 
 echo "the agent picker"
 if script -qec true /dev/null >/dev/null 2>&1; then

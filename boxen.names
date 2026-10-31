@@ -66,23 +66,27 @@ names_next() {
 # container for that project, or for AGENT-PROJECT. Prints the argument
 # unchanged when nothing matches, so the command itself says it's not found.
 names_resolve() {
-  local arg="$1" h found="" agent proj rest i
+  local arg="$1" h found="" more agent proj rest i
   if incus info "$arg" >/dev/null 2>&1; then printf '%s\n' "$arg"; return 0; fi
   # Only plain names: these values become Incus filters.
   if ! [[ "$arg" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] || ! h="$(names_saved_handle)"; then
     printf '%s\n' "$arg"; return 0
   fi
   found="$(incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.project=$arg" --format csv --columns n 2>/dev/null)" || found=""
-  # AGENT-PROJECT; an agent's own name may hold a hyphen, so try each split.
+  # And as AGENT-PROJECT; an agent's own name may hold a hyphen, so try each
+  # split. Every reading counts, so a name that could mean two containers is
+  # refused rather than taken as the first one found.
   rest="$arg"
   i=0
-  while [[ -z "$found" && "$rest" == *-* ]]; do
+  while [[ "$rest" == *-* ]]; do
     i=$((i + 1))
     agent="$(printf '%s' "$arg" | cut -d- -f1-"$i")"
     proj="${arg#"$agent"-}"
-    found="$(incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.agent=$agent" "user.boxen.project=$proj" --format csv --columns n 2>/dev/null)" || found=""
+    more="$(incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.agent=$agent" "user.boxen.project=$proj" --format csv --columns n 2>/dev/null)" || more=""
+    [[ -z "$more" ]] || found="$found"$'\n'"$more"
     rest="${rest#*-}"
   done
+  found="$(printf '%s\n' "$found" | grep . | sort -u)" || found=""
   case "$(printf '%s\n' "$found" | grep -c .)" in
     0) printf '%s\n' "$arg" ;;
     1) printf '%s\n' "$found" ;;
