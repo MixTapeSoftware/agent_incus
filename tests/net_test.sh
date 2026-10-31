@@ -85,6 +85,8 @@ out="$(FAKE_INCUS_FIREWALL=xtables net 'net_preflight' 2>&1 || true)"
 assert_contains "xtables is refused" "not nftables" "$out"
 out="$(FAKE_INCUS_EXTENSIONS=network_address_set net 'net_preflight' 2>&1 || true)"
 assert_contains "missing NIC ACLs are refused" "network_bridge_acl_devices" "$out"
+out="$(FAKE_INCUS_FIREWALL=none net 'net_preflight' 2>&1 || true)"
+assert_contains "a server that names no firewall is refused with a reason" "not nftables" "$out"
 
 echo "ensure_net"
 fresh
