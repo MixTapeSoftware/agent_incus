@@ -97,7 +97,7 @@ incs -n my-project -r all             # Remove all proxies
 incs -u my-project                     # Update packages in a container
 incs -ua                               # Update all agent-incus containers
 incs                                   # Live view of all instances (same as incs status)
-incs status                            # Live view of all instances; space starts/stops one
+incs status                            # Live view of all instances; space starts/stops one, D deletes it (asks first)
 incs status --once                     # Print the status table once
 incs -d my-project                     # Delete a container
 incs cron install                      # Install 7pm daily update cron
