@@ -1,0 +1,23 @@
+tests/host/egress_spike.sh
+  s_88d1d17bf6ab6f::t_a46d57ee9b8b30 99-107
+tests/host/net_spike.sh
+  s_88d1d17bf6ab6f::t_3a94155c57c039 46,62,90,170-171,178-201,248-254
+tests/host_spike_probe_test.sh
+  s_88d1d17bf6ab6f::t_00bc269af779ec 1-62
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "282aff4b1f4791a3973467718d6179b5670f7bb3",
+  "prompts": {},
+  "sessions": {
+    "s_88d1d17bf6ab6f": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18f57-30bd-7860-8182-2da1de909102",
+        "model": "unknown"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
