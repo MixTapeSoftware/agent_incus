@@ -1,10 +1,10 @@
-# incus.profile
-# The agent-incus Incus profile: security hardening and default limits for
+# boxen.profile
+# The boxen Incus profile: security hardening and default limits for
 # agent containers.
 #
-# Sourced by incus.init. Defines functions only.
+# Sourced by boxen.init. Defines functions only.
 
-AGENT_PROFILE="agent-incus"
+AGENT_PROFILE="boxen"
 
 # Always (re)applies the keys this profile owns so hosts converge on the
 # current definition; hand edits to these keys are overwritten. Instance-level
@@ -23,7 +23,7 @@ ensure_profile() {
     security.idmap.isolated=true \
     limits.memory=6GB \
     limits.cpu=4
-  # Tagging is per-instance (incus.init sets user.managed-by on each
+  # Tagging is per-instance (boxen.init sets user.managed-by on each
   # container), so the profile itself never carries it.
   incus profile unset "$AGENT_PROFILE" user.managed-by 2>/dev/null || true
 }

@@ -35,17 +35,17 @@ done
 
 # Files to link
 FILES=(
-  "incs"
-  "incus.shell"
-  "incus.init"
-  "incus.network"
-  "incus.macos.setup"
-  "incs.new-plugin"
+  "bxn"
+  "boxen.shell"
+  "boxen.init"
+  "boxen.network"
+  "boxen.macos.setup"
+  "bxn.new-plugin"
 )
 
 # Short aliases: alias_name:target_file
-ALIAS_NAMES=("inci" "incn")
-ALIAS_TARGETS=("incus.init" "incus.network")
+ALIAS_NAMES=("bxni" "bxnn")
+ALIAS_TARGETS=("boxen.init" "boxen.network")
 
 # Ensure ~/.local/bin exists
 mkdir -p ~/.local/bin

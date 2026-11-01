@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# incus.init
+# boxen.init
 # Creates an Incus instance with optional coding agents and a copy of your
 # workspace.
 #
@@ -27,11 +27,14 @@ error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 usage() {
   cat << EOF
-Usage: $(basename "$0") [OPTIONS] <container-name>
+Usage: $(basename "$0") [OPTIONS] <project>
 
 Create an Incus instance with a copy of a host directory as its workspace and
-optional coding agents.
-Default image is Ubuntu 24.04. Shows an interactive TUI to select plugins.
+at most one coding agent. It's named HANDLE-AGENT-PROJECT (chad-claude-web, or
+chad-shell-web with no agent); another one for the same project and agent is
+numbered -1, -2, so parallel agents each get their own copy. The handle is
+asked for once (bxn handle changes it).
+Default image is Ubuntu 24.04. Shows a picker for the agent, then one for plugins.
 
 Options:
   -p, --path PATH           Host directory to copy in (default: current directory)
@@ -48,19 +51,20 @@ Options:
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
   --ack-env                 Acknowledge .env files in the workspace (skip prompt)
-  --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
+  --agent NAME              The coding agent: claude, codex, grok, or shell for none
+  --name NAME               Use NAME exactly, instead of HANDLE-AGENT-PROJECT
   --no-tui                  Skip interactive plugin selector, use defaults
   --insecure-network        Use the default bridge: no isolation from other
-                            instances or the host (also INCS_INSECURE_NETWORK=1)
+                            instances or the host (also BOXEN_INSECURE_NETWORK=1)
   --egress MODE             Internet allowlist: enforce (default), report or off
-  --egress-container NAME   Run this container's proxy in incs-egress-NAME
+  --egress-container NAME   Run this container's proxy in boxen-egress-NAME
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
 
-Plugins are defined in the plugins/ directory (or ~/.local/share/agent_incus/plugins/
+Plugins are defined in the plugins/ directory (or ~/.local/share/boxen/plugins/
 for user plugins). Some provide CLI flags
 (e.g. --1pass, --gh-token, --entire) to pre-select them without the TUI.
-Drop a new .sh file in plugins/ (or ~/.local/share/agent_incus/plugins/) to add your own.
+Drop a new .sh file in plugins/ (or ~/.local/share/boxen/plugins/) to add your own.
 EOF
   exit 1
 }
@@ -169,7 +173,7 @@ cleanup_on_exit() {
   local rc=$? reply="" egress=""
   trap - EXIT INT TERM HUP
   set +e
-  if [[ -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
+  if [[ "${CREATED_INSTANCE:-0}" == "1" && -n "${CONTAINER_NAME:-}" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
     # Before the prompt: the container may be kept, or the prompt never answered.
     revoke_build_sudo || \
       warn "Could not revoke build-time sudo in '$CONTAINER_NAME'. Delete it: incus delete --force $CONTAINER_NAME"
@@ -181,17 +185,17 @@ cleanup_on_exit() {
       # No answer (stdin closed) keeps the container: never delete unasked.
       read -rp "Delete it? [Y/n] " reply || reply="n"
       if [[ ! "$reply" =~ ^[Nn]$ ]]; then
-        egress="$(incus config get "$CONTAINER_NAME" user.incs.egress.container 2>/dev/null)" || egress=""
+        egress="$(incus config get "$CONTAINER_NAME" user.boxen.egress.container 2>/dev/null)" || egress=""
         if incus delete --force "$CONTAINER_NAME"; then
           log "Deleted $CONTAINER_NAME"
           if [[ -n "$egress" ]]; then
             # A build can fail while holding the network lock. Reuse our own
             # lock, and isolate error() so cleanup preserves the build's status.
             (
-              if [[ "$(cat "$INCS_LOCK_DIR/pid" 2>/dev/null)" != "$$" ]]; then
-                incs_lock || exit 1
+              if [[ "$(cat "$BOXEN_LOCK_DIR/pid" 2>/dev/null)" != "$$" ]]; then
+                boxen_lock || exit 1
               fi
-              trap incs_unlock EXIT
+              trap boxen_unlock EXIT
               egress_forget "$CONTAINER_NAME" "$egress"
             ) || warn "Could not remove $CONTAINER_NAME's proxy from $egress"
           fi
@@ -199,7 +203,7 @@ cleanup_on_exit() {
           warn "Could not delete '$CONTAINER_NAME'"
         fi
       else
-        warn "Container left in place. Clean up manually with: incs -d $CONTAINER_NAME"
+        warn "Container left in place. Clean up manually with: bxn -d $CONTAINER_NAME"
       fi
     fi
   fi
@@ -213,6 +217,15 @@ WORKSPACE_PATH="$PWD"
 CONTAINER_WORKSPACE="/workspace"
 BASE_IMAGE="images:ubuntu/24.04"
 CONTAINER_NAME=""
+# Set once this run has created the instance: a run that loses a race for a
+# name must never offer to delete the container that won it.
+CREATED_INSTANCE=0
+PROJECT=""
+EXACT_NAME=""
+HANDLE=""
+# The agent's plugin slot, -1 for none (a shell), empty until chosen.
+AGENT_SLOT=""
+AGENT_DEFAULT_SLOT=-1
 DRY_RUN=0
 NO_TUI=0
 SAVE_TEMPLATE=0
@@ -225,17 +238,17 @@ VM_DISK="20GiB"
 VM_MEMORY="4GiB"
 VM_CPUS="4"
 READY_TIMEOUT=30
-INSECURE_NETWORK="${INCS_INSECURE_NETWORK:-0}"
+INSECURE_NETWORK="${BOXEN_INSECURE_NETWORK:-0}"
 EGRESS_MODE=""
 EGRESS_GROUP=""
 
 # ---------------------------------------------------------------------------
 # Plugin discovery — reads built-in plugins/*.sh plus user plugins from
-# ${XDG_DATA_HOME:-~/.local/share}/agent_incus/plugins/*.sh
+# ${XDG_DATA_HOME:-~/.local/share}/boxen/plugins/*.sh
 # ---------------------------------------------------------------------------
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 BUILTIN_PLUGINS_DIR="$SCRIPT_DIR/plugins"
-USER_PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/agent_incus/plugins"
+USER_PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/boxen/plugins"
 
 # Parallel arrays (bash 3.2 compatible — macOS /bin/bash has no associative arrays)
 _P_ID=() _P_NAME=() _P_DESC=() _P_FILE=() _P_SELECTED=() _P_AGENT_COMMAND=()
@@ -273,14 +286,40 @@ flag_to_id() {
 }
 
 # Coding agents declare their executable in plugin metadata. Selection and
-# launch guidance work the same for built-in and user-provided agents.
+# launch guidance work the same for built-in and user-provided agents. A
+# container has one agent, or none (a shell): agents working in one copy of
+# the code would walk over each other.
+agent_label() {
+  if [[ "$1" == "-1" ]]; then echo "Shell (no agent)"; else echo "${_P_NAME[$1]}"; fi
+}
+
+# The agent's part of the container name: its command, or shell.
+agent_token() {
+  if [[ "$AGENT_SLOT" == "-1" ]]; then echo shell
+  else printf '%s' "${_P_AGENT_COMMAND[$AGENT_SLOT]}" | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9-'; fi
+}
+
+# Usage: set_agent_slot <slot|-1>
+set_agent_slot() {
+  local i
+  if [[ -n "$AGENT_SLOT" && "$AGENT_SLOT" != "$1" ]]; then
+    error "One agent per container: $(agent_label "$AGENT_SLOT") and $(agent_label "$1") were both chosen. Make a container for each."
+  fi
+  AGENT_SLOT="$1"
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    [[ -n "${_P_AGENT_COMMAND[$i]}" ]] && _P_SELECTED[$i]=0
+  done
+  if [[ "$1" != "-1" ]]; then _P_SELECTED[$1]=1; fi
+}
+
 select_agent() {
   local target="$1" i flag_id
+  if [[ "$target" == shell || "$target" == none ]]; then set_agent_slot -1; return 0; fi
   flag_id="$(flag_to_id "--$target" || true)"
   for ((i=0; i<PLUGIN_COUNT; i++)); do
     [[ -n "${_P_AGENT_COMMAND[$i]}" ]] || continue
     if [[ "$target" == "${_P_AGENT_COMMAND[$i]}" || "$target" == "${_P_ID[$i]}" || "$flag_id" == "${_P_ID[$i]}" ]]; then
-      _P_SELECTED[$i]=1
+      set_agent_slot "$i"
       return 0
     fi
   done
@@ -294,7 +333,7 @@ print_agent_launches() {
     _plugin_failed "${_P_ID[$i]}" && continue
     printf 'Start %s:\n' "${_P_NAME[$i]}"
     printf -v launch 'cd %q && %q' "$CONTAINER_WORKSPACE" "${_P_AGENT_COMMAND[$i]}"
-    printf '  incs -s %q %q\n' "$CONTAINER_NAME" "$launch"
+    printf '  bxn -s %q %q\n' "$CONTAINER_NAME" "$launch"
   done
 }
 
@@ -386,6 +425,14 @@ if (( PLUGIN_COUNT > 1 )); then
   unset _new_ID _new_NAME _new_DESC _new_FILE _new_SELECTED _new_AGENT_COMMAND _sort_lines _name _slot _i
 fi
 
+# Agents aren't preselected like plugins: one marked default only places the
+# picker's cursor, and becomes the choice under --no-tui.
+for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+  [[ -n "${_P_AGENT_COMMAND[$_i]}" ]] || continue
+  if [[ "${_P_SELECTED[$_i]}" == "1" && "$AGENT_DEFAULT_SLOT" == "-1" ]]; then AGENT_DEFAULT_SLOT=$_i; fi
+  _P_SELECTED[$_i]=0
+done
+
 # Build the PLUGINS array the TUI expects (id:name:desc:default)
 PLUGINS=()
 for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
@@ -396,10 +443,68 @@ unset _i
 # ---------------------------------------------------------------------------
 # TUI plugin selector
 # ---------------------------------------------------------------------------
+# The agent picker: one choice, a shell (no agent) first.
+show_agent_tui() {
+  local rows=(-1) cursor=0 i key seq slot
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    [[ -n "${_P_AGENT_COMMAND[$i]}" ]] || continue
+    rows+=("$i")
+    [[ "$i" == "$AGENT_DEFAULT_SLOT" ]] && cursor=$((${#rows[@]} - 1))
+  done
+  # No agent plugins: nothing to pick.
+  if (( ${#rows[@]} == 1 )); then set_agent_slot -1; return 0; fi
+  tput civis 2>/dev/null || true
+  trap 'tput cnorm 2>/dev/null || true' RETURN
+  while true; do
+    printf '\033[2J\033[H'
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
+    echo -e "${GREEN}|${NC}  Pick the coding agent: one per container           ${GREEN}|${NC}"
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
+    echo -e "${GREEN}|${NC}  Up/Down or j/k: navigate   Enter: choose   q: quit ${GREEN}|${NC}"
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
+    echo ""
+    for ((i=0; i<${#rows[@]}; i++)); do
+      slot=${rows[$i]}
+      if [[ $i -eq $cursor ]]; then
+        printf "  \033[7m %-26s \033[0m\n" "$(agent_label "$slot")"
+      else
+        printf "   %-26s\n" "$(agent_label "$slot")"
+      fi
+    done
+    echo ""
+    IFS= read -rsn1 key
+    case "$key" in
+      $'\x1b')
+        IFS= read -rsn2 -t 1 seq || continue
+        case "$seq" in
+          '[A') cursor=$(( (cursor - 1 + ${#rows[@]}) % ${#rows[@]} )) ;;
+          '[B') cursor=$(( (cursor + 1) % ${#rows[@]} )) ;;
+        esac
+        ;;
+      'k') cursor=$(( (cursor - 1 + ${#rows[@]}) % ${#rows[@]} )) ;;
+      'j') cursor=$(( (cursor + 1) % ${#rows[@]} )) ;;
+      ''|$'\n') break ;;
+      'q')
+        tput cnorm 2>/dev/null || true
+        echo "Aborted."
+        exit 1
+        ;;
+    esac
+  done
+  tput cnorm 2>/dev/null || true
+  printf '\033[2J\033[H'
+  set_agent_slot "${rows[$cursor]}"
+}
+
+# The plugin picker. Agents have their own picker, so they aren't listed.
 show_tui() {
-  local count=${#PLUGINS[@]}
-  local cursor=0
+  local rows=() cursor=0 i slot
   local key seq marker id name desc default
+  for ((i=0; i<${#PLUGINS[@]}; i++)); do
+    [[ -n "${_P_AGENT_COMMAND[$i]}" ]] || rows+=("$i")
+  done
+  local count=${#rows[@]}
+  (( count > 0 )) || return 0
 
   tput civis 2>/dev/null || true
   trap 'tput cnorm 2>/dev/null || true' RETURN
@@ -415,9 +520,10 @@ show_tui() {
     echo ""
 
     for ((i=0; i<count; i++)); do
-      IFS=: read -r id name desc default <<< "${PLUGINS[$i]}"
+      slot=${rows[$i]}
+      IFS=: read -r id name desc default <<< "${PLUGINS[$slot]}"
       marker="[ ]"
-      [[ "${_P_SELECTED[$i]}" == "1" ]] && marker="[x]"
+      [[ "${_P_SELECTED[$slot]}" == "1" ]] && marker="[x]"
 
       if [[ $i -eq $cursor ]]; then
         printf "  \033[7m %s %-24s %s \033[0m\n" "$marker" "$name" "$desc"
@@ -441,10 +547,11 @@ show_tui() {
       'k') cursor=$(( (cursor - 1 + count) % count )) ;;
       'j') cursor=$(( (cursor + 1) % count )) ;;
       ' ')
-        if [[ "${_P_SELECTED[$cursor]}" == "1" ]]; then
-          _P_SELECTED[$cursor]=0
+        slot=${rows[$cursor]}
+        if [[ "${_P_SELECTED[$slot]}" == "1" ]]; then
+          _P_SELECTED[$slot]=0
         else
-          _P_SELECTED[$cursor]=1
+          _P_SELECTED[$slot]=1
         fi
         ;;
       ''|$'\n') break ;;
@@ -613,7 +720,7 @@ stash_tailscale_state() {
     inactive|failed|unknown) ;;
     *) error "Could not stop tailscaled in $CONTAINER_NAME. No template saved: it might write the node key back." ;;
   esac
-  TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/incs-tailscale.XXXXXX")"
+  TS_STATE_BACKUP="$(mktemp "${XDG_RUNTIME_DIR:-/tmp}/boxen-tailscale.XXXXXX")"
   incus exec "$CONTAINER_NAME" -- tar -C /var/lib -cf - tailscale > "$TS_STATE_BACKUP"
   incus exec "$CONTAINER_NAME" -- rm -rf /var/lib/tailscale
 }
@@ -677,6 +784,72 @@ copy_workspace() {
     "git config --global --add safe.directory $ws_q 2>/dev/null || true"
 }
 
+# ---------------------------------------------------------------------------
+# Git identity for commits in the container. It's what git itself would use
+# in the folder being copied: that repository's own config and any includeIf
+# matching its path (a work email for ~/work), else the global identity. Set
+# on every build, whatever plugins are chosen, so commits never fail with
+# "Please tell me who you are". A template build doesn't carry anyone's.
+# ---------------------------------------------------------------------------
+GIT_NAME="" GIT_EMAIL="" GIT_ID_SOURCE=""
+
+# Global lookups follow include.path, as git does, but run from / so that no
+# includeIf for the current folder counts as global.
+# Usage: _host_git_config <key>
+_host_git_config() {
+  local v=""
+  if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" && -d "$WORKSPACE_PATH" ]]; then
+    v="$(git -C "$WORKSPACE_PATH" config --get "$1" 2>/dev/null)" || v=""
+  fi
+  [[ -n "$v" ]] || v="$(git -C / config --global --includes --get "$1" 2>/dev/null)" || v=""
+  printf '%s' "$v"
+}
+
+capture_git_identity() {
+  local name email
+  command -v git >/dev/null 2>&1 || return 0
+  name="$(_host_git_config user.name)"
+  email="$(_host_git_config user.email)"
+  # One line each: they go to the container as lines on stdin.
+  [[ "$name$email" != *$'\n'* ]] || { name=""; email=""; }
+  if [[ -n "$name" && -n "$email" ]]; then
+    GIT_NAME="$name" GIT_EMAIL="$email"
+    if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] &&
+       [[ "$(git -C / config --global --includes --get user.email 2>/dev/null)" != "$email" ||
+          "$(git -C / config --global --includes --get user.name 2>/dev/null)" != "$name" ]]; then
+      GIT_ID_SOURCE="$WORKSPACE_PATH's git config"
+    else
+      GIT_ID_SOURCE="your global git config"
+    fi
+  fi
+}
+
+# Ask only when the host has no identity, on a terminal, and not for a template.
+prompt_git_identity() {
+  [[ -z "$GIT_NAME" || -z "$GIT_EMAIL" ]] || return 0
+  [[ "$SAVE_TEMPLATE" != "1" && "$DRY_RUN" != "1" && -t 0 ]] || return 0
+  echo ""
+  log "Git has no user.name or user.email on this host. Commits in $CONTAINER_NAME use these:"
+  read_value GIT_NAME "Git user.name: "
+  read_value GIT_EMAIL "Git user.email: "
+  if [[ -n "$GIT_NAME" && -n "$GIT_EMAIL" ]]; then GIT_ID_SOURCE="what you entered"
+  else GIT_NAME="" GIT_EMAIL=""; fi
+}
+
+# The values go in as lines on stdin, read by the remote shell: never part of
+# a command string, so any character in a name is safe.
+write_git_identity() {
+  [[ "$SAVE_TEMPLATE" != "1" ]] || return 0
+  if [[ -z "$GIT_NAME" || -z "$GIT_EMAIL" ]]; then
+    warn "No git identity, so commits in $CONTAINER_NAME fail until you set one: bxn -s $CONTAINER_NAME git config --global user.name \"Your Name\" (and user.email)"
+    return 0
+  fi
+  printf '%s\n%s\n' "$GIT_NAME" "$GIT_EMAIL" | incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c \
+    'IFS= read -r n && IFS= read -r e && git config --global user.name "$n" && git config --global user.email "$e"' ||
+    { warn "Could not set the git identity in $CONTAINER_NAME"; return 0; }
+  log "Git identity: $GIT_NAME <$GIT_EMAIL>, from $GIT_ID_SOURCE"
+}
+
 # The egress hosts the selected plugins ask for (PLUGIN_EGRESS_ALLOW).
 _selected_plugin_hosts() {
   local i
@@ -687,17 +860,17 @@ _selected_plugin_hosts() {
 }
 
 # The lock, between a fresh build's open and locked phases: the container's
-# proxy, then the same lockdown `incs egress mode` uses (stop, locked card, a
+# proxy, then the same lockdown `bxn egress mode` uses (stop, locked card, a
 # new address, a verified proxy, start).
 lock_build() {
   log "Turning on the allowlist ($EGRESS_MODE) before the workspace and credentials go in..."
-  incs_lock
+  boxen_lock
   egress_ensure "$EGRESS_CONTAINER"
   egress_register "$CONTAINER_NAME" "$EGRESS_CONTAINER"
   egress_write_proxy_env "$CONTAINER_NAME"
   egress_lockdown "$CONTAINER_NAME"
-  incs_unlock
-  incus config set "$CONTAINER_NAME" user.incs.egress.build=locked
+  boxen_unlock
+  incus config set "$CONTAINER_NAME" user.boxen.egress.build=locked
   NET_VIA_PROXY=1
   wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
   wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
@@ -722,7 +895,7 @@ fi
 GITCFG
   egress_write_notices "$CONTAINER_NAME" "$HOST_USER"
   egress_commit "$CONTAINER_NAME"
-  incus config set "$CONTAINER_NAME" user.incs.egress.build=done
+  incus config set "$CONTAINER_NAME" user.boxen.egress.build=done
 }
 
 # Node's built-in fetch reads proxy settings only from v22.21 and v24.
@@ -812,6 +985,7 @@ while [[ $# -gt 0 ]]; do
     --vm-cpus)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_CPUS="$2"; VM_OPT_SET=1; shift 2 ;;
     --ack-env)       ACK_ENV=1; shift ;;
     --agent)         [[ $# -lt 2 ]] && error "$1 requires an argument"; select_agent "$2"; shift 2 ;;
+    --name)          [[ $# -lt 2 ]] && error "$1 requires an argument"; EXACT_NAME="$2"; shift 2 ;;
     --no-tui)        NO_TUI=1; shift ;;
     --insecure-network) INSECURE_NETWORK=1; shift ;;
     --egress)        [[ $# -lt 2 ]] && error "$1 requires an argument"; EGRESS_MODE="$2"; shift 2 ;;
@@ -821,38 +995,56 @@ while [[ $# -gt 0 ]]; do
     -*)
       # Check if it's a plugin CLI flag
       if _flag_id=$(flag_to_id "$1"); then
-        selected_set "$_flag_id" 1
+        # An agent's flag (--claude) chooses the agent, so two are refused.
+        _slot=$(_plugin_slot "$_flag_id")
+        if [[ -n "${_P_AGENT_COMMAND[$_slot]}" ]]; then select_agent "$_flag_id"; else selected_set "$_flag_id" 1; fi
         shift
       else
         error "Unknown option: $1"
       fi
       ;;
-    *)               CONTAINER_NAME="$1"; shift ;;
+    *)               PROJECT="$1"; shift ;;
   esac
 done
 
 # ---------------------------------------------------------------------------
 # macOS pre-flight (noop on Linux)
 # ---------------------------------------------------------------------------
-source "$SCRIPT_DIR/incus.macos.setup"
-source "$SCRIPT_DIR/incus.envscan"
+source "$SCRIPT_DIR/boxen.macos.setup"
+source "$SCRIPT_DIR/boxen.envscan"
 # read_secret / read_value, for plugin prompts that take pasted values.
-source "$SCRIPT_DIR/incus.prompt"
-# shellcheck source=incus.profile
-source "$SCRIPT_DIR/incus.profile"
-# shellcheck source=incus.net
-source "$SCRIPT_DIR/incus.net"
-# shellcheck source=incus.egress
-source "$SCRIPT_DIR/incus.egress"
+source "$SCRIPT_DIR/boxen.prompt"
+# shellcheck source=boxen.profile
+source "$SCRIPT_DIR/boxen.profile"
+# shellcheck source=boxen.net
+source "$SCRIPT_DIR/boxen.net"
+# shellcheck source=boxen.egress
+source "$SCRIPT_DIR/boxen.egress"
+# shellcheck source=boxen.names
+source "$SCRIPT_DIR/boxen.names"
 
 # ---------------------------------------------------------------------------
 # Validate
 # ---------------------------------------------------------------------------
 require_commands incus curl sudo realpath
 
-[[ -z "$CONTAINER_NAME" ]] && { warn "Container name required"; echo ""; usage; }
-[[ ! "$CONTAINER_NAME" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] && error "Invalid container name: must start with a letter, only letters/digits/hyphens"
-incus info "$CONTAINER_NAME" >/dev/null 2>&1 && error "Container '$CONTAINER_NAME' already exists"
+[[ -n "$PROJECT" || -n "$EXACT_NAME" ]] || { warn "Project name required"; echo ""; usage; }
+for _n in "$PROJECT" "$EXACT_NAME"; do
+  [[ -z "$_n" || "$_n" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] ||
+    error "Invalid name '$_n': it must start with a letter, with only letters, digits and hyphens"
+done
+unset _n
+
+# A name given exactly (--name), or a template's (it becomes the image
+# incus-init/NAME), is checked now; HANDLE-AGENT-PROJECT waits for the agent.
+if [[ -n "$EXACT_NAME" ]]; then
+  CONTAINER_NAME="$EXACT_NAME"
+elif [[ "$SAVE_TEMPLATE" == "1" ]]; then
+  CONTAINER_NAME="$PROJECT"
+fi
+if [[ -n "$CONTAINER_NAME" ]] && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
+  error "Container '$CONTAINER_NAME' already exists"
+fi
 [[ "$CONTAINER_WORKSPACE" == /?* ]] || error "--workspace must be an absolute path other than / (got: $CONTAINER_WORKSPACE)"
 # Remote shell snippets cd into the workspace; quote it once for all of them.
 printf -v WORKSPACE_Q '%q' "$CONTAINER_WORKSPACE"
@@ -935,6 +1127,20 @@ fi
 # ---------------------------------------------------------------------------
 # TUI plugin selector
 # ---------------------------------------------------------------------------
+# The agent: from --agent or its flag, else picked now, after every other
+# check; --no-tui takes the default agent if a plugin marks one, else a shell.
+if [[ -z "$AGENT_SLOT" ]]; then
+  if [[ "$NO_TUI" == "0" ]]; then show_agent_tui; else set_agent_slot "$AGENT_DEFAULT_SLOT"; fi
+fi
+AGENT_TOKEN="$(agent_token)"
+[[ -n "$AGENT_TOKEN" ]] || error "$(agent_label "$AGENT_SLOT") has no usable command name for the container name"
+if [[ -z "$CONTAINER_NAME" ]]; then
+  if [[ "$DRY_RUN" == "1" ]]; then HANDLE="$(names_handle --no-save)"; else HANDLE="$(names_handle)"; fi
+  CONTAINER_NAME="$(names_next "$HANDLE-$AGENT_TOKEN-$PROJECT")"
+  [[ "$CONTAINER_NAME" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] ||
+    error "Invalid container name '$CONTAINER_NAME': it must start with a letter, with only letters, digits and hyphens"
+fi
+
 if [[ "$NO_TUI" == "0" ]]; then
   show_tui
 fi
@@ -950,6 +1156,11 @@ for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
   source "${_P_FILE[$_i]}"
   for _req in $PLUGIN_REQUIRES; do
     [[ "$(selected_get "$_req")" == "1" ]] && continue
+    # An agent can't come in as a requirement: it would be a second agent, or
+    # one the container isn't named for.
+    if _req_slot="$(_plugin_slot "$_req")" && [[ -n "${_P_AGENT_COMMAND[$_req_slot]}" ]]; then
+      error "${_P_NAME[$_i]} needs the agent $(agent_label "$_req_slot"), but this container's is $(agent_label "$AGENT_SLOT"). One agent per container: choose it with --agent ${_P_AGENT_COMMAND[$_req_slot]}."
+    fi
     if selected_set "$_req" 1; then
       log "Auto-selected '$_req' (required by ${_P_NAME[$_i]})"
     else
@@ -957,21 +1168,25 @@ for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
     fi
   done
 done
-unset _req
+unset _req _req_slot
 
 # Echo the final selection before acting on it. In the TUI, space toggles and
 # Enter launches — a mis-keyed toggle otherwise fails silently: the plugin's
 # prompt and install just never happen, with nothing on screen to say why.
 _sel_names=""
 for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+  [[ -n "${_P_AGENT_COMMAND[$_i]}" ]] && continue
   [[ "${_P_SELECTED[$_i]}" == "1" ]] && _sel_names+="${_sel_names:+, }${_P_NAME[$_i]}"
 done
+log "Agent: $(agent_label "$AGENT_SLOT")"
 log "Plugins selected: ${_sel_names:-none}"
 unset _i _sel_names
 
 # ---------------------------------------------------------------------------
 # Component prompts — called once, after TUI decision
 # ---------------------------------------------------------------------------
+capture_git_identity
+prompt_git_identity
 _run_plugin_prompts
 
 # ---------------------------------------------------------------------------
@@ -983,8 +1198,16 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "DRY RUN — nothing will be created"
   echo "========================================"
   echo "Container:   $CONTAINER_NAME"
+  echo "Agent:       $(agent_label "$AGENT_SLOT")"
   echo "Image:       $BASE_IMAGE"
   echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
+  if [[ "$SAVE_TEMPLATE" == "1" ]]; then
+    echo "Git:         none (a template doesn't carry anyone's identity)"
+  elif [[ -n "$GIT_NAME" ]]; then
+    echo "Git:         $GIT_NAME <$GIT_EMAIL>, from $GIT_ID_SOURCE"
+  else
+    echo "Git:         none on this host; commits will fail until you set one"
+  fi
   if [[ "$IS_VM" == "1" ]]; then
     echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"
   else
@@ -993,7 +1216,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   if [[ "$INSECURE_NETWORK" == "1" ]]; then
     echo "Network:     default bridge, not isolated (--insecure-network)"
   else
-    echo "Network:     $INCS_NET, isolated from other instances and the host"
+    echo "Network:     $BOXEN_NET, isolated from other instances and the host"
   fi
   if [[ "$LOCKED_BUILD" == "1" ]]; then
     echo "Egress:      $EGRESS_MODE (allowlist), proxy in $EGRESS_CONTAINER"
@@ -1022,8 +1245,9 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   echo ""
   echo "Selected plugins:"
-  for entry in "${PLUGINS[@]}"; do
-    IFS=: read -r id name desc default <<< "$entry"
+  for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+    [[ -n "${_P_AGENT_COMMAND[$_i]}" ]] && continue
+    IFS=: read -r id name desc default <<< "${PLUGINS[$_i]}"
     if [[ "$(selected_get "$id")" == "1" ]]; then
       echo "  [x] $name"
     else
@@ -1046,52 +1270,71 @@ trap 'exit 129' HUP
 
 ensure_profile
 
-# The isolated bridge, and this instance's address on it (incus.net).
+# The isolated bridge, and this instance's address on it (boxen.net).
 NET_ARGS=()
 if [[ "$INSECURE_NETWORK" == "1" ]]; then
   warn "--insecure-network: $CONTAINER_NAME goes on the default bridge, where instances can reach each other and the host"
 else
   net_preflight
-  incs_lock
+  boxen_lock
   ensure_net
   NET_IP="$(net_next_address)"
-  incs_unlock
-  NET_ARGS=(-p "$INCS_NET_PROFILE" -d "eth0,ipv4.address=$NET_IP")
+  boxen_unlock
+  NET_ARGS=(-p "$BOXEN_NET_PROFILE" -d "eth0,ipv4.address=$NET_IP")
 fi
 
 # ---------------------------------------------------------------------------
 # Create container
 # ---------------------------------------------------------------------------
+create_instance() {
+  if [[ "$IS_VM" == "1" ]]; then
+    # Naming any profile replaces the implicit default, so name it too.
+    incus init "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
+      ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
+      -c limits.memory="$VM_MEMORY" \
+      -c limits.cpu="$VM_CPUS" \
+      -d root,size="$VM_DISK"
+  else
+    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
+  fi
+}
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
-# Under an allowlist it's created stopped, so incs decides when it first runs.
-LAUNCH=launch
-[[ "$LOCKED_BUILD" == "1" ]] && LAUNCH=init
-if [[ "$IS_VM" == "1" ]]; then
-  # Naming any profile replaces the implicit default, so name it too.
-  incus "$LAUNCH" "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
-    ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
-    -c limits.memory="$VM_MEMORY" \
-    -c limits.cpu="$VM_CPUS" \
-    -d root,size="$VM_DISK"
-else
-  incus "$LAUNCH" "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
+# Created, then started, so a failure to create is told apart from a failure
+# to start. Another bxn may take a generated name after names_next chose it:
+# that container is theirs, so take the next number instead.
+_create_tries=0
+until create_instance; do
+  if [[ -n "$HANDLE" ]] && (( ++_create_tries < 5 )) && incus info "$CONTAINER_NAME" >/dev/null 2>&1; then
+    CONTAINER_NAME="$(names_next "$HANDLE-$AGENT_TOKEN-$PROJECT")"
+    log "That name was just taken; creating $CONTAINER_NAME instead"
+    continue
+  fi
+  error "Could not create $CONTAINER_NAME"
+done
+unset _create_tries
+CREATED_INSTANCE=1
+# Under an allowlist it stays stopped, so bxn decides when it first runs.
+[[ "$LOCKED_BUILD" == "1" ]] || incus start "$CONTAINER_NAME"
+incus config set "$CONTAINER_NAME" user.managed-by=boxen user.boxen=1 "user.boxen.agent=$AGENT_TOKEN"
+# Commands find a container from its project by these (boxen.names).
+if [[ -n "$HANDLE" ]]; then
+  incus config set "$CONTAINER_NAME" "user.boxen.handle=$HANDLE" "user.boxen.project=$PROJECT"
 fi
-incus config set "$CONTAINER_NAME" user.managed-by=agent-incus
 if [[ "$INSECURE_NETWORK" == "1" ]]; then
-  incus config set "$CONTAINER_NAME" user.incs.net=open
+  incus config set "$CONTAINER_NAME" user.boxen.net=open
 else
-  incus config set "$CONTAINER_NAME" user.incs.net=isolated
+  incus config set "$CONTAINER_NAME" user.boxen.net=isolated
 fi
-# incus.shell starts sessions here.
-incus config set "$CONTAINER_NAME" user.agent-incus.workspace="$CONTAINER_WORKSPACE"
+# boxen.shell starts sessions here.
+incus config set "$CONTAINER_NAME" user.boxen.workspace="$CONTAINER_WORKSPACE"
 
 if [[ "$LOCKED_BUILD" == "1" ]]; then
   # Kept from starting on its own until the build finishes; the original
   # autostart (never set) comes back when the lock commits. The builder's PID
   # and boot tell a healthy build from an abandoned one.
-  incus config set "$CONTAINER_NAME" boot.autostart=false user.incs.egress.autostart-saved=unset \
-    "user.incs.egress=$EGRESS_MODE" "user.incs.egress.builder=$$@$(egress_boot_id)" \
-    "user.incs.egress.build=$([[ "$FROM_BASE_IMAGE" == "1" ]] && echo locked || echo open)"
+  incus config set "$CONTAINER_NAME" boot.autostart=false user.boxen.egress.autostart-saved=unset \
+    "user.boxen.egress=$EGRESS_MODE" "user.boxen.egress.builder=$$@$(egress_boot_id)" \
+    "user.boxen.egress.build=$([[ "$FROM_BASE_IMAGE" == "1" ]] && echo locked || echo open)"
   # read -a splits on spaces without pathname expansion, so a wildcard such
   # as *.tailscale.com can't match files in the current directory.
   read -r -a _plugin_hosts <<< "$(_selected_plugin_hosts | tr '\n' ' ')"
@@ -1100,9 +1343,9 @@ if [[ "$LOCKED_BUILD" == "1" ]]; then
     # A template may hold logins, credential files or startup services, so it
     # never runs open: locked card and a verified proxy before its first start.
     log "Locking $CONTAINER_NAME's network ($EGRESS_MODE) before its first start..."
-    incs_lock
+    boxen_lock
     egress_prepare_unstarted "$CONTAINER_NAME" "$EGRESS_CONTAINER" "$EGRESS_MODE"
-    incs_unlock
+    boxen_unlock
     NET_VIA_PROXY=1
   fi
   incus start "$CONTAINER_NAME"
@@ -1173,7 +1416,7 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 
   id $HOST_USER >/dev/null 2>&1 || { echo 'User creation failed' >&2; exit 1; }
 
-  # Group-gated sudo: the user is not a member of _sudo. incus.shell adds the
+  # Group-gated sudo: the user is not a member of _sudo. boxen.shell adds the
   # group to a single session when asked (--with-sudo).
   groupadd -f _sudo
   echo '%_sudo ALL=(ALL) NOPASSWD: ALL' > /etc/sudoers.d/_sudo
@@ -1191,6 +1434,8 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 # to match their remote locations" and fails any mise install run by the
 # user later. System git handles the same clones fine.
 # ---------------------------------------------------------------------------
+write_git_identity
+
 log "Configuring mise to use system git (gix=false)..."
 incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'MISECFG'
   set -e
@@ -1230,7 +1475,7 @@ if [[ "$FROM_BASE_IMAGE" == "0" ]]; then
     set -e
 
     # Auto-cd to the workspace on login, unless the session already chose a
-    # directory (incus.shell passes --cwd).
+    # directory (boxen.shell passes --cwd).
     touch ~/.zshrc
     printf 'if [[ $PWD == "$HOME" && -d %q ]]; then\n    cd %q\nfi\n' "$1" "$1" >> ~/.zprofile
 ZSHEOF
@@ -1417,7 +1662,7 @@ done
 echo "========================================"
 echo ""
 echo "Shell in:"
-echo "  incs $CONTAINER_NAME"
+echo "  bxn $CONTAINER_NAME"
 echo ""
 print_agent_launches
 

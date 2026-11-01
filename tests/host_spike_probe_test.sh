@@ -26,7 +26,7 @@ ss() {
   esac
 }
 eval "$(extract_fn dns_listeners "$ROOT/tests/host/egress_spike.sh")"
-UDP_LISTENERS='UNCONN 0 0 10.230.0.1%incs-spike1:53 0.0.0.0:*'
+UDP_LISTENERS='UNCONN 0 0 10.230.0.1%boxen-spike1:53 0.0.0.0:*'
 TCP_LISTENERS='LISTEN 0 32 10.230.0.1:53 0.0.0.0:*'
 [[ "$(dns_listeners | wc -l | tr -d ' ')" == 2 ]]
 echo 'ok DNS listeners include interface-qualified UDP and plain TCP addresses'

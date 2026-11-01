@@ -4,7 +4,7 @@
 # rows in Info, the Network and Rules tabs, the allow, remove and mode keys
 # with their confirmations, the start key refusing a container behind the
 # boot barrier, and the delete key with its confirmation. Drives the live view in a pseudo-terminal against a
-# stubbed incus and a stubbed `incs egress`.
+# stubbed incus and a stubbed `bxn egress`.
 # Run: bash tests/egress_tui_test.sh
 
 set -euo pipefail
@@ -29,7 +29,7 @@ script -qec true /dev/null >/dev/null 2>&1 || { echo "  skip (needs util-linux s
 S="$(mktemp -d)"
 trap 'rm -rf "$S"' EXIT
 mkdir -p "$S/bin" "$S/repo"
-cp "$REPO_ROOT"/incs "$REPO_ROOT"/incus.* "$S/repo/"
+cp "$REPO_ROOT"/bxn "$REPO_ROOT"/boxen.* "$S/repo/"
 cat > "$S/bin/incus" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
@@ -40,8 +40,8 @@ case "$1" in
   *) exit 1 ;;
 esac
 EOF
-# `incs egress`, as the TUI calls it: canned records, and the changes asked.
-cat > "$S/repo/incs.egress" <<'EOF'
+# `bxn egress`, as the TUI calls it: canned records, and the changes asked.
+cat > "$S/repo/bxn.egress" <<'EOF'
 #!/usr/bin/env bash
 case "$1" in
   log)
@@ -59,25 +59,25 @@ case "$1" in
   *) echo "$*" >> "$STUB/egress-calls"; [[ "$*" == "mode box off" ]] || echo "[+] box: done" ;;
 esac
 EOF
-chmod +x "$S/bin/incus" "$S/repo/incs.egress"
+chmod +x "$S/bin/incus" "$S/repo/bxn.egress"
 cat > "$S/instances.json" <<'EOF'
 [
  {"name":"box","status":"Running","type":"container",
-  "expanded_config":{"user.managed-by":"agent-incus","user.incs.egress.container":"incs-egress",
-    "user.incs.egress":"enforce","user.incs.egress.port":"10000","user.incs.egress.active":"enforce:0123456789abcdef",
-    "user.incs.egress.plugin-allow":"*.tailscale.com,tailscale.com"},
+  "expanded_config":{"user.managed-by":"boxen","user.boxen.egress.container":"boxen-egress",
+    "user.boxen.egress":"enforce","user.boxen.egress.port":"10000","user.boxen.egress.active":"enforce:0123456789abcdef",
+    "user.boxen.egress.plugin-allow":"*.tailscale.com,tailscale.com"},
   "state":{"pid":100,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}},
  {"name":"rbox","status":"Running","type":"container",
-  "expanded_config":{"user.managed-by":"agent-incus","user.incs.egress.container":"incs-egress",
-    "user.incs.egress":"report","user.incs.egress.port":"10001","user.incs.egress.active":"enforce:0123456789abcdef"},
+  "expanded_config":{"user.managed-by":"boxen","user.boxen.egress.container":"boxen-egress",
+    "user.boxen.egress":"report","user.boxen.egress.port":"10001","user.boxen.egress.active":"enforce:0123456789abcdef"},
   "state":{"pid":101,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}},
  {"name":"stuck","status":"Stopped","type":"container",
-  "expanded_config":{"user.managed-by":"agent-incus","user.incs.egress.container":"incs-egress",
-    "user.incs.egress":"enforce","user.incs.egress.transition":"enforce:10.201.0.30"},
+  "expanded_config":{"user.managed-by":"boxen","user.boxen.egress.container":"boxen-egress",
+    "user.boxen.egress":"enforce","user.boxen.egress.transition":"enforce:10.201.0.30"},
   "state":{"pid":0,"cpu":{"usage":0},"memory":{"usage":0},"disk":{},"network":null}},
- {"name":"plain","status":"Running","type":"container","expanded_config":{"user.managed-by":"agent-incus"},
+ {"name":"plain","status":"Running","type":"container","expanded_config":{"user.managed-by":"boxen"},
   "state":{"pid":102,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}},
- {"name":"incs-egress","status":"Running","type":"container","expanded_config":{"user.managed-by":"agent-incus","user.incs.role":"egress"},
+ {"name":"boxen-egress","status":"Running","type":"container","expanded_config":{"user.managed-by":"boxen","user.boxen.role":"egress"},
   "state":{"pid":103,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}},
  {"name":"other","status":"Running","type":"container","expanded_config":{},
   "state":{"pid":104,"cpu":{"usage":5000000000},"memory":{"usage":432316416},"disk":{},"network":{}}}
@@ -86,7 +86,7 @@ EOF
 
 tui() {
   rm -f "$S/calls" "$S/egress-calls"
-  STUB="$S" PATH="$S/bin:$PATH" TERM=xterm script -qfec "stty rows 30 cols 140; tty > '$S/tty'; bash '$S/repo/incs' status" "${TUI_TRANSCRIPT:-/dev/null}"
+  STUB="$S" PATH="$S/bin:$PATH" TERM=xterm script -qfec "stty rows 30 cols 140; tty > '$S/tty'; bash '$S/repo/bxn' status" "${TUI_TRANSCRIPT:-/dev/null}"
 }
 last_frame() { local f=${1##*$'\033[H'}; printf '%s\n' "${f%%$'\033[J'*}"; }
 plain() { sed $'s/\033\\[[0-9;?]*[A-Za-z]//g; s/\r//g'; }
@@ -103,11 +103,11 @@ cols=$(sed 's/🔒/XX/g; s/🔓/XX/g; s/●/o/g; s/○/o/g' <<<"$frame" |
   while IFS= read -r line; do if [[ "$line" == *"│"* ]]; then p=${line%%│*}; echo "${#p}"; fi; done | sort -u | wc -l)
 assert_eq "the marks keep the divider in one column" "1" "$((cols))"
 assert_contains "Info shows the mode" "Egress        enforce: only listed hosts" "$frame"
-assert_contains "Info shows the proxy" "Proxy         incs-egress:10000" "$frame"
+assert_contains "Info shows the proxy" "Proxy         boxen-egress:10000" "$frame"
 assert_contains "Info marks Tailscale as not confined" "Tailscale     not confined against a determined agent" "$frame"
 assert_contains "the tabs are listed" "Network" "$frame"
 out=$(keys j | tui) || true
-assert_contains "a mode that isn't applied is called out" "wants report, runs enforce: incs egress refresh rbox" "$(last_frame "$out" | plain)"
+assert_contains "a mode that isn't applied is called out" "wants report, runs enforce: bxn egress refresh rbox" "$(last_frame "$out" | plain)"
 
 echo "the Network tab"
 out=$(keys '\t' l | tui) || true
@@ -133,7 +133,7 @@ long_host="docs.rs.$(printf '%063d' 0).$(printf '%063d' 0).attacker.example"
 printf '%s\n' "$long_host" > "$S/long-host"
 out=$(keys '\t' l a y | tui) || true
 assert_contains "a clipped hostname is marked" "...:443" "$(plain <<<"$out")"
-assert_contains "an unreadable confirmation directs to the CLI" "Host and scope do not fit; use incs egress allow." "$(plain <<<"$out")"
+assert_contains "an unreadable confirmation directs to the CLI" "Host and scope do not fit; use bxn egress allow." "$(plain <<<"$out")"
 assert_eq "y cannot allow a host whose confirmation is clipped" "" "$(cat "$S/egress-calls" 2>/dev/null)"
 out=$(keys '\t' l A y | tui) || true
 assert_eq "y cannot allow a clipped host everywhere" "" "$(cat "$S/egress-calls" 2>/dev/null)"
@@ -162,7 +162,7 @@ unset TUI_TRANSCRIPT
 [[ -f "$S/resized" ]] && resized=yes || resized=no
 assert_eq "the terminal shrinks while confirmation is waiting" yes "$resized"
 assert_eq "y after a resize cannot approve a now-clipped host" "" "$(cat "$S/egress-calls" 2>/dev/null)"
-assert_contains "the resized confirmation directs to the CLI" "Host and scope do not fit; use incs egress allow." "$(plain <<<"$out")"
+assert_contains "the resized confirmation directs to the CLI" "Host and scope do not fit; use bxn egress allow." "$(plain <<<"$out")"
 rm "$S/long-host"
 
 echo "the Rules tab"
@@ -184,7 +184,7 @@ assert_eq "a job that prints nothing runs" "mode box off" "$(cat "$S/egress-call
 assert_contains "and the view still answers keys after it" "DECISION" "$(last_frame "$out" | plain)"
 out=$(keys j j ' ' | tui) || true
 assert_eq "space won't start a container behind the barrier" "" "$(cat "$S/calls" 2>/dev/null)"
-assert_contains "and says how to finish" "finish it: incs egress refresh stuck" "$(last_frame "$out" | plain)"
+assert_contains "and says how to finish" "finish it: bxn egress refresh stuck" "$(last_frame "$out" | plain)"
 out=$(keys j j j '\t' l | tui) || true
 assert_eq "a container with no allowlist has only Info" "" "$(last_frame "$out" | plain | grep -o 'DECISION' || true)"
 
@@ -199,14 +199,14 @@ assert_contains "and says so" "Nothing changed" "$(last_frame "$out" | plain)"
 out=$(keys j j j d | tui) || true
 assert_eq "a lowercase d in the list deletes nothing" "" "$(cat "$S/calls" 2>/dev/null)"
 out=$(keys j j j D y | tui) || true
-assert_eq "y deletes it through incs delete" "delete --force plain" "$(cat "$S/calls" 2>/dev/null)"
+assert_eq "y deletes it through bxn delete" "delete --force plain" "$(cat "$S/calls" 2>/dev/null)"
 assert_contains "the result is shown" "Deleted plain" "$(last_frame "$out" | plain)"
 out=$(keys j j j j D y | tui) || true
 assert_eq "the egress container isn't deleted from here" "" "$(cat "$S/calls" 2>/dev/null)"
 assert_contains "and says why" "runs other containers' proxies" "$(last_frame "$out" | plain)"
 out=$(keys j j j j j D y | tui) || true
-assert_eq "an instance incs didn't make isn't deleted" "" "$(cat "$S/calls" 2>/dev/null)"
-assert_contains "and says so" "wasn't made by incs" "$(last_frame "$out" | plain)"
+assert_eq "an instance bxn didn't make isn't deleted" "" "$(cat "$S/calls" 2>/dev/null)"
+assert_contains "and says so" "wasn't made by bxn" "$(last_frame "$out" | plain)"
 # The list empties while the question is open: answering mustn't end the view.
 cp "$S/instances.json" "$S/instances.saved"
 out=$( { sleep 1.5; for k in j j j D; do printf '%s' "$k"; sleep 0.6; done

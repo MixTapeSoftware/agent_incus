@@ -1,0 +1,12 @@
+[Unit]
+Description=bxn proxy prototype: agent a, generation %i
+
+[Service]
+Sockets=boxen-proto-a.socket
+Environment=EINHORN_MASTER_PID=1 EINHORN_FD_COUNT=1 EINHORN_FD_0=3 EINHORN_SOCK_PATH=/run/boxen-proto-ack.sock
+EnvironmentFile=-/etc/boxen-proto/a/%i/env
+ExecStart=/usr/local/libexec/boxen-proto/boxen-proxy-run a %i
+TimeoutStopSec=3
+DynamicUser=yes
+ProtectSystem=strict
+NoNewPrivileges=yes

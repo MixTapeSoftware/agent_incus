@@ -1,6 +1,6 @@
 #!/bin/bash
 # tests/egress_cli_test.sh
-# `incs egress` (incs.egress): turning a container's allowlist on, allowing
+# `bxn egress` (bxn.egress): turning a container's allowlist on, allowing
 # and removing hosts, switching modes, the lockdown that restarts an open
 # container on a new address behind a boot barrier, finishing an interrupted
 # one, the baseline review, ls and log, and cleanup on delete. Runs against
@@ -34,35 +34,35 @@ mkdir -p "$SANDBOX/bin" "$SANDBOX/repo"
 cp "$SCRIPT_DIR/lib/fake_incus" "$SANDBOX/bin/incus"
 chmod +x "$SANDBOX/bin/incus"
 # A copy of the scripts, so a test can change the shipped baseline.
-cp "$REPO_ROOT"/incs "$REPO_ROOT"/incs.* "$REPO_ROOT"/incus.* "$SANDBOX/repo/"
+cp "$REPO_ROOT"/bxn "$REPO_ROOT"/bxn.* "$REPO_ROOT"/boxen.* "$SANDBOX/repo/"
 cp -R "$REPO_ROOT/egress" "$SANDBOX/repo/egress"
 export PATH="$SANDBOX/bin:$PATH"
 export HOME="$SANDBOX/home"
-export INCS_NET_SUBNET=10.201.0.1/16
-export INCS_UFW_CONF="$SANDBOX/no-ufw.conf"
+export BOXEN_NET_SUBNET=10.201.0.1/16
+export BOXEN_UFW_CONF="$SANDBOX/no-ufw.conf"
 export FAKE_EGRESS_CTL="$SCRIPT_DIR/lib/fake_egress_ctl"
 export FAKE_INCUS_STATE="$SANDBOX/state"
-export INCS_LOCK_DIR="$FAKE_INCUS_STATE/lock"
-export INCS_CONFIG_DIR="$FAKE_INCUS_STATE/config"
+export BOXEN_LOCK_DIR="$FAKE_INCUS_STATE/lock"
+export BOXEN_CONFIG_DIR="$FAKE_INCUS_STATE/config"
 export FAKE_INCUS_VERSION=7.5.1
 mkdir -p "$FAKE_INCUS_STATE"
 
-eg() { bash "$SANDBOX/repo/incs" egress "$@"; }
+eg() { bash "$SANDBOX/repo/bxn" egress "$@"; }
 run() { OUT="$(eg "$@" 2>&1)" && RC=0 || RC=$?; }
 cfg() { cat "$FAKE_INCUS_STATE/instances/$1/config/$2" 2>/dev/null; }
 status() { cat "$FAKE_INCUS_STATE/instances/$1/status"; }
-E=incs-egress
+E=boxen-egress
 gen_of() { cat "$FAKE_INCUS_STATE/ctl/$E/$1/current"; }
 gen_file() { cat "$FAKE_INCUS_STATE/ctl/$E/$1/gens/$(gen_of "$1")/$2"; }
 calls_since() { tail -n +"$(( $1 + 1 ))" "$FAKE_INCUS_STATE/calls.log"; }
 ncalls() { wc -l < "$FAKE_INCUS_STATE/calls.log" | tr -d ' '; }
 
-# An instance as incs -i makes it on the isolated bridge, autostart unset.
+# An instance as bxn -i makes it on the isolated bridge, autostart unset.
 make_box() {
-  incus launch img "$1" -p default -p incs-net -d "eth0,ipv4.address=$2" >/dev/null
-  incus config set "$1" user.managed-by=agent-incus user.incs.net=isolated
+  incus launch img "$1" -p default -p boxen-net -d "eth0,ipv4.address=$2" >/dev/null
+  incus config set "$1" user.managed-by=boxen user.boxen.net=isolated
 }
-bash -c 'log(){ :; }; warn(){ :; }; error(){ exit 1; }; source "$1/incus.net"; ensure_net' _ "$SANDBOX/repo"
+bash -c 'log(){ :; }; warn(){ :; }; error(){ exit 1; }; source "$1/boxen.net"; ensure_net' _ "$SANDBOX/repo"
 make_box box 10.201.0.50
 
 echo "turning the allowlist on"
@@ -71,15 +71,15 @@ run mode box enforce
 assert_eq "it succeeds" "0" "$RC"
 assert_contains "it says the container restarted on a new address" "locked; it restarted on a new address" "$OUT"
 assert_eq "the egress container exists" "yes" "$([[ -d "$FAKE_INCUS_STATE/instances/$E" ]] && echo yes || echo no)"
-assert_eq "box's proxy is on port 10000" "10000" "$(cfg box user.incs.egress.port)"
+assert_eq "box's proxy is on port 10000" "10000" "$(cfg box user.boxen.egress.port)"
 assert_eq "the proxy address is in box's environment" "http://10.201.0.10:10000" "$(cfg box environment.HTTPS_PROXY)"
 assert_eq "NO_PROXY keeps local traffic off the proxy" "localhost,127.0.0.1,::1" "$(cfg box environment.NO_PROXY)"
 assert_eq "Node's fetch uses the proxy" "1" "$(cfg box environment.NODE_USE_ENV_PROXY)"
 stdin="$(cat "$FAKE_INCUS_STATE"/exec-stdin/* 2>/dev/null)"
-assert_contains "proxy settings for logins, apt and services are written" "/etc/apt/apt.conf.d/95incs-proxy" "$stdin"
-assert_eq "box's card uses its own rules" "incs-a-box" "$(cfg box devices.eth0.security.acls)"
+assert_contains "proxy settings for logins, apt and services are written" "/etc/apt/apt.conf.d/95boxen-proxy" "$stdin"
+assert_eq "box's card uses its own rules" "boxen-a-box" "$(cfg box devices.eth0.security.acls)"
 assert_eq "box's card rejects anything else" "reject" "$(cfg box devices.eth0.security.acls.default.egress.action)"
-acl="$(cat "$FAKE_INCUS_STATE/acls/incs-a-box")"
+acl="$(cat "$FAKE_INCUS_STATE/acls/boxen-a-box")"
 assert_contains "box may reach only its proxy port" "destination: 10.201.0.10/32
   destination_port: \"10000\"" "$acl"
 assert_contains "the host may reach box" "source: 10.201.0.1/32" "$acl"
@@ -87,27 +87,27 @@ assert_eq "box moved to a fresh address" "10.201.0.11" "$(cfg box devices.eth0.i
 eacl="$(cat "$FAKE_INCUS_STATE/acls/$E")"
 assert_contains "the egress container lets box in from its new address" "source: 10.201.0.11/32" "$eacl"
 assert_not_contains "and not from the old one" "10.201.0.50" "$eacl"
-seq="$(calls_since "$before" | grep -nE '^stop box|^config device set box eth0 ipv4.address|^config set box user.incs.egress.transition=enforce' | cut -d: -f2- | cut -c1-40)"
-assert_eq "barrier, then stop, then the new address" "config set box user.incs.egress.transiti
+seq="$(calls_since "$before" | grep -nE '^stop box|^config device set box eth0 ipv4.address|^config set box user.boxen.egress.transition=enforce' | cut -d: -f2- | cut -c1-40)"
+assert_eq "barrier, then stop, then the new address" "config set box user.boxen.egress.transit
 stop box --timeout 30
 config device set box eth0 ipv4.address=" "$seq"
 assert_eq "box runs again" "RUNNING" "$(status box)"
-assert_eq "the barrier is cleared" "none" "$(cfg box user.incs.egress.transition)"
+assert_eq "the barrier is cleared" "none" "$(cfg box user.boxen.egress.transition)"
 assert_eq "autostart is back to unset" "" "$(cfg box boot.autostart)"
-assert_contains "the active state is enforce" "enforce:" "$(cfg box user.incs.egress.active)"
+assert_contains "the active state is enforce" "enforce:" "$(cfg box user.boxen.egress.active)"
 assert_eq "its proxy enforces" "enforce" "$(gen_file box mode)"
 
 echo "allowing and removing"
 run allow box Docs.RS
 assert_contains "allow widens" "allowed; open connections keep running" "$OUT"
-assert_eq "the host is stored normalized" "docs.rs" "$(cfg box user.incs.egress.allow)"
+assert_eq "the host is stored normalized" "docs.rs" "$(cfg box user.boxen.egress.allow)"
 assert_contains "the proxy allows it" "docs.rs" "$(gen_file box hosts)"
 run allow box "not a host"
 assert_eq "a bad host is refused" "1" "$RC"
-assert_contains "and named" "Not a hostname incs accepts: not a host" "$OUT"
+assert_contains "and named" "Not a hostname bxn accepts: not a host" "$OUT"
 run rm box docs.rs
 assert_contains "rm tightens" "narrowed; its open connections through the proxy ended" "$OUT"
-assert_eq "it's off box's list" "" "$(cfg box user.incs.egress.allow)"
+assert_eq "it's off box's list" "" "$(cfg box user.boxen.egress.allow)"
 run rm box api.anthropic.com
 assert_contains "rm says when another source still allows it" "still allowed for box by baseline" "$OUT"
 
@@ -121,7 +121,7 @@ assert_contains "report to enforce tightens without a restart" "narrowed" "$OUT"
 assert_eq "the address stays" "$addr" "$(cfg box devices.eth0.ipv4.address)"
 run mode box off
 assert_contains "to off widens" "allowed" "$OUT"
-assert_eq "off opens the card to the bridge's rules" "incs-base" "$(cfg box devices.eth0.security.acls)"
+assert_eq "off opens the card to the bridge's rules" "boxen-base" "$(cfg box devices.eth0.security.acls)"
 assert_eq "off allows outbound by default" "allow" "$(cfg box devices.eth0.security.acls.default.egress.action)"
 assert_eq "the proxy stays, with the open policy" "off" "$(gen_file box mode)"
 incus config set box boot.autostart=true
@@ -136,51 +136,51 @@ FAKE_INCUS_FAIL_CALL='^config device set box eth0 ipv4.address' run mode box enf
 assert_eq "a failed step fails" "1" "$RC"
 assert_eq "box stays stopped" "STOPPED" "$(status box)"
 assert_eq "it won't start on its own" "false" "$(cfg box boot.autostart)"
-assert_contains "the original autostart is saved" "true" "$(cfg box user.incs.egress.autostart-saved)"
-assert_contains "the transition records the target address" "enforce:10.201.0.13" "$(cfg box user.incs.egress.transition)"
-shell_out="$(bash "$SANDBOX/repo/incus.shell" box true 2>&1 || true)"
-assert_contains "incs won't start it" "partway through turning its allowlist on" "$shell_out"
+assert_contains "the original autostart is saved" "true" "$(cfg box user.boxen.egress.autostart-saved)"
+assert_contains "the transition records the target address" "enforce:10.201.0.13" "$(cfg box user.boxen.egress.transition)"
+shell_out="$(bash "$SANDBOX/repo/boxen.shell" box true 2>&1 || true)"
+assert_contains "bxn won't start it" "partway through turning its allowlist on" "$shell_out"
 incus start box   # as if someone started it by hand
 FAKE_INCUS_FAIL_CALL='^stop box' run refresh box
 assert_eq "a retry that can't stop it fails too" "1" "$RC"
-assert_contains "the retry keeps the original autostart" "true" "$(cfg box user.incs.egress.autostart-saved)"
+assert_contains "the retry keeps the original autostart" "true" "$(cfg box user.boxen.egress.autostart-saved)"
 assert_contains "it says it couldn't confirm the stop" "Could not confirm box stopped" "$OUT"
 run refresh box
 assert_eq "refresh finishes it" "0" "$RC"
 assert_eq "at the address the transition recorded" "10.201.0.13" "$(cfg box devices.eth0.ipv4.address)"
 assert_eq "box runs" "RUNNING" "$(status box)"
-assert_eq "the barrier is cleared" "none" "$(cfg box user.incs.egress.transition)"
+assert_eq "the barrier is cleared" "none" "$(cfg box user.boxen.egress.transition)"
 assert_eq "the original autostart is restored" "true" "$(cfg box boot.autostart)"
 
 echo "finishing a lockdown that only missed its commit"
-incus config set box user.incs.egress.transition=enforce:10.201.0.13 user.incs.egress.autostart-saved=true boot.autostart=false
+incus config set box user.boxen.egress.transition=enforce:10.201.0.13 user.boxen.egress.autostart-saved=true boot.autostart=false
 before="$(ncalls)"
 run refresh box
 assert_contains "it commits without stopping" "locked and its proxy is verified" "$OUT"
 assert_eq "no stop" "" "$(calls_since "$before" | grep '^stop box' || true)"
-assert_eq "the barrier is cleared" "none" "$(cfg box user.incs.egress.transition)"
+assert_eq "the barrier is cleared" "none" "$(cfg box user.boxen.egress.transition)"
 assert_eq "autostart is restored" "true" "$(cfg box boot.autostart)"
 
 echo "a mode change while a lockdown is unfinished"
 run mode box report
 addr="$(cfg box devices.eth0.ipv4.address)"
-incus config set box "user.incs.egress.transition=report:$addr" user.incs.egress.autostart-saved=true boot.autostart=false
+incus config set box "user.boxen.egress.transition=report:$addr" user.boxen.egress.autostart-saved=true boot.autostart=false
 run mode box enforce
 assert_eq "it succeeds" "0" "$RC"
-assert_eq "the unfinished lockdown is committed" "none" "$(cfg box user.incs.egress.transition)"
+assert_eq "the unfinished lockdown is committed" "none" "$(cfg box user.boxen.egress.transition)"
 assert_eq "and the new mode is applied, not the old one" "enforce" "$(gen_file box mode)"
-assert_contains "the active state is enforce" "enforce:" "$(cfg box user.incs.egress.active)"
+assert_contains "the active state is enforce" "enforce:" "$(cfg box user.boxen.egress.active)"
 
 echo "other ways to start a container behind the barrier"
 incus stop box
-incus config set box user.incs.egress.transition=enforce:10.201.0.99
+incus config set box user.boxen.egress.transition=enforce:10.201.0.99
 before="$(ncalls)"
-ua="$(bash "$SANDBOX/repo/incs" -ua 2>&1 || true)"
-assert_contains "incs -ua skips it" "Skipping box: it's partway through" "$ua"
+ua="$(bash "$SANDBOX/repo/bxn" -ua 2>&1 || true)"
+assert_contains "bxn -ua skips it" "Skipping box: it's partway through" "$ua"
 assert_eq "and doesn't start it" "" "$(calls_since "$before" | grep '^start box' || true)"
-envout="$(bash "$SANDBOX/repo/incs" -e box SOME_VAR 2>&1 || true)"
-assert_contains "incs -e won't start it" "partway through turning its allowlist on" "$envout"
-incus config set box user.incs.egress.transition=none
+envout="$(bash "$SANDBOX/repo/bxn" -e box SOME_VAR 2>&1 || true)"
+assert_contains "bxn -e won't start it" "partway through turning its allowlist on" "$envout"
+incus config set box user.boxen.egress.transition=none
 incus start box
 
 echo "--all"
@@ -188,10 +188,10 @@ run allow --all extra.example
 assert_eq "--all needs a yes without a terminal" "1" "$RC"
 run allow --all extra.example --yes
 assert_eq "--all --yes goes ahead" "0" "$RC"
-assert_contains "it's in your additions" "extra.example" "$(cat "$INCS_CONFIG_DIR/egress-baseline.txt")"
+assert_contains "it's in your additions" "extra.example" "$(cat "$BOXEN_CONFIG_DIR/egress-baseline.txt")"
 assert_contains "box's proxy allows it" "extra.example" "$(gen_file box hosts)"
 run rm --all extra.example --yes
-assert_not_contains "rm --all takes it out" "extra.example" "$(cat "$INCS_CONFIG_DIR/egress-baseline.txt")"
+assert_not_contains "rm --all takes it out" "extra.example" "$(cat "$BOXEN_CONFIG_DIR/egress-baseline.txt")"
 
 echo "turning off an interrupted lockdown"
 make_box cancelbox 10.201.0.70
@@ -200,22 +200,22 @@ FAKE_INCUS_FAIL_CALL='^config device set cancelbox eth0 ipv4.address' run mode c
 assert_eq "the lockdown is interrupted" "1" "$RC"
 run mode cancelbox off
 assert_eq "off cancels the unfinished lockdown" "0" "$RC"
-assert_eq "off clears its barrier" "none" "$(cfg cancelbox user.incs.egress.transition)"
+assert_eq "off clears its barrier" "none" "$(cfg cancelbox user.boxen.egress.transition)"
 assert_eq "off restores its original autostart" "true" "$(cfg cancelbox boot.autostart)"
-assert_eq "off opens its card" "incs-base" "$(cfg cancelbox devices.eth0.security.acls)"
+assert_eq "off opens its card" "boxen-base" "$(cfg cancelbox devices.eth0.security.acls)"
 run mode cancelbox enforce  # keep the remaining scenarios independent
 
 echo "retrying incomplete proxy settings"
 make_box retrybox 10.201.0.71
 FAKE_INCUS_FAIL_CALL='^exec retrybox -- sh -s' run mode retrybox enforce
 assert_eq "the initial settings write fails" "1" "$RC"
-assert_eq "failed settings are not marked complete" "" "$(cfg retrybox user.incs.egress.env)"
+assert_eq "failed settings are not marked complete" "" "$(cfg retrybox user.boxen.egress.env)"
 before="$(ncalls)"
 run mode retrybox enforce
 assert_eq "retry succeeds" "0" "$RC"
 assert_contains "retry writes the settings again" "exec retrybox -- sh -s" "$(calls_since "$before")"
-assert_eq "only complete settings are recorded" "$(cfg retrybox environment.HTTPS_PROXY)" "$(cfg retrybox user.incs.egress.env)"
-incus config unset retrybox user.incs.egress.env
+assert_eq "only complete settings are recorded" "$(cfg retrybox environment.HTTPS_PROXY)" "$(cfg retrybox user.boxen.egress.env)"
+incus config unset retrybox user.boxen.egress.env
 before="$(ncalls)"
 run refresh retrybox
 assert_eq "refresh repairs missing settings" "0" "$RC"
@@ -233,7 +233,7 @@ FAKE_EGRESS_CTL_FAIL='^status abox$' run rm --all bulk.example --yes
 assert_eq "bulk removal reports failure" "1" "$RC"
 assert_contains "bulk removal names the failed container" "abox" "$OUT"
 assert_not_contains "bulk removal still narrows a later container" "bulk.example" "$(gen_file zbox hosts)"
-assert_eq "bulk removal releases its lock" "no" "$([[ -d "$INCS_LOCK_DIR" ]] && echo yes || echo no)"
+assert_eq "bulk removal releases its lock" "no" "$([[ -d "$BOXEN_LOCK_DIR" ]] && echo yes || echo no)"
 FAKE_EGRESS_CTL_FAIL='^status abox$' run allow --all bulk.example --yes
 assert_eq "bulk allowance reports failure" "1" "$RC"
 assert_contains "bulk allowance still updates a later container" "bulk.example" "$(gen_file zbox hosts)"
@@ -241,12 +241,12 @@ before="$(ncalls)"
 FAKE_EGRESS_CTL_FAIL='^status abox$' run refresh --all
 assert_eq "bulk refresh reports failure" "1" "$RC"
 assert_contains "bulk refresh reaches a later container" "status zbox" "$(calls_since "$before")"
-assert_eq "bulk refresh releases its lock" "no" "$([[ -d "$INCS_LOCK_DIR" ]] && echo yes || echo no)"
+assert_eq "bulk refresh releases its lock" "no" "$([[ -d "$BOXEN_LOCK_DIR" ]] && echo yes || echo no)"
 
 echo "ls and log"
 run ls
 assert_contains "ls lists box" "box" "$OUT"
-assert_contains "with its proxy" "incs-egress:10000" "$OUT"
+assert_contains "with its proxy" "boxen-egress:10000" "$OUT"
 run ls box
 assert_contains "ls box shows where hosts come from" "api.anthropic.com" "$OUT"
 assert_contains "the baseline is a source" "baseline" "$OUT"
@@ -258,7 +258,7 @@ printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
 run log box
 assert_contains "log counts hits per host" "docs.rs                                            443    blocked           2  2026-10-30T10:05:00Z" "$OUT"
 assert_eq "blocked hosts come first" "docs.rs" "$(sed -n 2p <<< "$OUT" | awk '{print $1}')"
-assert_contains "log says how to allow" "incs egress allow box <host>" "$OUT"
+assert_contains "log says how to allow" "bxn egress allow box <host>" "$OUT"
 
 echo "a baseline update"
 echo "new-tool.example" >> "$SANDBOX/repo/egress/baseline.txt"
@@ -274,7 +274,7 @@ assert_contains "and box's proxy allows it" "new-tool.example" "$(gen_file box h
 
 echo "refusals"
 incus launch img legacy -p default >/dev/null
-incus config set legacy user.managed-by=agent-incus
+incus config set legacy user.managed-by=boxen
 run mode legacy enforce
 assert_contains "a container on the default bridge can't be confined" "on the default bridge" "$OUT"
 run mode "$E" enforce
@@ -283,7 +283,7 @@ run mode box sideways
 assert_eq "an unknown mode is refused" "1" "$RC"
 
 echo "deleting"
-bash "$SANDBOX/repo/incs" -d box >/dev/null 2>&1
+bash "$SANDBOX/repo/bxn" -d box >/dev/null 2>&1
 assert_contains "deleting box removes its proxy" "remove box" "$(cat "$FAKE_INCUS_STATE/ctl/$E/calls.log")"
 assert_not_contains "and its rule in the egress container" "10.201.0.13" "$(cat "$FAKE_INCUS_STATE/acls/$E")"
 

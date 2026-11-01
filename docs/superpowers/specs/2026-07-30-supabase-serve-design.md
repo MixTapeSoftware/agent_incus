@@ -10,14 +10,14 @@ creation time.
 ## Decision
 
 A new built-in plugin, **`supabase-serve`**, plus a minimal generic
-**`PLUGIN_REQUIRES`** dependency mechanism in `incus.init` so one checkbox can
+**`PLUGIN_REQUIRES`** dependency mechanism in `boxen.init` so one checkbox can
 pull in the Tailscale plugin it depends on.
 
 Alternatives considered and rejected:
 
 - Extending the Tailscale plugin's prompt with a preset menu — not a checkbox,
   adds interaction to every tailscale build, invisible in the TUI list.
-- A post-hoc `incs serve` command — solves retrofitting, not creation-time
+- A post-hoc `bxn serve` command — solves retrofitting, not creation-time
   convenience; can be added later if ever needed.
 - A per-project serve-map config file — the map is identical across projects,
   so config is overhead (YAGNI).
@@ -37,7 +37,7 @@ Alternatives considered and rejected:
   builds **and** template launches. `tailscale serve --bg` is idempotent and
   tailscaled persists the config, so re-applying converges.
 
-## Mechanism: `PLUGIN_REQUIRES` in `incus.init`
+## Mechanism: `PLUGIN_REQUIRES` in `boxen.init`
 
 After all selection input (CLI flags + TUI), before the "Plugins selected:"
 echo and the prompt loop: source each *selected* plugin, and auto-select every
@@ -46,7 +46,7 @@ runs before `_run_plugin_prompts`, a required plugin's own prompt (tailscale's
 auth key) still fires. Resolution is single-level: a required plugin's own
 requirements are not chased. Unknown ids warn and are ignored.
 `_reset_plugin_state` clears `PLUGIN_REQUIRES` so it cannot leak between
-plugins; the `incs new-plugin` template documents the new field.
+plugins; the `bxn new-plugin` template documents the new field.
 
 ## Error handling
 

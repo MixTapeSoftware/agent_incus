@@ -13,18 +13,18 @@ export PATH="$SANDBOX/bin:$PATH"
 sed -e "s|^ETC=.*|ETC=$SANDBOX/etc|" \
     -e "s|^UNITS=.*|UNITS=$SANDBOX/units|" \
     -e "s|/run/|$SANDBOX/run/|g" \
-    "$REPO_ROOT/egress/incs-egress-ctl" > "$SANDBOX/ctl"
+    "$REPO_ROOT/egress/boxen-egress-ctl" > "$SANDBOX/ctl"
 bash "$SANDBOX/ctl" add api 4750
 bash "$SANDBOX/ctl" add api-v2 4751
-slice='incs-agent_api\x2dv2.slice'
+slice='boxen-agent_api\x2dv2.slice'
 [[ -f "$SANDBOX/units/$slice" ]]
-[[ ! -f "$SANDBOX/units/incs-agent_api-v2.slice" ]]
-for unit in incs-gen_api-v2@.service incs-check_api-v2@.service; do
+[[ ! -f "$SANDBOX/units/boxen-agent_api-v2.slice" ]]
+for unit in boxen-gen_api-v2@.service boxen-check_api-v2@.service; do
   grep -qxF "Slice=$slice" "$SANDBOX/units/$unit"
 done
-[[ -f "$SANDBOX/units/incs-agent_api.slice" ]]
+[[ -f "$SANDBOX/units/boxen-agent_api.slice" ]]
 echo 'ok: dashed agent has its own escaped slice in both unit templates'
 bash "$SANDBOX/ctl" remove api-v2
 [[ ! -f "$SANDBOX/units/$slice" ]]
-[[ -f "$SANDBOX/units/incs-agent_api.slice" ]]
+[[ -f "$SANDBOX/units/boxen-agent_api.slice" ]]
 echo 'ok: removal deletes the escaped slice and keeps the other agent'

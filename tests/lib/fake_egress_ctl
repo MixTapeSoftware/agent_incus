@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tests/lib/fake_egress_ctl
-# Stands in for egress/incs-egress-ctl inside a fake egress container, so
-# host-side tests can check what incs asked for. tests/host/egress_ctl_test.sh
+# Stands in for egress/boxen-egress-ctl inside a fake egress container, so
+# host-side tests can check what bxn asked for. tests/host/egress_ctl_test.sh
 # runs the real one.
 #
 # State under <dir> (fake_incus passes $FAKE_INCUS_STATE/ctl/<container>):
@@ -15,7 +15,7 @@ d="$1"; shift
 mkdir -p "$d"
 echo "$*" >> "$d/calls.log"
 if [[ -n "${FAKE_EGRESS_CTL_FAIL:-}" && "$*" =~ $FAKE_EGRESS_CTL_FAIL ]]; then
-  echo "incs-egress-ctl: injected failure" >&2; exit 1
+  echo "boxen-egress-ctl: injected failure" >&2; exit 1
 fi
 cur() { cat "$d/$1/current" 2>/dev/null || echo none; }
 case "$1" in
@@ -28,7 +28,7 @@ case "$1" in
     # As the real one: every line must be a hostname.
     while IFS= read -r h; do
       [[ -z "$h" || ( ${#h} -le 253 && "$h" =~ ^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ) ]] ||
-        { echo "incs-egress-ctl: bad hostname: $h" >&2; rm -rf "${d:?}/$2/gens/$n"; exit 1; }
+        { echo "boxen-egress-ctl: bad hostname: $h" >&2; rm -rf "${d:?}/$2/gens/$n"; exit 1; }
     done < "$d/$2/gens/$n/hosts"
     echo "$n"
     ;;

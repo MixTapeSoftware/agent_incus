@@ -8,8 +8,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# shellcheck source=../incus.envscan
-source "$REPO_ROOT/incus.envscan"
+# shellcheck source=../boxen.envscan
+source "$REPO_ROOT/boxen.envscan"
 
 PASS=0
 FAIL=0

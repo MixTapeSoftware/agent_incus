@@ -4,11 +4,11 @@
 # default policy matches the expected mode.
 set -euo pipefail
 agent="$1"; gen="$2"
-dir="/etc/incs-proto/$agent/$gen"
+dir="/etc/boxen-proto/$agent/$gen"
 acl="$dir/acl.yaml"; cfg="$dir/config.yaml"
-refuse() { echo "incs-proxy: refusing to start $agent/$gen: $1" >&2; exit 64; }
+refuse() { echo "boxen-proxy: refusing to start $agent/$gen: $1" >&2; exit 64; }
 args=(--config-file "$cfg")
-if [[ "${INCS_PROTO_SKIP_STATIC:-}" == 1 ]]; then
+if [[ "${BOXEN_PROTO_SKIP_STATIC:-}" == 1 ]]; then
   # Test only: start whatever is there, so the probe alone has to catch it.
   [[ -s "$acl" ]] && args+=(--egress-acl-file "$acl")
 else
@@ -23,9 +23,9 @@ else
   esac || refuse "default action '$action' doesn't match mode '$mode'"
   args+=(--egress-acl-file "$acl")
 fi
-if [[ -n "${INCS_PROBE_PORT:-}" ]]; then
+if [[ -n "${BOXEN_PROBE_PORT:-}" ]]; then
   # A check copy on a private port, outside the shared socket.
   unset EINHORN_MASTER_PID EINHORN_FD_COUNT EINHORN_FD_0 EINHORN_SOCK_PATH
-  args+=(--listen-ip 127.0.0.1 --listen-port "$INCS_PROBE_PORT")
+  args+=(--listen-ip 127.0.0.1 --listen-port "$BOXEN_PROBE_PORT")
 fi
-exec /usr/local/libexec/incs-proto/smokescreen "${args[@]}"
+exec /usr/local/libexec/boxen-proto/smokescreen "${args[@]}"

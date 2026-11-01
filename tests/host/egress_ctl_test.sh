@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # tests/host/egress_ctl_test.sh
-# Runs egress/incs-egress-ctl for real, with systemd and a smokescreen v0.1.0
+# Runs egress/boxen-egress-ctl for real, with systemd and a smokescreen v0.1.0
 # build, the way an egress container does. Run it in a throwaway machine or
 # container with systemd and sudo, not on a host you care about:
 #
@@ -8,7 +8,7 @@
 #   bash tests/host/egress_ctl_test.sh --cleanup
 #
 # It installs the ctl, the wrapper and the binary at their egress-container
-# paths, units named incs-*, and h1-h9.proto.test in /etc/hosts, then removes
+# paths, units named boxen-*, and h1-h9.proto.test in /etc/hosts, then removes
 # them all. The test clients come from tests/host/proxy_swap. The only
 # test-only change to a generation: allow_ranges for 127.0.0.0/8, so the
 # proxy can reach a local echo server.
@@ -16,7 +16,7 @@ set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 REPO="$(cd "$HERE/../.." && pwd)"
 PC="$HERE/proxy_swap/pc.py"
-CTL=/usr/local/sbin/incs-egress-ctl
+CTL=/usr/local/sbin/boxen-egress-ctl
 
 PASS=0; FAIL=0
 pass() { PASS=$((PASS+1)); echo "PASS $1"; }
@@ -29,14 +29,14 @@ cleanup() {
   pkill -f "proxy_swap/echo.py" 2>/dev/null
   pkill -f "proxy_swap/pc.py" 2>/dev/null
   for a in a b; do sudo "$CTL" remove "$a" >/dev/null 2>&1; done
-  sudo systemctl disable --now incs-egress-ack.socket >/dev/null 2>&1
-  sudo systemctl disable incs-egress-boot.service >/dev/null 2>&1
-  sudo systemctl reset-failed 'incs-*' 2>/dev/null
-  sudo rm -f /etc/systemd/system/incs-egress-ack.socket /etc/systemd/system/incs-egress-ack@.service \
-    /etc/systemd/system/incs-egress-boot.service /etc/systemd/system/incs-*_*
+  sudo systemctl disable --now boxen-egress-ack.socket >/dev/null 2>&1
+  sudo systemctl disable boxen-egress-boot.service >/dev/null 2>&1
+  sudo systemctl reset-failed 'boxen-*' 2>/dev/null
+  sudo rm -f /etc/systemd/system/boxen-egress-ack.socket /etc/systemd/system/boxen-egress-ack@.service \
+    /etc/systemd/system/boxen-egress-boot.service /etc/systemd/system/boxen-*_*
   sudo systemctl daemon-reload
-  sudo rm -rf /etc/incs-egress /usr/local/libexec/incs "$CTL"
-  sudo sed -i '/# incs-egress-test$/d' /etc/hosts
+  sudo rm -rf /etc/boxen-egress /usr/local/libexec/boxen "$CTL"
+  sudo sed -i '/# boxen-egress-test$/d' /etc/hosts
   rm -f "$HERE"/proxy_swap/*.status "$HERE"/proxy_swap/*.out
   echo "removed the test install"
 }
@@ -46,12 +46,12 @@ JQ="${2:-$(command -v jq || true)}"
 [[ -x "$JQ" ]] || { echo "needs jq: pass its path as the second argument"; exit 1; }
 trap cleanup EXIT
 
-sudo install -d /usr/local/libexec/incs
-sudo install -m755 "$SMOKESCREEN" "$REPO/egress/incs-proxy-run" /usr/local/libexec/incs/
-sudo install -m755 "$REPO/egress/incs-egress-ctl" "$CTL"
+sudo install -d /usr/local/libexec/boxen
+sudo install -m755 "$SMOKESCREEN" "$REPO/egress/boxen-proxy-run" /usr/local/libexec/boxen/
+sudo install -m755 "$REPO/egress/boxen-egress-ctl" "$CTL"
 command -v jq >/dev/null || sudo install -m755 "$JQ" /usr/local/bin/jq
-grep -q '# incs-egress-test$' /etc/hosts ||
-  echo '127.0.0.1 h1.proto.test h2.proto.test h3.proto.test h4.proto.test h5.proto.test h6.proto.test h7.proto.test h8.proto.test h9.proto.test # incs-egress-test' |
+grep -q '# boxen-egress-test$' /etc/hosts ||
+  echo '127.0.0.1 h1.proto.test h2.proto.test h3.proto.test h4.proto.test h5.proto.test h6.proto.test h7.proto.test h8.proto.test h9.proto.test # boxen-egress-test' |
   sudo tee -a /etc/hosts >/dev/null
 setsid python3 -I "$HERE/proxy_swap/echo.py" >/dev/null 2>&1 &
 sleep 0.5
@@ -62,7 +62,7 @@ hosts_upto() { local i; for i in $(seq 1 "$1"); do echo "h$i.proto.test"; done; 
 newgen() {
   local mode="$1" n; shift
   n="$(printf '%s\n' "$@" | ctl gen a "$mode" "$(printf '%s' "$mode $*" | sha256sum | cut -c1-16)")" || return 1
-  echo 'allow_ranges: ["127.0.0.0/8"]' | sudo tee -a "/etc/incs-egress/agents/a/gens/$n/config.yaml" >/dev/null
+  echo 'allow_ranges: ["127.0.0.0/8"]' | sudo tee -a "/etc/boxen-egress/agents/a/gens/$n/config.yaml" >/dev/null
   echo "$n"
 }
 once() { python3 -I "$PC" once "$1"; }
@@ -81,15 +81,15 @@ out="$(echo 'a.*.example.com' | ctl gen a enforce 0123456789abcdef 2>&1)"; conta
 
 section "the wrapper refuses an unsafe generation"
 g="$(newgen enforce h1.proto.test)"
-sudo rm "/etc/incs-egress/agents/a/gens/$g/acl.yaml"
-out="$(sudo /usr/local/libexec/incs/incs-proxy-run a "$g" 2>&1)"; rc=$?
+sudo rm "/etc/boxen-egress/agents/a/gens/$g/acl.yaml"
+out="$(sudo /usr/local/libexec/boxen/boxen-proxy-run a "$g" 2>&1)"; rc=$?
 check "no allowlist: exit 64" "64" "$rc"; contains "no allowlist: says why" "no allowlist" "$out"
 out="$(ctl widen a "$g" 2>&1)"; contains "widen with no allowlist changes nothing" "nothing changed" "$out"
 g="$(newgen enforce h1.proto.test)"
-sudo sed -i 's/action: enforce/action: open/' "/etc/incs-egress/agents/a/gens/$g/acl.yaml"
+sudo sed -i 's/action: enforce/action: open/' "/etc/boxen-egress/agents/a/gens/$g/acl.yaml"
 out="$(ctl widen a "$g" 2>&1)"; contains "an open policy under enforce is refused" "nothing changed" "$out"
 g="$(newgen report h1.proto.test)"
-sudo sed -i 's/^report$/enforce/' "/etc/incs-egress/agents/a/gens/$g/mode"
+sudo sed -i 's/^report$/enforce/' "/etc/boxen-egress/agents/a/gens/$g/mode"
 out="$(ctl widen a "$g" 2>&1)"; contains "the wrong default for the mode is refused" "nothing changed" "$out"
 check "after the failures, still no current generation" "none" "$(cur_gen)"
 
@@ -137,11 +137,11 @@ sleep 1
 log="$(ctl log a)"
 contains "the log has the denied host" $'h2.proto.test\t4760\tblocked' "$log"
 contains "the log has an allowed host" $'h1.proto.test\t4760\tallowed' "$log"
-[[ "$log" != *incs-probe.invalid* ]] && pass "probe records are left out of the log" || fail "probe records are left out of the log"
+[[ "$log" != *boxen-probe.invalid* ]] && pass "probe records are left out of the log" || fail "probe records are left out of the log"
 check "nothing from a URL or header reaches the raw journal" "0" \
   "$(sudo journalctl --after-cursor="$jcur" -o json --no-pager | grep -c 'SENTINEL-7f3a')"
 check "the filter keeps the decision records" "1" \
-  "$(sudo journalctl -u 'incs-gen_a@*' --after-cursor="$jcur" -o cat --no-pager | grep CANONICAL-PROXY-DECISION | grep -c '"requested_host":"h1.proto.test:4760"')"
+  "$(sudo journalctl -u 'boxen-gen_a@*' --after-cursor="$jcur" -o cat --no-pager | grep CANONICAL-PROXY-DECISION | grep -c '"requested_host":"h1.proto.test:4760"')"
 
 section "tightening ends open connections"
 python3 -I "$PC" hammer h1.proto.test 6 > hammer2.out & H=$!
@@ -180,7 +180,7 @@ check "stop leaves no generation running" "" "$(active)"
 r="$(PROXY_PORT=4750 timeout 8 python3 -I "$PC" once h1.proto.test)"
 [[ "$r" != ok ]] && pass "nothing serves after stop ($r)" || fail "nothing serves after stop"
 g="$(newgen enforce h1.proto.test)"; ctl widen a "$g" >/dev/null
-sudo systemctl stop "incs-gen_a@$g.service"
+sudo systemctl stop "boxen-gen_a@$g.service"
 ctl boot
 check "boot starts the current generation" "$g" "$(active)"
 check "and it serves" "ok" "$(once h1.proto.test)"

@@ -2,11 +2,11 @@
 
 **Date:** 2026-07-15
 **Status:** approved (design), pending implementation plan
-**Type:** agent-incus **user** plugin (personal — not committed to this repo's `plugins/`)
+**Type:** boxen **user** plugin (personal — not committed to this repo's `plugins/`)
 
 ## Goal
 
-Provision a ready-to-use Neovim + personal NvChad setup inside an agent-incus
+Provision a ready-to-use Neovim + personal NvChad setup inside an boxen
 instance, so the editor is no longer a reason to stay on the host. When an
 instance is created with the plugin selected, the first real `nvim` launch opens
 **instantly and works offline** — plugins, treesitter parsers, and language
@@ -37,7 +37,7 @@ The config is the user's own NvChad fork: `https://github.com/chadfennell/nvChad
 A single user-plugin file:
 
 ```
-${XDG_DATA_HOME:-~/.local/share}/agent_incus/plugins/50-nvchad.sh
+${XDG_DATA_HOME:-~/.local/share}/boxen/plugins/50-nvchad.sh
 ```
 
 Not committed to this repo's `plugins/` — it targets a personal config. Contract:

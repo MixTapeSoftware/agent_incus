@@ -2,7 +2,7 @@
 # tests/template_scrub_test.sh
 # A template must not carry the Tailscale node identity of the container it
 # was built from. These tests run the real stash/restore functions from
-# incus.init against the fake `incus`, around a real `publish`.
+# boxen.init against the fake `incus`, around a real `publish`.
 # Run: bash tests/template_scrub_test.sh
 
 set -euo pipefail
@@ -36,7 +36,7 @@ export PATH="$SANDBOX/bin:$PATH"
 export XDG_RUNTIME_DIR="$SANDBOX/run"
 
 extract_fn() {
-  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/incus.init"
+  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/boxen.init"
 }
 log()  { echo "[+] $1"; }
 warn() { echo "[!] $1"; }
@@ -44,7 +44,7 @@ error() { echo "[ERROR] $1" >&2; exit 1; }
 READY_TIMEOUT=2
 eval "$(extract_fn stash_tailscale_state)"
 eval "$(extract_fn restore_tailscale_state)"
-declare -F stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in incus.init"; exit 1; }
+declare -F stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in boxen.init"; exit 1; }
 
 CONTAINER_NAME=box
 TS_STATE_BACKUP=""
@@ -52,7 +52,7 @@ root()  { echo "$FAKE_INCUS_STATE/instances/box/root"; }
 image() { echo "$FAKE_INCUS_STATE/images/incus-init/box/root"; }
 present() { [[ -e "$1" ]] && echo present || echo gone; }
 execs() { cat "$FAKE_INCUS_STATE/exec.log" 2>/dev/null || true; }
-backups() { ls "$XDG_RUNTIME_DIR" | grep -c '^incs-tailscale\.' || true; }
+backups() { ls "$XDG_RUNTIME_DIR" | grep -c '^boxen-tailscale\.' || true; }
 # The functions set TS_STATE_BACKUP, so they run in this shell, not in $(...).
 stash()   { stash_tailscale_state   > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?; OUT="$(cat "$SANDBOX/out")"; }
 restore() { restore_tailscale_state > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?; OUT="$(cat "$SANDBOX/out")"; }
@@ -65,7 +65,7 @@ fresh_box() {
   export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
   mkdir -p "$FAKE_INCUS_STATE"
   unset FAKE_INCUS_FAIL_EXEC FAKE_INCUS_FAIL_CALL
-  rm -f "$XDG_RUNTIME_DIR"/incs-tailscale.*
+  rm -f "$XDG_RUNTIME_DIR"/boxen-tailscale.*
   TS_STATE_BACKUP=""
   incus launch images:ubuntu/24.04 box
   mkdir -p "$(root)/var/lib/tailscale/certs" "$(root)/etc"
@@ -188,12 +188,12 @@ assert_eq "no tailscaled: the restore itself succeeds" "0" "$RC"
 assert_eq "no tailscaled: the node key is back" "NODE-KEY" "$(cat "$(root)/var/lib/tailscale/tailscaled.state")"
 assert_eq "no tailscaled: the host copy of the key is gone" "0" "$(backups)"
 assert_contains "no tailscaled: says how to start it" "systemctl start tailscaled" "$OUT"
-assert_not_contains "no tailscaled: does not point at a deleted backup" "incs-tailscale." "$OUT"
+assert_not_contains "no tailscaled: does not point at a deleted backup" "boxen-tailscale." "$OUT"
 
 # ===========================================================================
 echo "publish fails during a template build"
 # ===========================================================================
-# The real tail of incus.init: the trap hand-over after the build, then
+# The real tail of boxen.init: the trap hand-over after the build, then
 # save_template. A failed publish must still put the state back.
 {
   echo 'set -euo pipefail'
@@ -206,15 +206,15 @@ echo "publish fails during a template build"
             template_cleanup_on_exit cleanup_on_exit save_template; do
     extract_fn "$fn"
   done
-  echo 'CONTAINER_NAME=box; HOST_USER=dev; CONTAINER_WORKSPACE=/workspace'
+  echo 'CONTAINER_NAME=box; CREATED_INSTANCE=1; HOST_USER=dev; CONTAINER_WORKSPACE=/workspace'
   echo 'SAVE_TEMPLATE=1; READY_TIMEOUT=2; TS_STATE_BACKUP=""; BUILD_SUDO_GRANTED=0'
   echo 'revoke_build_sudo() { :; }'
-  grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/incus.init"
-  awk '/^# Disable cleanup trap on success/ {c=1} /^# Done/ {exit} c' "$REPO_ROOT/incus.init"
-  awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/incus.init"
+  grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/boxen.init"
+  awk '/^# Disable cleanup trap on success/ {c=1} /^# Done/ {exit} c' "$REPO_ROOT/boxen.init"
+  awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/boxen.init"
 } > "$SANDBOX/template-build.sh"
 assert_contains "harness: found the trap hand-over" "trap template_cleanup_on_exit EXIT" "$(cat "$SANDBOX/template-build.sh")"
-assert_contains "harness: found the publish step" "save_template" "$(awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/incus.init")"
+assert_contains "harness: found the publish step" "save_template" "$(awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/boxen.init")"
 
 fresh_box
 FAKE_INCUS_FAIL_CALL='^publish box' bash "$SANDBOX/template-build.sh" > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?

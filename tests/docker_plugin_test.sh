@@ -35,7 +35,7 @@ cp "$SCRIPT_DIR/lib/fake_incus" "$SANDBOX/bin/incus"
 chmod +x "$SANDBOX/bin/incus"
 export PATH="$SANDBOX/bin:$PATH"
 
-# The plugin, with the globals and helpers incus.init gives it.
+# The plugin, with the globals and helpers boxen.init gives it.
 log()  { echo "[+] $1"; }
 warn() { echo "[!] $1"; }
 wait_for_container() { :; }

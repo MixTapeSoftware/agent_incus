@@ -1,6 +1,6 @@
 #!/bin/bash
 # tests/status_test.sh
-# Renders `incs status` against a stubbed incus and checks the table.
+# Renders `bxn status` against a stubbed incus and checks the table.
 # Run: bash tests/status_test.sh
 
 set -euo pipefail
@@ -54,7 +54,7 @@ chmod +x "$stub/incus"
 
 run_status() {
   rm -f "$stub/count"
-  STUB="$stub" PATH="$stub:$PATH" bash "$REPO_ROOT/incs" status "$@"
+  STUB="$stub" PATH="$stub:$PATH" bash "$REPO_ROOT/bxn" status "$@"
 }
 
 # alpha: running, tagged, idle (same CPU time in both samples), extra NICs,
@@ -65,8 +65,8 @@ run_status() {
 cat > "$stub/sample1.json" <<'EOF'
 [
  {"name":"alpha","status":"Running","type":"container",
-  "expanded_config":{"user.managed-by":"agent-incus","limits.memory":"4GiB"},
-  "config":{"image.description":"Ubuntu noble amd64"},"profiles":["default","agent-incus"],
+  "expanded_config":{"user.managed-by":"boxen","limits.memory":"4GiB"},
+  "config":{"image.description":"Ubuntu noble amd64"},"profiles":["default","boxen"],
   "created_at":"2026-10-12T14:03:12.5-05:00","last_used_at":"2026-10-26T09:12:00Z",
   "state":{"pid":100,"cpu":{"usage":5000000000},"memory":{"usage":432316416},
    "disk":{"root":{"usage":2254857830,"total":107374182400}},
@@ -81,7 +81,7 @@ cat > "$stub/sample1.json" <<'EOF'
  {"name":"delta","status":"Frozen","type":"container","expanded_config":{},
   "state":{"pid":300,"cpu":{"usage":7000000000},"memory":{"usage":188743680},"disk":{},
    "network":{"eth0":{"addresses":[{"family":"inet","address":"10.0.0.8","scope":"global"}]}}}},
- {"name":"gamma","status":"Stopped","type":"container","expanded_config":{"user.managed-by":"agent-incus"},
+ {"name":"gamma","status":"Stopped","type":"container","expanded_config":{"user.managed-by":"boxen"},
   "expanded_devices":{"root":{"type":"disk","path":"/","pool":"default","size":"20GiB"}},
   "last_used_at":"0001-01-01T00:00:00Z",
   "state":{"pid":0,"cpu":{"usage":0},"memory":{"usage":0},
@@ -97,7 +97,7 @@ sed 's/"pid":200,"cpu":{"usage":9000000000}/"pid":201,"cpu":{"usage":9500000000}
 cat > "$stub/expected" <<'EOF'
    NAME   TYPE  CPU   MEMORY              DISK            IPV4
 
-Agent Incus instances:
+Boxen instances:
 ●  alpha  CT    0.0%  412.3MiB / 16.0GiB  2.1GiB          10.0.0.5, 100.64.0.9
 ○  gamma  CT    -     -                   3.0GiB / 20GiB  -
 
@@ -132,7 +132,7 @@ mv "$stub/resources.json.off" "$stub/resources.json"
 
 echo "interactive:"
 # Drive the live view through a pseudo-terminal. Display order is alpha,
-# gamma (Agent Incus), then beta, delta (other): start gamma, cross into the
+# gamma (Boxen), then beta, delta (other): start gamma, cross into the
 # other group, and stop beta. Needs util-linux script(1).
 if script -qec true /dev/null >/dev/null 2>&1; then
   rm -f "$stub/count" "$stub/calls"
@@ -146,7 +146,7 @@ if script -qec true /dev/null >/dev/null 2>&1; then
       printf 'j';      sleep 0.3   # beta -> delta
       printf '\033[A'; sleep 1.5   # delta -> beta, let the jobs finish
       printf 'q';      sleep 1
-    } | STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/incs' status" /dev/null
+    } | STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/bxn' status" /dev/null
   ) || true
   assert_eq "space stops running, starts stopped" "$(printf 'stop beta\nstart gamma')" "$(sort -r "$stub/calls" 2>/dev/null)"
   if [[ "$out" == *$'\033[7m\033[32m●\033[39m  beta'* ]]; then hl=yes; else hl=no; fi
@@ -162,13 +162,13 @@ if script -qec true /dev/null >/dev/null 2>&1; then
 
   # --once on a terminal prints the table and never opens the live view.
   rm -f "$stub/count"
-  out=$(STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/incs' status --once" /dev/null </dev/null &
+  out=$(STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/bxn' status --once" /dev/null </dev/null &
     pid=$!
     ( sleep 10; kill "$pid" ) >/dev/null 2>&1 &
     watchdog=$!
     wait "$pid" || true
     kill "$watchdog" 2>/dev/null || true) || true
-  if [[ "$out" == *"Agent Incus instances:"* && "$out" != *$'\033[?1049h'* ]]; then once=yes; else once=no; fi
+  if [[ "$out" == *"Boxen instances:"* && "$out" != *$'\033[?1049h'* ]]; then once=yes; else once=no; fi
   assert_eq "--once on a terminal prints the table only" "yes" "$once"
 
   # More instances than terminal rows: every frame fits the screen, the
@@ -177,7 +177,7 @@ if script -qec true /dev/null >/dev/null 2>&1; then
   mkdir -p "$big"
   cp "$stub/resources.json" "$big/"
   jq -n '[range(0; 30) as $i | {name: ("instance-" + (if $i < 10 then "0" else "" end) + ($i | tostring)),
-    status: "Running", type: "container", expanded_config: {"user.managed-by": "agent-incus"},
+    status: "Running", type: "container", expanded_config: {"user.managed-by": "boxen"},
     state: {pid: (1000 + $i), cpu: {usage: 1}, memory: {usage: 1048576}, disk: {}, network: {}}}]' > "$big/sample1.json"
   cp "$big/sample1.json" "$big/sample2.json"
   # 90 columns shows the table, 120 the list and details side by side.
@@ -191,7 +191,7 @@ if script -qec true /dev/null >/dev/null 2>&1; then
         printf ' ';      sleep 1.5   # stop instance-15
         printf 'q';      sleep 1
       } | STUB="$big" PATH="$stub:$PATH" TERM=xterm \
-        script -qec "stty rows 10 cols $cols; bash '$REPO_ROOT/incs' status" /dev/null
+        script -qec "stty rows 10 cols $cols; bash '$REPO_ROOT/bxn' status" /dev/null
     ) || true
     assert_eq "space acts on the visible selection ($cols cols)" "stop instance-15" "$(cat "$big/calls" 2>/dev/null)"
     # Each frame starts with cursor-home and ends at clear-to-end.
@@ -220,7 +220,7 @@ if script -qec true /dev/null >/dev/null 2>&1; then
   # keys piped in, and prints everything it drew.
   tui() {
     rm -f "$stub/count" "$stub/calls"
-    STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "stty $1; bash '$REPO_ROOT/incs' status" /dev/null
+    STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "stty $1; bash '$REPO_ROOT/bxn' status" /dev/null
   }
   last_frame() { local f=${1##*$'\033[H'}; printf '%s\n' "${f%%$'\033[J'*}"; }
   plain() { sed $'s/\033\\[[0-9;?]*[A-Za-z]//g; s/\r//g'; }
@@ -229,7 +229,7 @@ if script -qec true /dev/null >/dev/null 2>&1; then
   cp "$stub/sample1.json" "$stub/sample2.json"
   out=$({ sleep 1.5; printf 'q'; sleep 1; } | tui "rows 20 cols 120") || true
   frame=$(last_frame "$out" | plain)
-  if [[ "$frame" == *"│ alpha"* && "$frame" == *"Profiles      default, agent-incus"* ]]; then side=yes; else side=no; fi
+  if [[ "$frame" == *"│ alpha"* && "$frame" == *"Profiles      default, boxen"* ]]; then side=yes; else side=no; fi
   assert_eq "a wide terminal shows the details beside the list" "yes" "$side"
   details=$(sed -n 's/.*│ //p' <<<"$frame" | sed 's/ *$//')
   expected_details=$(cat <<'EOF'
@@ -243,7 +243,7 @@ Memory        412.3MiB / 16.0GiB
 Disk          2.1GiB
 IPv4          10.0.0.5, 100.64.0.9
 Image         Ubuntu noble amd64
-Profiles      default, agent-incus
+Profiles      default, boxen
 Created       2026-10-12 14:03
 Last started  2026-10-26 09:12
 EOF
@@ -321,25 +321,25 @@ else
   echo "  skip (needs util-linux script)"
 fi
 
-echo "bare incs:"
-out=$(STUB="$stub" PATH="$stub:$PATH" bash "$REPO_ROOT/incs" </dev/null 2>&1) || true
-if [[ "$out" == "Usage: incs"* ]]; then help=yes; else help=no; fi
+echo "bare bxn:"
+out=$(STUB="$stub" PATH="$stub:$PATH" bash "$REPO_ROOT/bxn" </dev/null 2>&1) || true
+if [[ "$out" == "Usage: bxn"* ]]; then help=yes; else help=no; fi
 assert_eq "off a terminal it prints help" "yes" "$help"
 if script -qec true /dev/null >/dev/null 2>&1; then
   rm -f "$stub/count"
   out=$(
     { sleep 1.5; printf 'q'; sleep 1; } |
-      STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/incs'" /dev/null
+      STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/bxn'" /dev/null
   ) || true
-  if [[ "$out" == *$'\033[?1049h'* && "$out" == *"Agent Incus instances:"* ]]; then live=yes; else live=no; fi
+  if [[ "$out" == *$'\033[?1049h'* && "$out" == *"Boxen instances:"* ]]; then live=yes; else live=no; fi
   assert_eq "on a terminal it opens the live view" "yes" "$live"
 
-  # Without jq the view can't run, so a bare incs prints help instead.
+  # Without jq the view can't run, so a bare bxn prints help instead.
   nojq="$stub/nojq"
   mkdir -p "$nojq"
   for tool in bash sh cat dirname readlink realpath; do ln -sf "$(command -v "$tool")" "$nojq/$tool"; done
-  out=$(PATH="$nojq" SHELL="$nojq/sh" TERM=xterm "$(command -v script)" -qec "bash '$REPO_ROOT/incs'" /dev/null </dev/null) || true
-  if [[ "$out" == *"Usage: incs"* && "$out" != *$'\033[?1049h'* ]]; then help=yes; else help=no; fi
+  out=$(PATH="$nojq" SHELL="$nojq/sh" TERM=xterm "$(command -v script)" -qec "bash '$REPO_ROOT/bxn'" /dev/null </dev/null) || true
+  if [[ "$out" == *"Usage: bxn"* && "$out" != *$'\033[?1049h'* ]]; then help=yes; else help=no; fi
   assert_eq "on a terminal without jq it prints help" "yes" "$help"
 else
   echo "  skip (needs util-linux script)"

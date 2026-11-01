@@ -1,6 +1,6 @@
 #!/bin/bash
-# egress/incs-egress-ctl
-# Runs as root inside an egress container; incs calls it from the host
+# egress/boxen-egress-ctl
+# Runs as root inside an egress container; bxn calls it from the host
 # through `incus exec`. It runs one smokescreen proxy per agent.
 #
 # Each agent's port is a systemd socket that a holder service keeps open and
@@ -25,17 +25,17 @@
 #   boot                             at boot: start each agent's current generation
 set -euo pipefail
 
-ETC=/etc/incs-egress
-LIB=/usr/local/libexec/incs
+ETC=/etc/boxen-egress
+LIB=/usr/local/libexec/boxen
 UNITS=/etc/systemd/system
-ACK_SOCK=/run/incs-egress-ack.sock
+ACK_SOCK=/run/boxen-egress-ack.sock
 MAX_DRAINING=6
 CHECK_PORT=4700
 # Old generations end when their last connection closes, or after this.
 EXIT_TIMEOUT=3h
-PROBE_HOST=incs-probe.invalid
+PROBE_HOST=boxen-probe.invalid
 
-die() { echo "incs-egress-ctl: $*" >&2; exit 1; }
+die() { echo "boxen-egress-ctl: $*" >&2; exit 1; }
 valid_agent() { [[ "$1" =~ ^[a-zA-Z][a-zA-Z0-9-]{0,62}$ ]] || die "bad agent name: $1"; }
 valid_gen() { [[ "$1" =~ ^[0-9]+$ ]] || die "bad generation: $1"; }
 # Lowercase punycode hostnames, a wildcard only as a leading "*.", and a last
@@ -46,22 +46,22 @@ valid_host() {
 
 agent_dir() { echo "$ETC/agents/$1"; }
 gen_dir() { echo "$ETC/agents/$1/gens/$2"; }
-gen_unit() { echo "incs-gen_$1@$2.service"; }
-check_unit() { echo "incs-check_$1@$2.service"; }
-agent_slice() { printf 'incs-agent_%s.slice\n' "$(systemd-escape "$1")"; }
+gen_unit() { echo "boxen-gen_$1@$2.service"; }
+check_unit() { echo "boxen-check_$1@$2.service"; }
+agent_slice() { printf 'boxen-agent_%s.slice\n' "$(systemd-escape "$1")"; }
 current() { cat "$(agent_dir "$1")/current" 2>/dev/null || echo none; }
 set_current() { echo "$2" > "$(agent_dir "$1")/current.new" && mv "$(agent_dir "$1")/current.new" "$(agent_dir "$1")/current"; }
 
 # Generations of an agent that are running, starting or stopping.
 gens_active() {
-  systemctl list-units --plain --no-legend --state=active,activating,deactivating "incs-gen_$1@*.service" 2>/dev/null |
-    awk '{print $1}' | sed -E "s/^incs-gen_$1@([0-9]+)\.service$/\1/" | grep -E '^[0-9]+$' | sort -n || true
+  systemctl list-units --plain --no-legend --state=active,activating,deactivating "boxen-gen_$1@*.service" 2>/dev/null |
+    awk '{print $1}' | sed -E "s/^boxen-gen_$1@([0-9]+)\.service$/\1/" | grep -E '^[0-9]+$' | sort -n || true
 }
 
 journal_cursor() { journalctl -n 0 --show-cursor -o cat --no-pager 2>/dev/null | sed -n 's/^-- cursor: //p'; }
 
 # One change at a time: the check copy's port is shared.
-lock() { exec 9>/run/incs-egress-ctl.lock; flock 9; }
+lock() { exec 9>/run/boxen-egress-ctl.lock; flock 9; }
 
 # smokescreen takes a single resolver.
 cmd_setup() {
@@ -71,9 +71,9 @@ cmd_setup() {
   for r in ${deny//,/ }; do [[ "$r" =~ ^[0-9]+(\.[0-9]+){3}/[0-9]+$ ]] || die "bad deny range: $r"; done
   echo "$resolver" > "$ETC/resolver"
   echo "$deny" > "$ETC/deny-ranges"
-  cat > "$UNITS/incs-egress-ack.socket" <<EOF
+  cat > "$UNITS/boxen-egress-ack.socket" <<EOF
 [Unit]
-Description=incs egress: generations report here when they start accepting
+Description=bxn egress: generations report here when they start accepting
 
 [Socket]
 ListenStream=$ACK_SOCK
@@ -83,9 +83,9 @@ SocketMode=0666
 [Install]
 WantedBy=sockets.target
 EOF
-  cat > "$UNITS/incs-egress-ack@.service" <<'EOF'
+  cat > "$UNITS/boxen-egress-ack@.service" <<'EOF'
 [Unit]
-Description=incs egress: record one generation's ack
+Description=bxn egress: record one generation's ack
 
 [Service]
 ExecStart=/bin/cat
@@ -93,22 +93,22 @@ StandardInput=socket
 StandardOutput=journal
 DynamicUser=yes
 EOF
-  cat > "$UNITS/incs-egress-boot.service" <<'EOF'
+  cat > "$UNITS/boxen-egress-boot.service" <<'EOF'
 [Unit]
-Description=incs egress: start each agent's current proxy generation
+Description=bxn egress: start each agent's current proxy generation
 After=sockets.target network-online.target
 Wants=network-online.target
 
 [Service]
 Type=oneshot
-ExecStart=/usr/local/sbin/incs-egress-ctl boot
+ExecStart=/usr/local/sbin/boxen-egress-ctl boot
 
 [Install]
 WantedBy=multi-user.target
 EOF
   systemctl daemon-reload
-  systemctl enable --now incs-egress-ack.socket >/dev/null 2>&1
-  systemctl enable incs-egress-boot.service >/dev/null 2>&1
+  systemctl enable --now boxen-egress-ack.socket >/dev/null 2>&1
+  systemctl enable boxen-egress-boot.service >/dev/null 2>&1
 }
 
 cmd_add() {
@@ -125,28 +125,28 @@ cmd_add() {
   slice="$(agent_slice "$agent")"
   cat > "$UNITS/$slice" <<EOF
 [Unit]
-Description=incs egress: every proxy generation for $agent
+Description=bxn egress: every proxy generation for $agent
 
 [Slice]
 MemoryMax=512M
 TasksMax=1024
 CPUWeight=100
 EOF
-  cat > "$UNITS/incs-proxy_$agent.socket" <<EOF
+  cat > "$UNITS/boxen-proxy_$agent.socket" <<EOF
 [Unit]
-Description=incs egress: $agent's proxy port
+Description=bxn egress: $agent's proxy port
 
 [Socket]
 ListenStream=0.0.0.0:$port
 Backlog=1024
-Service=incs-hold_$agent.service
+Service=boxen-hold_$agent.service
 
 [Install]
 WantedBy=sockets.target
 EOF
-  cat > "$UNITS/incs-hold_$agent.service" <<EOF
+  cat > "$UNITS/boxen-hold_$agent.service" <<EOF
 [Unit]
-Description=incs egress: keeps $agent's socket open (never accepts)
+Description=bxn egress: keeps $agent's socket open (never accepts)
 
 [Service]
 ExecStart=/bin/sleep infinity
@@ -154,7 +154,7 @@ DynamicUser=yes
 EOF
   local common
   common="EnvironmentFile=-$ETC/agents/$agent/gens/%i/env
-ExecStart=$LIB/incs-proxy-run $agent %i
+ExecStart=$LIB/boxen-proxy-run $agent %i
 Slice=$slice
 DynamicUser=yes
 ProtectSystem=strict
@@ -164,28 +164,28 @@ NoNewPrivileges=yes
 LimitNOFILE=4096
 LogRateLimitIntervalSec=30s
 LogRateLimitBurst=2000"
-  cat > "$UNITS/incs-gen_$agent@.service" <<EOF
+  cat > "$UNITS/boxen-gen_$agent@.service" <<EOF
 [Unit]
-Description=incs egress: $agent's proxy, generation %i
+Description=bxn egress: $agent's proxy, generation %i
 
 [Service]
-Sockets=incs-proxy_$agent.socket
+Sockets=boxen-proxy_$agent.socket
 Environment=EINHORN_MASTER_PID=1 EINHORN_FD_COUNT=1 EINHORN_FD_0=3 EINHORN_SOCK_PATH=$ACK_SOCK
 TimeoutStopSec=3
 $common
 EOF
-  cat > "$UNITS/incs-check_$agent@.service" <<EOF
+  cat > "$UNITS/boxen-check_$agent@.service" <<EOF
 [Unit]
-Description=incs egress: check copy of $agent's proxy, generation %i
+Description=bxn egress: check copy of $agent's proxy, generation %i
 
 [Service]
-Environment=INCS_PROBE_PORT=$CHECK_PORT
+Environment=BOXEN_PROBE_PORT=$CHECK_PORT
 TimeoutStopSec=3
 $common
 EOF
   systemctl daemon-reload
-  systemctl enable --now "incs-proxy_$agent.socket" >/dev/null 2>&1
-  systemctl start "incs-hold_$agent.service"
+  systemctl enable --now "boxen-proxy_$agent.socket" >/dev/null 2>&1
+  systemctl start "boxen-hold_$agent.service"
 }
 
 cmd_gen() {
@@ -207,7 +207,7 @@ cmd_gen() {
     echo "version: v1"
     echo "services: []"
     echo "default:"
-    echo "  project: incs"
+    echo "  project: bxn"
     echo "  action: $action"
     if [[ "$mode" != off ]]; then
       echo "  allowed_domains:"
@@ -225,7 +225,7 @@ cmd_gen() {
       echo "deny_ranges:"
       for r in ${deny//,/ }; do echo "  - \"$r\""; done
     fi
-    echo "deny_message_extra: \"Blocked by the incs allowlist for $agent. On the host: incs egress log $agent\""
+    echo "deny_message_extra: \"Blocked by the bxn allowlist for $agent. On the host: bxn egress log $agent\""
   } > "$d/config.yaml"
   echo "$mode" > "$d/mode"
   echo "$policy" > "$d/policy"
@@ -298,7 +298,7 @@ wait_ack() {
   local u="$1" cur="$2" pid i
   for i in $(seq 1 50); do
     pid="$(systemctl show -p MainPID --value "$u")"
-    if [[ "$pid" != 0 ]] && journalctl -u 'incs-egress-ack@*' --after-cursor="$cur" -o cat --no-pager 2>/dev/null | grep -q "pid: $pid%0A"; then
+    if [[ "$pid" != 0 ]] && journalctl -u 'boxen-egress-ack@*' --after-cursor="$cur" -o cat --no-pager 2>/dev/null | grep -q "pid: $pid%0A"; then
       return 0
     fi
     sleep 0.1
@@ -365,7 +365,7 @@ stop_gens() {
   local agent="$1" g left
   for g in $(gens_active "$agent"); do systemctl stop "$(gen_unit "$agent" "$g")" 2>/dev/null & done
   wait
-  systemctl reset-failed "incs-gen_$agent@*.service" 2>/dev/null || true
+  systemctl reset-failed "boxen-gen_$agent@*.service" 2>/dev/null || true
   left="$(gens_active "$agent" | tr '\n' ' ')"
   [[ -z "${left// /}" ]] || die "$agent: generations still running: $left"
 }
@@ -383,10 +383,10 @@ cmd_remove() {
   valid_agent "$agent"
   [[ -d "$(agent_dir "$agent")" ]] || return 0
   cmd_stop "$agent"
-  systemctl disable --now "incs-proxy_$agent.socket" >/dev/null 2>&1 || true
-  systemctl stop "incs-hold_$agent.service" 2>/dev/null || true
-  rm -f "$UNITS/$(agent_slice "$agent")" "$UNITS/incs-proxy_$agent.socket" "$UNITS/incs-hold_$agent.service" \
-    "$UNITS/incs-gen_$agent@.service" "$UNITS/incs-check_$agent@.service"
+  systemctl disable --now "boxen-proxy_$agent.socket" >/dev/null 2>&1 || true
+  systemctl stop "boxen-hold_$agent.service" 2>/dev/null || true
+  rm -f "$UNITS/$(agent_slice "$agent")" "$UNITS/boxen-proxy_$agent.socket" "$UNITS/boxen-hold_$agent.service" \
+    "$UNITS/boxen-gen_$agent@.service" "$UNITS/boxen-check_$agent@.service"
   systemctl daemon-reload
   rm -rf "$(agent_dir "$agent")"
 }
@@ -424,7 +424,7 @@ cmd_log() {
   local agent="$1" since="${2:--1h}"
   valid_agent "$agent"
   [[ "$since" =~ ^[-+0-9a-zA-Z:\ ]+$ ]] || die "bad --since: $since"
-  journalctl -u "incs-gen_$agent@*.service" --since "$since" -o json --no-pager 2>/dev/null |
+  journalctl -u "boxen-gen_$agent@*.service" --since "$since" -o json --no-pager 2>/dev/null |
     jq -r --arg probe "$PROBE_HOST" '
       (._SYSTEMD_UNIT | capture("@(?<g>[0-9]+)\\.service$").g // "-") as $gen
       | (.MESSAGE | strings | select(contains("CANONICAL-PROXY-DECISION"))
@@ -448,13 +448,13 @@ cmd_boot() {
   for agent in $(ls "$ETC/agents" 2>/dev/null || true); do
     cur="$(current "$agent")"
     [[ "$cur" == none ]] && continue
-    systemctl start "incs-hold_$agent.service" || true
+    systemctl start "boxen-hold_$agent.service" || true
     systemctl start "$(gen_unit "$agent" "$cur")" || echo "boot: $agent generation $cur didn't start" >&2
   done
 }
 
 c="${1:-}"
-[[ -n "$c" ]] || die "usage: incs-egress-ctl <command> [args]"
+[[ -n "$c" ]] || die "usage: boxen-egress-ctl <command> [args]"
 shift
 case "$c" in
   setup) [[ $# -eq 2 ]] || die "usage: setup <resolver> <deny-ranges>"; cmd_setup "$@" ;;

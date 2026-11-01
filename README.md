@@ -1,4 +1,4 @@
-# AgentIncus
+# Boxen
 
 A set of shell scripts that automate the creation of [Incus](https://linuxcontainers.org/incus/) containers and VMs for coding agents, including Claude Code, Codex, and Grok Build. See COI's [Why Incus](https://github.com/mensfeld/code-on-incus?tab=readme-ov-file#why-incus-over-docker) for why Incus over Docker.
 
@@ -10,8 +10,8 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 - [Install](#install)
 - [Quick Start](#quick-start)
 - [Scripts](#scripts)
-- [incus.init Options](#incusinit-options)
-  - [What incus.init does](#what-incusinit-does)
+- [boxen.init Options](#boxeninit-options)
+  - [What boxen.init does](#what-boxeninit-does)
   - [Coding Agents](#coding-agents)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
@@ -30,15 +30,15 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 ## Prerequisites
 
 - **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
-- **macOS**: [Homebrew](https://brew.sh/) installed — `incus.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
+- **macOS**: [Homebrew](https://brew.sh/) installed — `boxen.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
 - `~/.local/bin` in your `PATH`
-- `jq` — only for `incs status` (preinstalled on macOS 15+; `sudo apt install jq` on Ubuntu)
+- `jq` — only for `bxn status` (preinstalled on macOS 15+; `sudo apt install jq` on Ubuntu)
 
 ## Install
 
 ```bash
-git clone <repo-url> agent_incus
-cd agent_incus
+git clone <repo-url> boxen
+cd boxen
 ./install_shortcuts
 ```
 
@@ -49,70 +49,67 @@ It then offers to install [Chadmux](https://github.com/chadfennell/chadmux), Cha
 ## Quick Start
 
 ```bash
-# Create a container with a copy of the current directory in /workspace.
-# Choose an agent; all three share the same instance setup
-incs -i my-project --agent claude
-# Or: incs -i my-project --agent codex
-# Or: incs -i my-project --agent grok
+# Create a container with a copy of the current directory in /workspace and
+# one coding agent. It's named HANDLE-AGENT-PROJECT, here chad-claude-my-project.
+bxn -i my-project --agent claude
+# Or: --agent codex, --agent grok, or --agent shell for none
 
-# Open a shell
-incs my-project
+# Open a shell: the project alone finds it
+bxn my-project
 
-# Start the selected agent
-incs my-project claude
-# Or: incs my-project codex
-# Or: incs my-project grok
+# Start the agent
+bxn my-project claude
 ```
 
 ## Scripts
 
 | Script | Alias | Purpose |
 |---|---|---|
-| `incs` | — | Unified CLI (shell, init, network, update, status) |
-| `incus.init` | `inci` | Create and provision a container |
-| `incus.shell` | — | Open a login shell (or run a command) in a container |
-| `incus.network` | `incn` | Manage port proxy devices |
-| `incus.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `incus.init`) |
-| `incs.new-plugin` | — | Scaffold a new plugin file from a template (also `incs new-plugin`) |
+| `bxn` | — | Unified CLI (shell, init, network, update, status) |
+| `boxen.init` | `bxni` | Create and provision a container |
+| `boxen.shell` | — | Open a login shell (or run a command) in a container |
+| `boxen.network` | `bxnn` | Manage port proxy devices |
+| `boxen.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `boxen.init`) |
+| `bxn.new-plugin` | — | Scaffold a new plugin file from a template (also `bxn new-plugin`) |
 | `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin`; optionally install Chadmux on the host |
 | `chadmux.host` | — | Install Chadmux on the host (called by `install_shortcuts`) |
 
-### incs — Unified CLI
+### bxn — Unified CLI
 
-`incs` is the main entrypoint. It routes to the underlying scripts:
+`bxn` is the main entrypoint. It routes to the underlying scripts:
 
 ```bash
-incs my-project                        # Shell into container (default)
-incs -s my-project                     # Shell (explicit)
-incs -s my-project mix test            # Run a command in container
-incs -s my-project "mix test | tail"   # One quoted string runs as a shell line
-incs -i my-project                     # Create a new container
-incs -i my-project --from base-dev     # Create from template
-incs -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
-incs -n my-project 4000:8080           # Host 4000 -> container 8080
-incs -n my-project -b 10.0.0.5 4000   # Proxy on a specific address (e.g. Tailscale IP for remote access)
-incs -n my-project -l                  # List active proxies
-incs -n my-project -r 4000            # Remove proxy for port 4000
-incs -n my-project -r all             # Remove all proxies
-incs -u my-project                     # Update packages in a container
-incs -ua                               # Update all agent-incus containers
-incs                                   # Live view of all instances (same as incs status)
-incs status                            # Live view of all instances; space starts/stops one, D deletes it (asks first)
-incs status --once                     # Print the status table once
-incs -d my-project                     # Delete a container
-incs cron install                      # Install 7pm daily update cron
-incs cron install 3                    # Install 3am daily update cron
-incs cron status                       # Show current cron schedule
-incs cron remove                       # Remove the update cron
+bxn my-project                        # Shell into container (default)
+bxn -s my-project                     # Shell (explicit)
+bxn -s my-project mix test            # Run a command in container
+bxn -s my-project "mix test | tail"   # One quoted string runs as a shell line
+bxn -i my-project                     # Create a new container
+bxn -i my-project --from base-dev     # Create from template
+bxn -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
+bxn -n my-project 4000:8080           # Host 4000 -> container 8080
+bxn -n my-project -b 10.0.0.5 4000   # Proxy on a specific address (e.g. Tailscale IP for remote access)
+bxn -n my-project -l                  # List active proxies
+bxn -n my-project -r 4000            # Remove proxy for port 4000
+bxn -n my-project -r all             # Remove all proxies
+bxn -u my-project                     # Update packages in a container
+bxn -ua                               # Update all boxen containers
+bxn                                   # Live view of all instances (same as bxn status)
+bxn status                            # Live view of all instances; space starts/stops one, D deletes it (asks first)
+bxn status --once                     # Print the status table once
+bxn -d my-project                     # Delete a container
+bxn cron install                      # Install 7pm daily update cron
+bxn cron install 3                    # Install 3am daily update cron
+bxn cron status                       # Show current cron schedule
+bxn cron remove                       # Remove the update cron
 ```
 
-The individual scripts and aliases (`inci`, `incn`) still work directly.
+The individual scripts and aliases (`bxni`, `bxnn`) still work directly.
 
-`incs status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `incus.init` appear first under "Agent Incus instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the host's total memory, and disk against the root disk size when one is set.
+`bxn status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `boxen.init` appear first under "Boxen instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the host's total memory, and disk against the root disk size when one is set.
 
-![incs status live view grouping Agent Incus instances, with one row highlighted and state, type, CPU, memory, disk, and IPv4 columns](.github/images/incs-status.png)
+![bxn status live view grouping Boxen instances, with one row highlighted and state, type, CPU, memory, disk, and IPv4 columns](.github/images/boxen-status.png)
 
-In a terminal, `incs status` is a live view that refreshes every second. On a terminal at least 100 columns wide it has two panels: the instances on the left, with name, CPU, and memory, and the highlighted instance's details on the right. The details add the image, profiles, and when the instance was created and last started. A narrower terminal shows the table, and `Enter` opens the details full screen.
+In a terminal, `bxn status` is a live view that refreshes every second. On a terminal at least 100 columns wide it has two panels: the instances on the left, with name, CPU, and memory, and the highlighted instance's details on the right. The details add the image, profiles, and when the instance was created and last started. A narrower terminal shows the table, and `Enter` opens the details full screen.
 
 | Key | Action |
 |---|---|
@@ -120,16 +117,16 @@ In a terminal, `incs status` is a live view that refreshes every second. On a te
 | `Tab` | Move the keys between the list and the details |
 | `Enter` | Give the keys to the details; on a narrow terminal, open them full screen |
 | `space` | Stop the highlighted instance if it is running, otherwise start it |
-| `D` | Delete the highlighted instance, after a `y`/`n` question; any other key cancels. Instances incs didn't create and the egress container are refused |
+| `D` | Delete the highlighted instance, after a `y`/`n` question; any other key cancels. Instances bxn didn't create and the egress container are refused |
 | `Esc` | Back to the list from the details, otherwise quit |
 | `q` | Quit |
 
-Start, stop and delete run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. `incs` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `incs -s status`.
+Start, stop and delete run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. `bxn` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `bxn -s status`.
 
-## incus.init Options
+## boxen.init Options
 
 ```
-Usage: incus.init [OPTIONS] <container-name>
+Usage: boxen.init [OPTIONS] <project>
 
 Options:
   -p, --path PATH           Host directory to copy in (default: current directory)
@@ -138,12 +135,13 @@ Options:
   -i, --image IMAGE         Base image override (default: ubuntu/24.04)
   -t, --template            Save container as a reusable local template (empty workspace)
   --<plugin>                Pre-select a plugin (e.g. --1pass, --gh-token)
-  --agent NAME              Select a coding agent (claude, codex, grok; repeatable)
+  --agent NAME              The coding agent: claude, codex, grok, or shell for none
+  --name NAME               Use NAME exactly, instead of HANDLE-AGENT-PROJECT
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 Start with an empty workspace instead of copying the host directory
   --insecure-network        Use the default bridge: no isolation from other instances or the host
   --egress MODE             Internet allowlist: enforce (default), report or off
-  --egress-container NAME   Run the container's proxy in incs-egress-NAME
+  --egress-container NAME   Run the container's proxy in boxen-egress-NAME
   --vm-disk SIZE            VM root disk size (default: 20GiB)
   --vm-memory SIZE          VM memory (default: 4GiB)
   --vm-cpus N               VM vCPUs (default: 4)
@@ -153,14 +151,14 @@ Options:
   --dry-run                 Show what would be done without doing it
 ```
 
-### What incus.init does
+### What boxen.init does
 
-1. Launches an Ubuntu 24.04 container (override with `--image`) with the `agent-incus` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits. It joins the `incsbr0` bridge, isolated from other instances and the host (see [Network Isolation](#network-isolation))
+1. Launches an Ubuntu 24.04 container (override with `--image`) with the `boxen` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits. It joins the `boxenbr0` bridge, isolated from other instances and the host (see [Network Isolation](#network-isolation))
 2. Installs build tools, dev libraries, Python, and Node.js
-3. Creates a user matching your host UID/GID (no sudo by default; use `incs shell --with-sudo` for interactive sessions)
+3. Creates a user matching your host UID/GID (no sudo by default; use `bxn shell --with-sudo` for interactive sessions), with your git identity: the `user.name` and `user.email` git would use in the folder you're copying, so a repository's own identity or an `includeIf` for its path (a work email for `~/work`) carries over, else your global one. With none on the host it asks; a template carries no one's
 4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
 5. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
-6. Presents an interactive TUI to select optional plugins (see below)
+6. Presents a picker for the coding agent, then one for optional plugins (see below)
 
 ### Default Packages
 
@@ -177,14 +175,32 @@ Every container is provisioned with the following packages before any optional p
 
 ### Coding Agents
 
-Select agents in the plugin picker or pass `--agent NAME`. Repeat the flag to
-install more than one in the same instance:
+A container has one coding agent, or none: agents sharing one copy of the
+code would work over each other. Pick it in the agent picker, which comes
+before the plugin picker and starts on "Shell (no agent)", or pass
+`--agent NAME` (`--agent shell` for none). Choosing two is refused.
 
 ```bash
-incs -i project --agent claude --agent codex --agent grok
-incs -i project-agent --agent codex
-incs -i --from project-base project-grok --agent grok
+bxn -i web --agent claude          # chad-claude-web
+bxn -i web --agent claude          # chad-claude-web-1, a second agent on its own copy
+bxn -i web --agent codex           # chad-codex-web
+bxn -i web --agent shell           # chad-shell-web, for tests, git and servers
+bxn -i --from web-base web --agent grok
 ```
+
+**Names.** A container is named `HANDLE-AGENT-PROJECT`. Your handle is asked
+for once, the first time you create one (it defaults to your login name), and
+kept in `~/.config/boxen/handle`. `bxn handle` shows it, and `bxn handle NEW`
+changes it for new containers. When the name is taken, the new container is
+numbered: `-1`, then `-2`. `--name NAME` uses a name exactly, and a template
+(`-t`) keeps the name you give it, since it becomes the image `incus-init/NAME`.
+
+Every container is labelled `user.boxen=1`, with `user.boxen.handle`,
+`user.boxen.agent` and `user.boxen.project`, so `incus list user.boxen=1` lists
+them. Commands that take a container accept the project alone, or
+`AGENT-PROJECT`, when that finds exactly one of yours: `bxn web`,
+`bxn -n claude-web 3000`, `bxn egress log codex-web`. With several, they list
+them and ask you to name one.
 
 | Agent | Selection | Command inside the instance |
 |---|---|---|
@@ -194,15 +210,16 @@ incs -i --from project-base project-grok --agent grok
 
 Here, the `grokbot` alias selects xAI's local **Grok Build** coding CLI. xAI's
 cloud **Grok Bot** service is a separate product and is not installed in Incus.
-`--agent grokbot` is accepted too. No coding agent is selected by default.
+`--agent grokbot` is accepted too. With `--no-tui` and no agent named, the
+container is a shell (no agent).
 
 Agent installers never rely on sudo inside the instance: system dependencies
 are provisioned from the host, and agent executables are installed for the instance user. The
 completion summary prints launch commands for each selected agent that installed
 successfully. Sign in inside the instance using the agent's own login flow; for
-headless Grok login, run `incs project-grok 'grok login --device-auth'`.
+headless Grok login, run `bxn project-grok 'grok login --device-auth'`.
 
-For shell scripts, set `INCS_CONTAINER` to a default instance for `incus.shell`.
+For shell scripts, set `BOXEN_CONTAINER` to a default instance for `boxen.shell`.
 Explicit instance arguments take precedence. `CLAUDE_CONTAINER` remains a
 fallback for existing scripts.
 
@@ -215,7 +232,7 @@ native discovery. `CLAUDE.md` imports the same shared instructions.
 The TUI lets you pick from optional plugins during container creation. Plugins are standalone scripts that the TUI discovers automatically from two locations:
 
 - **Built-in:** `plugins/` (in this repo)
-- **User:** `~/.local/share/agent_incus/plugins/` (or `$XDG_DATA_HOME/agent_incus/plugins/`)
+- **User:** `~/.local/share/boxen/plugins/` (or `$XDG_DATA_HOME/boxen/plugins/`)
 
 Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrides the built-in. The TUI and install order are sorted A-Z by plugin name.
 
@@ -232,7 +249,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
 | [Docker](https://www.docker.com/) | Container runtime & compose. Off by default: the `docker` group is root inside the container (`--docker`) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
-| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
+| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials (the git identity is set for every container, with or without it) |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
 | [Matt Pocock Skills](https://github.com/mattpocock/skills) | Engineering and productivity skills for Claude Code, Codex, and Grok |
@@ -258,12 +275,12 @@ MixTape Skills is opt-in too (`--mixtape-skills`). It clones the repository's `m
 Fastest path — generate a stub:
 
 ```bash
-incs new-plugin my-tool
+bxn new-plugin my-tool
 ```
 
-This writes `~/.local/share/agent_incus/plugins/50-my-tool.sh` and opens it in `$EDITOR`. Use `--builtin` to write to the in-repo `plugins/` dir instead. See `incs new-plugin --help` for all options.
+This writes `~/.local/share/boxen/plugins/50-my-tool.sh` and opens it in `$EDITOR`. Use `--builtin` to write to the in-repo `plugins/` dir instead. See `bxn new-plugin --help` for all options.
 
-Or write one by hand. Drop a `.sh` file in either `plugins/` (built-in, in-tree) or `~/.local/share/agent_incus/plugins/` (user-local, survives reinstall). Each file defines a simple contract:
+Or write one by hand. Drop a `.sh` file in either `plugins/` (built-in, in-tree) or `~/.local/share/boxen/plugins/` (user-local, survives reinstall). Each file defines a simple contract:
 
 ```bash
 # 50-my-tool.sh
@@ -295,18 +312,18 @@ Optional extras:
 
 #### How discovery works
 
-Plugin files are sourced in a **separate bash process** to safely extract metadata without executing install logic. The metadata (ID, name, description, default, CLI flags) is stashed into parallel arrays that the TUI and arg parser use. Both `plugins/` and `~/.local/share/agent_incus/plugins/` are scanned; entries are then sorted A-Z by `PLUGIN_NAME` (case-insensitive), which drives both TUI display order and install order. During install, each plugin file is sourced into the main process so its functions have access to globals like `$CONTAINER_NAME` and `$HOST_USER`.
+Plugin files are sourced in a **separate bash process** to safely extract metadata without executing install logic. The metadata (ID, name, description, default, CLI flags) is stashed into parallel arrays that the TUI and arg parser use. Both `plugins/` and `~/.local/share/boxen/plugins/` are scanned; entries are then sorted A-Z by `PLUGIN_NAME` (case-insensitive), which drives both TUI display order and install order. During install, each plugin file is sourced into the main process so its functions have access to globals like `$CONTAINER_NAME` and `$HOST_USER`.
 
 ## The Development Workflow
 
 Each container gets its own copy of the directory you create it from, `.git` and uncommitted work included. Nothing on the host is mounted into it, so the container can do what it likes to its copy and the host only sees work that leaves through git (see [Getting work out](#getting-work-out)).
 
-Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container as the boundary. Use `incs shell --with-sudo` when you need to install packages interactively:
+Containers have no sudo by default, which takes away an AI agent's easiest route to root. It does not rule escalation out. The Docker plugin (`--docker`, off by default) puts the user in the `docker` group, which is as good as root inside the container. And anything running as your user can edit your shell startup files, which a later `--with-sudo` session will run. Treat the container as the boundary. Use `bxn shell --with-sudo` when you need to install packages interactively:
 
 ```mermaid
 graph LR
-    H["Host checkout"] -- "copied at incs -i" --> A["Agent container"]
-    H -- "copied at incs -i" --> D["Dev container"]
+    H["Host checkout"] -- "copied at bxn -i" --> A["Agent container"]
+    H -- "copied at bxn -i" --> D["Dev container"]
     A -- "git push" --> R["Git remote"]
     D -- "git push" --> R
     R -- "git fetch" --> H
@@ -314,17 +331,17 @@ graph LR
 
 ```bash
 # Agent container — no credentials
-incs -i project-agent
+bxn -i project --agent claude                      # chad-claude-project
 
 # Dev container — with credentials
-incs -i --1pass --gh-token project-dev
+bxn -i project --agent shell --1pass --gh-token    # chad-shell-project
 
 # Shell in with temporary sudo to install something
-incs shell --with-sudo project-dev
+bxn shell --with-sudo shell-project
 
 # Save as reusable template, then spin up new containers instantly
-incs -i --template project-base
-incs -i --from project-base project-agent-2
+bxn -i --template project-base
+bxn -i --from project-base project --agent claude  # chad-claude-project-1
 ```
 
 Each container works on its own copy. Work moves between containers, and back to the host, through git.
@@ -340,7 +357,7 @@ git diff main..origin/<branch>
 
 A fetch brings commits, never the container's git config or hooks. The commits can still change anything in the tree, including `package.json` scripts, `Makefile`s, `.envrc`, `.vscode/tasks.json` and hook managers like husky, so read the diff before you run it.
 
-The copy lives only in the container. Deleting the container (`incs -d`) deletes any work you haven't pushed.
+The copy lives only in the container. Deleting the container (`bxn -d`) deletes any work you haven't pushed.
 
 ### Daily Flow with tmux
 
@@ -349,19 +366,19 @@ This is the full flow we use day to day: tmux runs on the host with [Chadmux](ht
 ```bash
 tmux new -s project                     # One session per project, on the host
 
-incs -i project-agent --agent claude   # First time only
-incs -i --1pass --gh-token project-dev
+bxn -i project --agent claude         # First time only: chad-claude-project
+bxn -i project --agent shell --1pass --gh-token   # chad-shell-project
 
-incs project-agent                      # Pane 1: the agent container
+bxn claude-project                     # Pane 1: the agent container
 claude                                  #   ...then start the agent inside it
 # prefix + %  (split), then:
-incs project-dev                        # Pane 2: the dev container (tests, git, servers)
+bxn shell-project                      # Pane 2: the dev container (tests, git, servers)
 # prefix + "  (split), then:
-incs -n project-dev 4000                # Pane 3 on the host: proxy the dev server to localhost:4000
-incs status                             #   ...and check CPU, memory, and disk; space starts/stops
+bxn -n shell-project 4000              # Pane 3 on the host: proxy the dev server to localhost:4000
+bxn status                             #   ...and check CPU, memory, and disk; space starts/stops
 ```
 
-Leave tmux with prefix + `d`; containers keep running. Come back with `tmux attach -t project`, and stop everything at the end of the day with `incs -ka`.
+Leave tmux with prefix + `d`; containers keep running. Come back with `tmux attach -t project`, and stop everything at the end of the day with `bxn -ka`.
 
 **Chadmux keys.** The prefix is **Ctrl-s**: press it, release, then press the key.
 
@@ -391,7 +408,7 @@ Provisioning a container from scratch installs packages, build tools, mise, Oh M
 **Build once:**
 
 ```bash
-incs -i --template my-base
+bxn -i --template my-base
 ```
 
 This provisions the container (with an empty workspace) and saves it locally as `incus-init/my-base`. Before publishing it removes:
@@ -405,10 +422,10 @@ Anything else stays in the image, including logins made during the build (for ex
 
 ```bash
 # Spin up a new container from the base image — seconds, not minutes
-incs -i --from my-base my-project
+bxn -i --from my-base my-project
 
 # Same base, different credentials
-incs -i --from my-base --1pass --gh-token my-dev
+bxn -i --from my-base --1pass --gh-token my-dev
 ```
 
 When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only the workspace copy, user creation (if needed), and selected plugins run.
@@ -428,9 +445,9 @@ system container. Everything else — provisioning, plugins, user, shell — is
 identical; only the workspace model and resources differ.
 
 ```bash
-incs -i --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
-incs -i --vm --no-copy my-vm                # VM with an empty /workspace
-incs -i --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
+bxn -i --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
+bxn -i --vm --no-copy my-vm                # VM with an empty /workspace
+bxn -i --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
 ```
 
 **Workspace:** the same as a container: your working tree is copied in
@@ -447,8 +464,8 @@ native `/dev/net/tun` instead of a device passthrough.
 are VMs automatically, because a published VM image can only launch as a VM.
 
 ```bash
-incs -i --vm --template my-vm-base          # publishes a VM-type template
-incs -i --from my-vm-base my-vm             # launches as a VM; --vm is inferred
+bxn -i --vm --template my-vm-base          # publishes a VM-type template
+bxn -i --from my-vm-base my-vm             # launches as a VM; --vm is inferred
 ```
 
 Adding `--vm` to a launch from a container template fails early with a clear
@@ -456,7 +473,7 @@ image-type message rather than a cryptic Incus error. The `--vm-*` resource
 options apply to a VM launched from a template too.
 
 > Requires a host that can run VMs (KVM / `/dev/kvm`). On macOS this is the
-> Colima VM that `incus.init` bootstraps.
+> Colima VM that `boxen.init` bootstraps.
 
 
 ### Tailscale
@@ -470,7 +487,7 @@ There are two ways to set it up. The plugin is the recommended one.
 **Option 1: Tailscale inside the container (plugin).** Pick the Tailscale plugin in the TUI or pass `--tailscale`. The container joins the tailnet as its own machine, named after the container:
 
 ```bash
-incs -i --tailscale project-dev
+bxn -i --tailscale project-dev
 ```
 
 During creation you're asked for two things:
@@ -485,18 +502,18 @@ If you gave an auth key, the plugin prints the machine's HTTPS URL when it finis
 If you skipped the auth key, join later with:
 
 ```bash
-incs shell --with-sudo project-dev "sudo tailscale up --operator=$USER"
+bxn shell --with-sudo project-dev "sudo tailscale up --operator=$USER"
 ```
 
-**Under the [egress allowlist](#egress-allowlist)** (the default for new containers), Tailscale relays through the container's proxy, and `*.tailscale.com` is on its list. The agent isn't Tailscale's operator, so it can't turn on an exit node (a way around the allowlist) or Funnel. Join as root from the host instead (`incus exec project-dev -- tailscale up --hostname=project-dev`), and change served ports from the host with `incs serve`:
+**Under the [egress allowlist](#egress-allowlist)** (the default for new containers), Tailscale relays through the container's proxy, and `*.tailscale.com` is on its list. The agent isn't Tailscale's operator, so it can't turn on an exit node (a way around the allowlist) or Funnel. Join as root from the host instead (`incus exec chad-shell-project-dev -- tailscale up --hostname=chad-shell-project-dev`, with the container's full name), and change served ports from the host with `bxn serve`:
 
 ```bash
-incs serve project-dev            # list the mappings
-incs serve project-dev 443:5173   # tailnet https :443 -> the app on 5173
-incs serve project-dev --off 443  # remove one
+bxn serve project-dev            # list the mappings
+bxn serve project-dev 443:5173   # tailnet https :443 -> the app on 5173
+bxn serve project-dev --off 443  # remove one
 ```
 
-Give the container's tag no tailnet privileges: no outbound grants, exit nodes or Funnel. Any process in the container can reach whatever devices the tag is allowed to reach, and incs can't check the policy. Containers with Tailscale aren't confined against a determined agent: with `*.tailscale.com` allowed, a script could start its own Tailscale and join someone else's tailnet. `incs egress ls` marks them.
+Give the container's tag no tailnet privileges: no outbound grants, exit nodes or Funnel. Any process in the container can reach whatever devices the tag is allowed to reach, and bxn can't check the policy. Containers with Tailscale aren't confined against a determined agent: with `*.tailscale.com` allowed, a script could start its own Tailscale and join someone else's tailnet. `bxn egress ls` marks them.
 
 To add or change served ports after the fact, run `tailscale serve` inside the container (no sudo needed, since your user is the Tailscale operator):
 
@@ -530,11 +547,11 @@ So Supabase Studio is at `https://project-dev.<tailnet>.ts.net:5433/`, and so on
 
 **Templates.** The Tailscale plugin re-runs when you launch from a template, so each new container joins as its own machine. The template itself holds no node key: `--template` moves `/var/lib/tailscale` (the node key and any `tailscale serve` certificates) out of the container while the image is published, then puts it back. Serve mappings are stored by Tailscale and survive restarts. The Supabase preset re-applies on every launch too, so a template built with it keeps working.
 
-**Option 2: Tailscale on the host.** If the host machine is already on your tailnet and you don't want the container joining separately, proxy the port to the host with `incs -n` and let the host's Tailscale serve it:
+**Option 2: Tailscale on the host.** If the host machine is already on your tailnet and you don't want the container joining separately, proxy the port to the host with `bxn -n` and let the host's Tailscale serve it:
 
 ```bash
 # Forward host:4000 -> container:4000
-incs -n project-dev 4000:4000
+bxn -n project-dev 4000:4000
 
 # On the host, terminate TLS with the tailnet cert and proxy to the local port
 tailscale serve --bg --https=443 http://127.0.0.1:4000
@@ -550,19 +567,19 @@ To access a service running inside a container from your host:
 
 ```bash
 # Proxy one or more ports to localhost
-incs -n project-dev 4000 3241
+bxn -n project-dev 4000 3241
 
 # Map different host and container ports
-incs -n project-dev 4000:8080
+bxn -n project-dev 4000:8080
 
 # Proxy to a specific address (e.g. Tailscale IP)
-incs -n project-dev -b 100.69.177.88 4000
+bxn -n project-dev -b 100.69.177.88 4000
 
 # List active proxies
-incs -n project-dev -l
+bxn -n project-dev -l
 
 # Remove a proxy
-incs -n project-dev -r 4000
+bxn -n project-dev -r 4000
 ```
 
 Or use the container/VM IP directly — find it with `incus list` (Linux) or `colima list` (macOS). On macOS, the Colima VM IP (e.g. `192.168.64.6`) is a private address only accessible from your Mac.
@@ -593,29 +610,29 @@ npm run dev -- --host 0.0.0.0
 
 ### Updating Containers
 
-Containers don't have sudo by default (use `incs shell --with-sudo` for one-off installs), so package updates run from the host via `incus exec`:
+Containers don't have sudo by default (use `bxn shell --with-sudo` for one-off installs), so package updates run from the host via `incus exec`:
 
 ```bash
 # Update a single container
-incs -u my-project
+bxn -u my-project
 
-# Update all agent-incus managed containers
-incs -ua
+# Update all boxen managed containers
+bxn -ua
 ```
 
-`incs -ua` starts stopped containers, updates them, then stops them again. Containers that were already running are left running. Only containers tagged with `user.managed-by=agent-incus` (set automatically during `incs -i`) are updated. Non-Debian containers are skipped.
+`bxn -ua` starts stopped containers, updates them, then stops them again. Containers that were already running are left running. Only containers tagged with `user.managed-by=boxen` (set automatically during `bxn -i`) are updated. Non-Debian containers are skipped.
 
-Logs are written to `~/.local/state/incs/logs/` and cleaned up on success.
+Logs are written to `~/.local/state/boxen/logs/` and cleaned up on success.
 
 #### Scheduled Updates
 
 Install a daily cron to update all containers automatically:
 
 ```bash
-incs cron install         # Daily at 7pm (default)
-incs cron install 3       # Daily at 3am
-incs cron status          # Show current schedule
-incs cron remove          # Remove the cron
+bxn cron install         # Daily at 7pm (default)
+bxn cron install 3       # Daily at 3am
+bxn cron status          # Show current schedule
+bxn cron remove          # Remove the cron
 ```
 
 #### Failure Notifications
@@ -623,14 +640,14 @@ incs cron remove          # Remove the cron
 If an update fails, you'll see a notification the next time you open a terminal:
 
 ```
-⚠️  incs update failed (2026-04-11 19:00): avex mix-claude
-   Run 'ls ~/.local/state/incs/logs/' to see logs
+⚠️  bxn update failed (2026-04-11 19:00): avex mix-claude
+   Run 'ls ~/.local/state/boxen/logs/' to see logs
 ```
 
 To enable this, add the notification hook to your shell:
 
 ```bash
-incs notify-snippet >> ~/.zshrc
+bxn notify-snippet >> ~/.zshrc
 ```
 
 ### Snapshots
@@ -645,16 +662,16 @@ incus info project-dev   # list snapshots
 
 ### Network Isolation
 
-New containers and VMs join `incsbr0`, a bridge incs creates on first use with the `incs-net` profile and the `incs-base` rules:
+New containers and VMs join `boxenbr0`, a bridge bxn creates on first use with the `boxen-net` profile and the `boxen-base` rules:
 
 - Instances can't reach each other, services on the host, or private and LAN addresses (including tailnet and cloud metadata ranges). Rejected connections fail at once rather than hanging.
-- The internet stays open, and the host can reach every instance: a dev server opens at the instance's IP, and `incs -n` port forwarding works as before.
+- The internet stays open, and the host can reach every instance: a dev server opens at the instance's IP, and `bxn -n` port forwarding works as before.
 - No instance can take another's IP or MAC address.
-- The bridge serves no DNS. DHCP hands out public resolvers instead (`1.1.1.1` and `9.9.9.9`; set `INCS_RESOLVERS` to change them before the bridge is created).
+- The bridge serves no DNS. DHCP hands out public resolvers instead (`1.1.1.1` and `9.9.9.9`; set `BOXEN_RESOLVERS` to change them before the bridge is created).
 - IPv6 is off on the bridge.
-- incs assigns each instance its address, recorded on the instance's `eth0`.
+- bxn assigns each instance its address, recorded on the instance's `eth0`.
 
-It needs Incus 7.5.1 or later with the nftables firewall. On an older Incus, `incs -i` refuses and explains. `--insecure-network` (or `INCS_INSECURE_NETWORK=1`) puts an instance on the default bridge with no isolation instead. The bridge's subnet is a free `10.x.0.0/16`; set `INCS_NET_SUBNET` (for example `10.201.0.1/16`) before the first `incs -i` to choose it.
+It needs Incus 7.5.1 or later with the nftables firewall. On an older Incus, `bxn -i` refuses and explains. `--insecure-network` (or `BOXEN_INSECURE_NETWORK=1`) puts an instance on the default bridge with no isolation instead. The bridge's subnet is a free `10.x.0.0/16`; set `BOXEN_NET_SUBNET` (for example `10.201.0.1/16`) before the first `bxn -i` to choose it.
 
 Instances created before this keep the default bridge. What changes for new ones:
 
@@ -663,27 +680,27 @@ Instances created before this keep the default bridge. What changes for new ones
 
 ### Egress Allowlist
 
-`incs egress` limits which internet hosts a container on `incsbr0` can reach. Its traffic goes through its own [smokescreen](https://github.com/stripe/smokescreen) proxy in an egress container (`incs-egress`), and its network card lets it reach nothing but that proxy. Nothing is decrypted: the proxy sees only the hostname each connection asks for.
+`bxn egress` limits which internet hosts a container on `boxenbr0` can reach. Its traffic goes through its own [smokescreen](https://github.com/stripe/smokescreen) proxy in an egress container (`boxen-egress`), and its network card lets it reach nothing but that proxy. Nothing is decrypted: the proxy sees only the hostname each connection asks for.
 
 ```bash
-incs egress mode my-project enforce      # only listed hosts (restarts it the first time)
-incs egress log my-project               # what it tried to reach, blocked first
-incs egress allow my-project docs.rs     # open connections keep running
-incs egress rm my-project docs.rs        # its open connections through the proxy end
-incs egress mode my-project report       # allow all public web traffic, log what enforce would block
-incs egress mode my-project off          # no allowlist
-incs egress ls [my-project]              # modes, proxies, and where each host comes from
-incs egress refresh [my-project|--all]   # finish an interrupted change, review a baseline update
+bxn egress mode my-project enforce      # only listed hosts (restarts it the first time)
+bxn egress log my-project               # what it tried to reach, blocked first
+bxn egress allow my-project docs.rs     # open connections keep running
+bxn egress rm my-project docs.rs        # its open connections through the proxy end
+bxn egress mode my-project report       # allow all public web traffic, log what enforce would block
+bxn egress mode my-project off          # no allowlist
+bxn egress ls [my-project]              # modes, proxies, and where each host comes from
+bxn egress refresh [my-project|--all]   # finish an interrupted change, review a baseline update
 ```
 
 - **Hosts** are hostnames for ports 80 and 443. A leading `*.` matches any subdomain, not the name itself.
-- **The list** is the approved baseline (`~/.config/incs/egress-approved-baseline.txt`, AI APIs, package managers, code hosts and registries; copied from [`egress/baseline.txt`](egress/baseline.txt) on first use), your additions for every container (`incs egress allow --all`, kept in `~/.config/incs/egress-baseline.txt`), and the container's own hosts. When an update changes the shipped baseline, nothing uses it until `incs egress refresh` shows you the difference and you approve it.
-- **New containers** (`incs -i`) are built on the allowlist (`--egress enforce`; `--egress off` for none). Plugins that take no credentials install first, with the internet open; then the container is locked, and only then do the workspace and the plugins that take credentials go in. A container from a template is locked before its first start, since a template may hold logins or startup services.
-- **Turning it on** for an open container stops it, locks its card, ends its old proxies, moves it to a fresh address so no old connection survives, and starts it again. Until that finishes it won't start on its own, and `incs` won't start it; `incs egress refresh` finishes an interrupted one.
+- **The list** is the approved baseline (`~/.config/boxen/egress-approved-baseline.txt`, AI APIs, package managers, code hosts and registries; copied from [`egress/baseline.txt`](egress/baseline.txt) on first use), your additions for every container (`bxn egress allow --all`, kept in `~/.config/boxen/egress-baseline.txt`), and the container's own hosts. When an update changes the shipped baseline, nothing uses it until `bxn egress refresh` shows you the difference and you approve it.
+- **New containers** (`bxn -i`) are built on the allowlist (`--egress enforce`; `--egress off` for none). Plugins that take no credentials install first, with the internet open; then the container is locked, and only then do the workspace and the plugins that take credentials go in. A container from a template is locked before its first start, since a template may hold logins or startup services.
+- **Turning it on** for an open container stops it, locks its card, ends its old proxies, moves it to a fresh address so no old connection survives, and starts it again. Until that finishes it won't start on its own, and `bxn` won't start it; `bxn egress refresh` finishes an interrupted one.
 - **Proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, a narrow `NO_PROXY`, `NODE_USE_ENV_PROXY=1`) go into the Incus environment, `/etc/environment`, every systemd service, and apt. A tool that ignores them fails rather than getting around the proxy. Node's built-in `fetch` needs Node 22.21 or 24 or later for this.
 - **Without DNS**: an allowlisted container can't look names up itself; the proxy does it.
-- **In the status view** (`incs`), allowlisted containers show 🔒 (enforce) or 🔓 (report), and their details have **Network** and **Rules** tabs (h/l). Network lists what the container tried to reach, blocked first: `a` allows the selected host for that container, `A` for every container, each after a y/n naming the exact host and scope. Rules lists its hosts and where each comes from; `d` removes one of the container's own. `m` changes the mode.
-- **Separate egress containers** (`--egress-container <name>` on `incs egress mode`, making `incs-egress-<name>`) keep groups of containers, such as different clients' work, from reaching each other's proxies. Each egress container is one security boundary.
+- **In the status view** (`bxn`), allowlisted containers show 🔒 (enforce) or 🔓 (report), and their details have **Network** and **Rules** tabs (h/l). Network lists what the container tried to reach, blocked first: `a` allows the selected host for that container, `A` for every container, each after a y/n naming the exact host and scope. Rules lists its hosts and where each comes from; `d` removes one of the container's own. `m` changes the mode.
+- **Separate egress containers** (`--egress-container <name>` on `bxn egress mode`, making `boxen-egress-<name>`) keep groups of containers, such as different clients' work, from reaching each other's proxies. Each egress container is one security boundary.
 
 What an allowlist doesn't stop: data sent to an allowed host (a gist, a package upload), and anything reachable through an allowed shared front end such as a CDN. Hosts in the baseline that accept uploads from anyone with an account are marked `upload:` in the file.
 
@@ -696,13 +713,13 @@ cd /workspace
 mise use python@3.12 node@20
 ```
 
-Or add a `mise.toml` to your project — `incus.init` runs `mise install` automatically if one exists.
+Or add a `mise.toml` to your project — `boxen.init` runs `mise install` automatically if one exists.
 
 ## Linux Gotchas
 
 ### Firewall (UFW)
 
-For `incsbr0`, incs adds what it needs when it creates the bridge (it asks for sudo): DHCP in on the bridge, and forwarding out of it. It opens no DNS, because the bridge serves none.
+For `boxenbr0`, bxn adds what it needs when it creates the bridge (it asks for sudo): DHCP in on the bridge, and forwarding out of it. It opens no DNS, because the bridge serves none.
 
 For the default bridge (`--insecure-network` and older instances): if UFW is enabled on the host, its default DROP policy will block traffic on the Incus bridge. See the [Incus firewall documentation](https://linuxcontainers.org/incus/docs/main/howto/network_bridge_firewalld/#ufw-add-rules-for-the-bridge) for setup instructions. The things you'll need to allow:
 

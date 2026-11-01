@@ -29,7 +29,7 @@
 #   FAKE_INCUS_NEXT_IP     address handed to the next created instance
 #   FAKE_INCUS_FAIL_CALL   regex; any invocation whose argv matches exits 1
 #   FAKE_INCUS_VERSION     what `incus version` reports (default 6.19)
-#   FAKE_EGRESS_CTL        a stand-in run for `exec <egress> -- /usr/local/sbin/incs-egress-ctl ...`
+#   FAKE_EGRESS_CTL        a stand-in run for `exec <egress> -- /usr/local/sbin/boxen-egress-ctl ...`
 #   FAKE_INCUS_IMAGE_TYPE  the Type `incus image info` reports (default container)
 #   FAKE_INCUS_FIREWALL    the firewall driver `incus query /1.0` reports (default
 #                          nftables; none leaves it out)
@@ -371,7 +371,7 @@ case "$cmd" in
       exit 1
     fi
 
-    if [[ "${1:-}" == "/usr/local/sbin/incs-egress-ctl" && -n "${FAKE_EGRESS_CTL:-}" ]]; then
+    if [[ "${1:-}" == "/usr/local/sbin/boxen-egress-ctl" && -n "${FAKE_EGRESS_CTL:-}" ]]; then
       shift
       stdin_file="$S/exec-stdin/$n"; [[ -f "$stdin_file" ]] || stdin_file=/dev/null
       exec "$FAKE_EGRESS_CTL" "$S/ctl/$name" "$@" < "$stdin_file"

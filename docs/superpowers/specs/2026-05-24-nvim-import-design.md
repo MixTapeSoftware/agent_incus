@@ -27,7 +27,7 @@ This change replaces "mount the host's nvim" with "install nvim inside the conta
 
 ## Architecture
 
-A new plugin file `plugins/50-nvim.sh` following the existing contract used by `50-chadmux.sh`. Discovery, ordering, prompting, and CLI-flag plumbing all reuse the existing plugin machinery — no changes to `incus.init` or `incs` are required.
+A new plugin file `plugins/50-nvim.sh` following the existing contract used by `50-chadmux.sh`. Discovery, ordering, prompting, and CLI-flag plumbing all reuse the existing plugin machinery — no changes to `boxen.init` or `bxn` are required.
 
 ```
 plugins/50-nvim.sh
@@ -45,7 +45,7 @@ plugins/50-nvim.sh
 
 ### CLI flag and environment variables
 
-The plugin framework (`incus.init`) only natively supports single-word `PLUGIN_CLI_FLAGS` like `--nvim` — it doesn't parse plugin-specific flags with values. To preserve non-interactive use (templates, CI, scripted runs) without expanding the framework, the plugin honors environment variables:
+The plugin framework (`boxen.init`) only natively supports single-word `PLUGIN_CLI_FLAGS` like `--nvim` — it doesn't parse plugin-specific flags with values. To preserve non-interactive use (templates, CI, scripted runs) without expanding the framework, the plugin honors environment variables:
 
 | Variable / flag | Effect |
 |---|---|
@@ -58,7 +58,7 @@ The plugin framework (`incus.init`) only natively supports single-word `PLUGIN_C
 
 ```
 NVIM_DISTRO=nvchad NVIM_OVERLAY_URL=https://github.com/me/nvchad-custom \
-  incs -i --nvim my-container
+  bxn -i --nvim my-container
 ```
 
 Adding plugin-specific value-flags to the framework (e.g. `--nvim-distro=`) is a possible future enhancement but is out of scope for this change.

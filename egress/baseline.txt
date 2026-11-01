@@ -7,16 +7,16 @@
 #     (*.amazonaws.com, *.blob.core.windows.net, *.googleapis.com,
 #     *.googleusercontent.com, *.public.blob.vercel-storage.com): any agent
 #     could write to an attacker's bucket through them. Allow the exact
-#     bucket a project needs with `incs egress allow`;
+#     bucket a project needs with `bxn egress allow`;
 #   - "crl*.digicert.com", which smokescreen can't match, written out.
 #
 # Every wildcard says why it's needed. Hosts marked "upload:" accept data from
 # anyone with an account there; that's the accepted limit of an allowlist
 # that names hosts, not accounts.
 #
-# incs never reads this file to build a policy. `incs egress refresh` shows
+# bxn never reads this file to build a policy. `bxn egress refresh` shows
 # how it differs from your approved copy
-# (~/.config/incs/egress-approved-baseline.txt) and copies it only when you
+# (~/.config/boxen/egress-approved-baseline.txt) and copies it only when you
 # confirm. One host per line; "#" starts a comment.
 
 # --- Coding agents and AI APIs ---------------------------------------------
@@ -116,7 +116,7 @@ haskell.org
 pub.dev
 swift.org
 ziglang.org
-# mise: incs installs it from its apt repository.
+# mise: bxn installs it from its apt repository.
 mise.jdx.dev
 mise.run
 mise-versions.jdx.dev
