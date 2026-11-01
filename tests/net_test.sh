@@ -166,7 +166,7 @@ mkdir -p "$SANDBOX/repo"
 cp "$REPO_ROOT"/boxen.* "$SANDBOX/repo/"
 cp -R "$REPO_ROOT/egress" "$SANDBOX/repo/egress"
 # The allowlist is tests/egress_init_test.sh's; these check the network alone.
-init() { bash "$SANDBOX/repo/boxen.init" "$@" --from base --no-tui --no-copy --egress off >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
+init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.init" --name "$n" "$@" --from base --no-tui --no-copy --egress off >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
 template() { mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"; }
 inst() { cat "$FAKE_INCUS_STATE/instances/$1/$2" 2>/dev/null; }
 

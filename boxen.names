@@ -1,0 +1,95 @@
+# boxen.names
+# Container names are HANDLE-AGENT-PROJECT: chad-claude-web, or chad-shell-web
+# with no agent. One agent per container keeps agents from working over each
+# other. Another container for the same project and agent is numbered, -1,
+# then -2, so parallel agents each get their own copy of the code. Each
+# container is labelled user.boxen=1 with its handle, agent and project, which
+# is how commands find it from the project alone (bxn web).
+#
+# Sourced by boxen.init and bxn, which define log and error.
+
+BOXEN_CONFIG_DIR="${BOXEN_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/boxen}"
+BOXEN_HANDLE_FILE="$BOXEN_CONFIG_DIR/handle"
+
+# Lowercase letters and digits, starting with a letter: no hyphen, so the
+# handle is always the name's first part.
+names_valid_handle() { [[ "$1" =~ ^[a-z][a-z0-9]{0,19}$ ]]; }
+
+# The handle from BOXEN_HANDLE or the saved file, without asking.
+names_saved_handle() {
+  local h="${BOXEN_HANDLE:-}"
+  if [[ -z "$h" && -f "$BOXEN_HANDLE_FILE" ]]; then h="$(head -n 1 "$BOXEN_HANDLE_FILE")"; fi
+  [[ -n "$h" ]] || return 1
+  names_valid_handle "$h" || error "Bad handle '$h' (in BOXEN_HANDLE or $BOXEN_HANDLE_FILE): lowercase letters and digits, starting with a letter"
+  printf '%s\n' "$h"
+}
+
+names_save_handle() {
+  names_valid_handle "$1" || error "A handle is lowercase letters and digits, starting with a letter (got: $1)"
+  mkdir -p "$BOXEN_CONFIG_DIR" && printf '%s\n' "$1" > "$BOXEN_HANDLE_FILE" ||
+    error "Could not save the handle in $BOXEN_HANDLE_FILE"
+}
+
+# The handle, asked for once on a terminal (default: the login name) and saved.
+# Usage: names_handle [--no-save]
+names_handle() {
+  local h def answer
+  if h="$(names_saved_handle)"; then printf '%s\n' "$h"; return 0; fi
+  def="$(id -un | tr 'A-Z' 'a-z' | tr -cd 'a-z0-9')"
+  names_valid_handle "$def" || def="me"
+  h="$def"
+  if [[ -t 0 && -t 2 ]]; then
+    printf 'Your handle starts every container name, as in %s-claude-web [%s]: ' "$def" "$def" >&2
+    IFS= read -r answer || answer=""
+    h="${answer:-$def}"
+  fi
+  names_valid_handle "$h" || error "A handle is lowercase letters and digits, starting with a letter (got: $h)"
+  if [[ "${1:-}" != "--no-save" ]]; then
+    names_save_handle "$h"
+    log "Your handle is $h; change it with: bxn handle <new>" >&2
+  fi
+  printf '%s\n' "$h"
+}
+
+# The first free name: base, then base-1, base-2 and so on.
+names_next() {
+  local base="$1" name="$1" n=0
+  while incus info "$name" >/dev/null 2>&1; do
+    n=$((n + 1))
+    name="$base-$n"
+  done
+  (( ${#name} <= 63 )) || error "The container name $name is longer than Incus allows (63); use a shorter project name"
+  printf '%s\n' "$name"
+}
+
+# The container a command means: the exact name if it exists, else your
+# container for that project, or for AGENT-PROJECT. Prints the argument
+# unchanged when nothing matches, so the command itself says it's not found.
+names_resolve() {
+  local arg="$1" h found="" more agent proj rest i
+  if incus info "$arg" >/dev/null 2>&1; then printf '%s\n' "$arg"; return 0; fi
+  # Only plain names: these values become Incus filters.
+  if ! [[ "$arg" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] || ! h="$(names_saved_handle)"; then
+    printf '%s\n' "$arg"; return 0
+  fi
+  found="$(incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.project=$arg" --format csv --columns n 2>/dev/null)" || found=""
+  # And as AGENT-PROJECT; an agent's own name may hold a hyphen, so try each
+  # split. Every reading counts, so a name that could mean two containers is
+  # refused rather than taken as the first one found.
+  rest="$arg"
+  i=0
+  while [[ "$rest" == *-* ]]; do
+    i=$((i + 1))
+    agent="$(printf '%s' "$arg" | cut -d- -f1-"$i")"
+    proj="${arg#"$agent"-}"
+    more="$(incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.agent=$agent" "user.boxen.project=$proj" --format csv --columns n 2>/dev/null)" || more=""
+    [[ -z "$more" ]] || found="$found"$'\n'"$more"
+    rest="${rest#*-}"
+  done
+  found="$(printf '%s\n' "$found" | grep . | sort -u)" || found=""
+  case "$(printf '%s\n' "$found" | grep -c .)" in
+    0) printf '%s\n' "$arg" ;;
+    1) printf '%s\n' "$found" ;;
+    *) error "$arg is more than one container: $(printf '%s\n' "$found" | paste -sd ' ' -). Name the one you mean." ;;
+  esac
+}

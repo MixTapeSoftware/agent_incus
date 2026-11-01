@@ -24,6 +24,24 @@ NC='\033[0m'
 
 log()   { echo -e "${GREEN}[+]${NC} $1"; }
 error() { echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+# shellcheck source=boxen.names
+source "$SCRIPT_DIR/boxen.names"
+
+# A command's container from what was typed: bxn web finds chad-claude-web
+# (boxen.names). Replaces the first argument that isn't a flag; the result is
+# in RARGS.
+resolve_container_arg() {
+  local a found=0 c
+  RARGS=()
+  for a in "$@"; do
+    if [[ $found == 0 && "$a" != -* ]]; then
+      c="$(names_resolve "$a")" || exit 1
+      a="$c"
+      found=1
+    fi
+    RARGS+=("$a")
+  done
+}
 
 BOXEN_STATE_DIR="$HOME/.local/state/boxen"
 BOXEN_LOG_DIR="${BOXEN_LOG_DIR:-$BOXEN_STATE_DIR/logs}"
@@ -38,7 +56,11 @@ Commands:
   <container>                    Shell into container (default)
   -s, shell [--with-sudo] <container> [cmd]
                                  Shell into container (--with-sudo grants temporary sudo)
-  -i, init [args...]             Create/provision a new container
+  -i, init <project> [args...]   Create a container named HANDLE-AGENT-PROJECT,
+                                 with one agent (or a shell); numbered -1, -2
+                                 when the name is taken
+  handle [<new>]                 Show or change your handle, the first part of
+                                 every container name
   -n, net <container> [ports...] Manage port proxies
   egress <command> [args...]     Which internet hosts a container may reach
                                  (bxn egress -h)
@@ -64,6 +86,9 @@ Cron:
   cron install [HOUR]            Install nightly update cron (default: 19)
   cron remove                    Remove the update cron
   cron status                    Show current cron schedule
+
+A <container> can be the full name or just its project (or AGENT-PROJECT)
+when you have one container for it: bxn web opens chad-claude-web.
 
 Examples:
   bxn                                       Live status view (same as bxn status)
@@ -1113,7 +1138,8 @@ case "$1" in
     ;;
   -s|shell)
     shift
-    exec "$SCRIPT_DIR/boxen.shell" "$@"
+    resolve_container_arg "$@"
+    exec "$SCRIPT_DIR/boxen.shell" ${RARGS[@]+"${RARGS[@]}"}
     ;;
   -i|init)
     shift
@@ -1121,23 +1147,44 @@ case "$1" in
     ;;
   -n|net)
     shift
-    exec "$SCRIPT_DIR/boxen.network" "$@"
+    resolve_container_arg "$@"
+    exec "$SCRIPT_DIR/boxen.network" ${RARGS[@]+"${RARGS[@]}"}
     ;;
   egress)
     shift
+    # The container follows the subcommand; --all names no container.
+    if [[ $# -ge 2 && " ls log allow rm mode refresh " == *" $1 "* && " $* " != *" --all "* ]]; then
+      _sub="$1"
+      shift
+      resolve_container_arg "$@"
+      set -- "$_sub" "${RARGS[@]}"
+    fi
     exec "$SCRIPT_DIR/bxn.egress" "$@"
     ;;
   serve)
     shift
-    cmd_serve "$@"
+    resolve_container_arg "$@"
+    cmd_serve ${RARGS[@]+"${RARGS[@]}"}
     ;;
   -e|env)
     shift
-    cmd_set_env "$@"
+    resolve_container_arg "$@"
+    cmd_set_env ${RARGS[@]+"${RARGS[@]}"}
+    ;;
+  handle)
+    shift
+    if [[ $# -eq 0 ]]; then
+      names_saved_handle || echo "No handle yet: bxn -i asks for one, or set it with bxn handle <new>"
+    else
+      names_save_handle "$1"
+      log "Your handle is now $1: new containers are named $1-AGENT-PROJECT"
+    fi
     ;;
   -d|delete)
     shift
     [[ $# -lt 1 ]] && error "Usage: bxn delete <container>"
+    resolve_container_arg "$@"
+    set -- "${RARGS[@]}"
     _egress="$(incus config get "$1" user.boxen.egress.container 2>/dev/null || true)"
     incus delete --force "$1"
     log "Deleted $1"
@@ -1155,6 +1202,8 @@ case "$1" in
   -k|kill)
     shift
     [[ $# -lt 1 ]] && error "Usage: bxn kill <container>"
+    resolve_container_arg "$@"
+    set -- "${RARGS[@]}"
     incus stop "$1"
     log "Stopped $1"
     ;;
@@ -1176,6 +1225,8 @@ case "$1" in
   -u|update)
     shift
     [[ $# -lt 1 ]] && error "Usage: bxn update <container>"
+    resolve_container_arg "$@"
+    set -- "${RARGS[@]}"
     cmd_update "$1"
     ;;
   -ua|update-all)
@@ -1197,6 +1248,7 @@ case "$1" in
     ;;
   *)
     # Default: shell into container
-    exec "$SCRIPT_DIR/boxen.shell" "$@"
+    resolve_container_arg "$@"
+    exec "$SCRIPT_DIR/boxen.shell" "${RARGS[@]}"
     ;;
 esac
