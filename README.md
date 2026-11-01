@@ -155,7 +155,7 @@ Options:
 
 1. Launches an Ubuntu 24.04 container (override with `--image`) with the `boxen` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits. It joins the `boxenbr0` bridge, isolated from other instances and the host (see [Network Isolation](#network-isolation))
 2. Installs build tools, dev libraries, Python, and Node.js
-3. Creates a user matching your host UID/GID (no sudo by default; use `bxn shell --with-sudo` for interactive sessions)
+3. Creates a user matching your host UID/GID (no sudo by default; use `bxn shell --with-sudo` for interactive sessions), with your git identity: the `user.name` and `user.email` git would use in the folder you're copying, so a repository's own identity or an `includeIf` for its path (a work email for `~/work`) carries over, else your global one. With none on the host it asks; a template carries no one's
 4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
 5. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 6. Presents a picker for the coding agent, then one for optional plugins (see below)
@@ -249,7 +249,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [cubic](https://www.cubic.dev/) | AI code review CLI |
 | [Docker](https://www.docker.com/) | Container runtime & compose. Off by default: the `docker` group is root inside the container (`--docker`) |
 | [fzf](https://github.com/junegunn/fzf) + [bat](https://github.com/sharkdp/bat) | Interactive search & file preview |
-| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials |
+| [GitHub Auth](https://cli.github.com/) | GitHub token & git credentials (the git identity is set for every container, with or without it) |
 | [Glow](https://github.com/charmbracelet/glow) | Terminal markdown viewer |
 | [just](https://github.com/casey/just) | Command runner for project tasks |
 | [Matt Pocock Skills](https://github.com/mattpocock/skills) | Engineering and productivity skills for Claude Code, Codex, and Grok |

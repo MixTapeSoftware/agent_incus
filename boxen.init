@@ -784,6 +784,72 @@ copy_workspace() {
     "git config --global --add safe.directory $ws_q 2>/dev/null || true"
 }
 
+# ---------------------------------------------------------------------------
+# Git identity for commits in the container. It's what git itself would use
+# in the folder being copied: that repository's own config and any includeIf
+# matching its path (a work email for ~/work), else the global identity. Set
+# on every build, whatever plugins are chosen, so commits never fail with
+# "Please tell me who you are". A template build doesn't carry anyone's.
+# ---------------------------------------------------------------------------
+GIT_NAME="" GIT_EMAIL="" GIT_ID_SOURCE=""
+
+# Global lookups follow include.path, as git does, but run from / so that no
+# includeIf for the current folder counts as global.
+# Usage: _host_git_config <key>
+_host_git_config() {
+  local v=""
+  if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" && -d "$WORKSPACE_PATH" ]]; then
+    v="$(git -C "$WORKSPACE_PATH" config --get "$1" 2>/dev/null)" || v=""
+  fi
+  [[ -n "$v" ]] || v="$(git -C / config --global --includes --get "$1" 2>/dev/null)" || v=""
+  printf '%s' "$v"
+}
+
+capture_git_identity() {
+  local name email
+  command -v git >/dev/null 2>&1 || return 0
+  name="$(_host_git_config user.name)"
+  email="$(_host_git_config user.email)"
+  # One line each: they go to the container as lines on stdin.
+  [[ "$name$email" != *$'\n'* ]] || { name=""; email=""; }
+  if [[ -n "$name" && -n "$email" ]]; then
+    GIT_NAME="$name" GIT_EMAIL="$email"
+    if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] &&
+       [[ "$(git -C / config --global --includes --get user.email 2>/dev/null)" != "$email" ||
+          "$(git -C / config --global --includes --get user.name 2>/dev/null)" != "$name" ]]; then
+      GIT_ID_SOURCE="$WORKSPACE_PATH's git config"
+    else
+      GIT_ID_SOURCE="your global git config"
+    fi
+  fi
+}
+
+# Ask only when the host has no identity, on a terminal, and not for a template.
+prompt_git_identity() {
+  [[ -z "$GIT_NAME" || -z "$GIT_EMAIL" ]] || return 0
+  [[ "$SAVE_TEMPLATE" != "1" && "$DRY_RUN" != "1" && -t 0 ]] || return 0
+  echo ""
+  log "Git has no user.name or user.email on this host. Commits in $CONTAINER_NAME use these:"
+  read_value GIT_NAME "Git user.name: "
+  read_value GIT_EMAIL "Git user.email: "
+  if [[ -n "$GIT_NAME" && -n "$GIT_EMAIL" ]]; then GIT_ID_SOURCE="what you entered"
+  else GIT_NAME="" GIT_EMAIL=""; fi
+}
+
+# The values go in as lines on stdin, read by the remote shell: never part of
+# a command string, so any character in a name is safe.
+write_git_identity() {
+  [[ "$SAVE_TEMPLATE" != "1" ]] || return 0
+  if [[ -z "$GIT_NAME" || -z "$GIT_EMAIL" ]]; then
+    warn "No git identity, so commits in $CONTAINER_NAME fail until you set one: bxn -s $CONTAINER_NAME git config --global user.name \"Your Name\" (and user.email)"
+    return 0
+  fi
+  printf '%s\n%s\n' "$GIT_NAME" "$GIT_EMAIL" | incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c \
+    'IFS= read -r n && IFS= read -r e && git config --global user.name "$n" && git config --global user.email "$e"' ||
+    { warn "Could not set the git identity in $CONTAINER_NAME"; return 0; }
+  log "Git identity: $GIT_NAME <$GIT_EMAIL>, from $GIT_ID_SOURCE"
+}
+
 # The egress hosts the selected plugins ask for (PLUGIN_EGRESS_ALLOW).
 _selected_plugin_hosts() {
   local i
@@ -1119,6 +1185,8 @@ unset _i _sel_names
 # ---------------------------------------------------------------------------
 # Component prompts — called once, after TUI decision
 # ---------------------------------------------------------------------------
+capture_git_identity
+prompt_git_identity
 _run_plugin_prompts
 
 # ---------------------------------------------------------------------------
@@ -1133,6 +1201,13 @@ if [[ "$DRY_RUN" == "1" ]]; then
   echo "Agent:       $(agent_label "$AGENT_SLOT")"
   echo "Image:       $BASE_IMAGE"
   echo "User:        $HOST_USER (UID:$HOST_UID GID:$HOST_GID)"
+  if [[ "$SAVE_TEMPLATE" == "1" ]]; then
+    echo "Git:         none (a template doesn't carry anyone's identity)"
+  elif [[ -n "$GIT_NAME" ]]; then
+    echo "Git:         $GIT_NAME <$GIT_EMAIL>, from $GIT_ID_SOURCE"
+  else
+    echo "Git:         none on this host; commits will fail until you set one"
+  fi
   if [[ "$IS_VM" == "1" ]]; then
     echo "Type:        VM (disk=$VM_DISK memory=$VM_MEMORY cpus=$VM_CPUS)"
   else
@@ -1359,6 +1434,8 @@ incus exec "$CONTAINER_NAME" -- sh -c "
 # to match their remote locations" and fails any mise install run by the
 # user later. System git handles the same clones fine.
 # ---------------------------------------------------------------------------
+write_git_identity
+
 log "Configuring mise to use system git (gix=false)..."
 incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'MISECFG'
   set -e
