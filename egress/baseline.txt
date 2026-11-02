@@ -196,9 +196,14 @@ fastly.com
 vercel.com
 # upload: hosted databases and storage.
 supabase.com
+api.supabase.com
 mcp.supabase.com
+# Supabase's CDN (CLI and binary downloads).
+d2glxqk2uabbnd.cloudfront.net
 clerk.com
 figma.com
+# upload: Linear's file attachments.
+uploads.linear.app
 app.daytona.io
 
 # --- Operating system packages ----------------------------------------------
@@ -223,6 +228,9 @@ packagecloud.io
 # Certificate authorities serve these from many numbered hosts.
 *.amazontrust.com
 *.lencr.org
+# Let's Encrypt's ACME endpoints, production and staging
+# (acme-v02.api.letsencrypt.org, acme-staging-v02.api.letsencrypt.org).
+*.api.letsencrypt.org
 *.pki.goog
 *.pki.microsoft.com
 *.one.digicert.com
