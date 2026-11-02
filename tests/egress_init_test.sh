@@ -12,6 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 exec </dev/null
+command -v jq >/dev/null || { echo "needs jq (the Docker plugin's proxy settings use it)"; exit 1; }
 
 PASS=0
 FAIL=0
@@ -123,6 +124,7 @@ assert_eq "the barrier keys are cleared" "none" "$(cfg tbox user.boxen.egress.au
 assert_eq "the template's Docker client config points at this container's proxy" "\"$(cfg tbox environment.HTTPS_PROXY)\"" "$(docker_cfg tbox .proxies.default.httpsProxy)"
 assert_contains "and keeps Docker's own networks off it" "host.docker.internal" "$(docker_cfg tbox .proxies.default.noProxy)"
 assert_eq "the rest of the config is kept" '{"ghcr.io":{}}' "$(docker_cfg tbox .auths)"
+assert_eq "and it stays readable by the user only" "-rw-------" "$(ls -l "$FAKE_INCUS_STATE/instances/tbox/root/home/$(whoami)/.docker/config.json" | cut -c1-10)"
 
 echo "modes and refusals"
 fresh

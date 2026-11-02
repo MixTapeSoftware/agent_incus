@@ -138,6 +138,8 @@ plugin_on_launch() {
 plugin_proxy() {
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c 'sh -s' <<DOCKER_PROXY
 set -e
+# The file holds registry logins: readable by the user only, as Docker makes it.
+umask 077
 mkdir -p "\$HOME/.docker"
 f="\$HOME/.docker/config.json"
 [ -s "\$f" ] || echo '{}' > "\$f"
