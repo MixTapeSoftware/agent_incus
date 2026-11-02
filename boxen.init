@@ -25,9 +25,11 @@ error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
+# usage [status]: help exits 0; a usage error passes 1.
 usage() {
   cat << EOF
 Usage: bxn create [OPTIONS] <project>
+       $(basename "$0") [OPTIONS] <project>   (the script directly)
 
 Create an Incus instance with a copy of a host directory as its workspace and
 at most one coding agent. It's named HANDLE-AGENT-PROJECT (chad-claude-web, or
@@ -66,7 +68,7 @@ for user plugins). Some provide CLI flags
 (e.g. --1pass, --gh-token, --entire) to pre-select them without the TUI.
 Drop a new .sh file in plugins/ (or ~/.local/share/boxen/plugins/) to add your own.
 EOF
-  exit 1
+  exit "${1:-0}"
 }
 
 # ---------------------------------------------------------------------------
@@ -1028,7 +1030,7 @@ source "$SCRIPT_DIR/boxen.names"
 # ---------------------------------------------------------------------------
 require_commands incus curl sudo realpath
 
-[[ -n "$PROJECT" || -n "$EXACT_NAME" ]] || { warn "Project name required"; echo ""; usage; }
+[[ -n "$PROJECT" || -n "$EXACT_NAME" ]] || { warn "Project name required"; echo ""; usage 1; }
 for _n in "$PROJECT" "$EXACT_NAME"; do
   [[ -z "$_n" || "$_n" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] ||
     error "Invalid name '$_n': it must start with a letter, with only letters, digits and hyphens"
