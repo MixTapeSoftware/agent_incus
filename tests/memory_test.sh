@@ -135,7 +135,39 @@ assert_eq "the profile's 6GB fits an 8GiB host" "0" "$RC"
 fresh
 FAKE_INCUS_MEMORY=$((16 * GIB)) init vbig --vm --memory 15GiB --dry-run
 assert_eq "a VM is held to the same rule" "1" "$RC"
-assert_contains "before anything is shown" "This host has 16.0GiB of memory; vbig would get 15GiB" "$(out)"
+assert_contains "naming the figures" "This host has 16.0GiB of memory; vbig would get 15GiB" "$(out)"
+assert_eq "before anything is shown" "0" "$(out | grep -c '^Type:' || true)"
+
+echo "where the host's memory comes from"
+# Without jq, the figure comes from incus info --resources, rounded.
+mkdir -p "$SANDBOX/nojq"; printf '#!/bin/sh\nexit 127\n' > "$SANDBOX/nojq/jq"; chmod +x "$SANDBOX/nojq/jq"
+fresh
+PATH="$SANDBOX/nojq:$PATH" FAKE_INCUS_MEMORY=$((8 * GIB + GIB / 2)) init tbox --memory 8GiB
+assert_eq "without jq the host is still measured" "1" "$RC"
+assert_contains "from incus info --resources, decimals and all" "This host has 8.5GiB of memory; tbox would get 8GiB" "$(out)"
+fresh
+PATH="$SANDBOX/nojq:$PATH" FAKE_INCUS_MEMORY=$((64 * GIB)) init tbox2 --memory 8GiB
+assert_eq "and a host that can back it builds" "0" "$RC"
+# An Incus that won't say falls back to /proc/meminfo: this machine's, which
+# is large enough for the profile's default. Either way nothing is skipped.
+fresh
+FAKE_INCUS_NO_RESOURCES=1 init fbox
+assert_eq "an Incus without resources still builds" "0" "$RC"
+if [[ -r /proc/meminfo ]]; then
+  assert_eq "with /proc/meminfo measured, so no warning" "0" "$(out | grep -c "wasn't checked" || true)"
+else
+  assert_contains "with a warning that nothing could measure it" "so whether it can back 6GB wasn't checked" "$(out)"
+fi
+# On macOS the message points at Colima. Only the bare uname the message
+# checks answers Darwin; boxen.macos.setup's `uname -s` must keep seeing
+# this machine, or the build would want Colima.
+mkdir -p "$SANDBOX/mac"
+printf '#!/bin/sh\n[ $# -eq 0 ] && { echo Darwin; exit 0; }\nexec %s "$@"\n' "$(command -v uname)" > "$SANDBOX/mac/uname"
+chmod +x "$SANDBOX/mac/uname"
+fresh
+PATH="$SANDBOX/mac:$PATH" FAKE_INCUS_MEMORY=$((8 * GIB)) init mbox2 --memory 8GiB
+assert_eq "a Mac refuses the same way" "1" "$RC"
+assert_contains "and names Colima" "leaving it less than 2GiB. Here that's Colima's VM: raise it with --colima-memory. Choose less with --memory." "$(out)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"

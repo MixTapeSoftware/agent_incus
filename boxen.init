@@ -902,11 +902,23 @@ bytes_to_gib() {
 }
 
 # The memory of the machine Incus runs on, in bytes: on macOS that's Colima's
-# VM. From the resources API with jq, else /proc/meminfo; empty if neither.
+# VM. Asked of Incus first, through the resources API with jq, else from the
+# "Total:" line of incus info --resources (rounded, e.g. 62.69GiB), and only
+# then from /proc/meminfo, which is the same machine on Linux. Empty when
+# none of them answers.
 host_memory_bytes() {
-  local v=""
+  local v="" t unit frac
   if command -v jq >/dev/null 2>&1; then
     v="$(incus query /1.0/resources 2>/dev/null | jq -r '.memory.total // empty' 2>/dev/null)" || v=""
+  fi
+  if ! [[ "$v" =~ ^[0-9]+$ ]]; then
+    v=""
+    t="$(incus info --resources 2>/dev/null | awk '/^Memory:/ { m=1; next } m && /^ *Total:/ { print $2; exit }')"
+    if [[ "$t" =~ ^([0-9]+)(\.([0-9]+))?(B|kB|KB|KiB|MB|MiB|GB|GiB|TB|TiB)?$ ]]; then
+      unit="$(size_to_bytes "1${BASH_REMATCH[4]}")" frac="${BASH_REMATCH[3]}"
+      v=$(( 10#${BASH_REMATCH[1]} * unit ))
+      [[ -z "$frac" ]] || v=$(( v + 10#$frac * unit / 10 ** ${#frac} ))
+    fi
   fi
   if [[ -z "$v" && -r /proc/meminfo ]]; then
     v="$(awk '/^MemTotal:/ { printf "%d", $2 * 1024; exit }' /proc/meminfo)"
@@ -937,7 +949,9 @@ resolve_memory() {
     want="$floor" want_bytes=$floor_bytes MEMORY_WHY="$floor_by needs at least $floor"
   fi
   host="$(host_memory_bytes)"
-  if [[ -n "$host" ]] && (( want_bytes > host - headroom )); then
+  if [[ -z "$host" ]]; then
+    warn "Couldn't read this host's memory from Incus or /proc/meminfo, so whether it can back $want wasn't checked"
+  elif (( want_bytes > host - headroom )); then
     [[ "$(uname)" == Darwin ]] && where=" Here that's Colima's VM: raise it with --colima-memory."
     error "This host has $(bytes_to_gib "$host") of memory; $CONTAINER_NAME would get $want ($MEMORY_WHY), leaving it less than 2GiB.$where Choose less with --memory."
   fi

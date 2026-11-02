@@ -80,7 +80,9 @@ case "$cmd" in
   query)
     # The server record, as Incus 7.6 prints it.
     if [[ "${1:-}" == "/1.0/resources" ]]; then
-      # The host's memory, in bytes (default 64GiB).
+      # The host's memory, in bytes (default 64GiB); FAKE_INCUS_NO_RESOURCES
+      # is a server that won't say.
+      [[ -z "${FAKE_INCUS_NO_RESOURCES:-}" ]] || die "not found"
       printf '{"memory": {"total": %s, "used": 0}}\n' "${FAKE_INCUS_MEMORY:-68719476736}"
       exit 0
     fi
@@ -104,6 +106,13 @@ case "$cmd" in
     ;;
 
   info)
+    if [[ "${1:-}" == "--resources" ]]; then
+      # The memory block as incus prints it, to two decimals of GiB.
+      [[ -z "${FAKE_INCUS_NO_RESOURCES:-}" ]] || die "not found"
+      echo "Memory:"
+      awk -v b="${FAKE_INCUS_MEMORY:-68719476736}" 'BEGIN { printf "  Free: 1.00GiB\n  Used: 1.00GiB\n  Total: %.2fGiB\n", b / 1073741824 }'
+      exit 0
+    fi
     if [[ $# -eq 0 ]]; then
       # Server info; since 7.6 it doesn't list the API extensions.
       echo "environment:"
