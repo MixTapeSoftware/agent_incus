@@ -58,9 +58,10 @@ run_status() {
 }
 
 # alpha: running, tagged, idle (same CPU time in both samples), extra NICs,
-#        filesystem total reported but no root size configured
-# beta:  running VM, restarted between samples (new pid, CPU time went up)
-# delta: frozen
+#        filesystem total reported but no root size configured, memory limit
+# beta:  running VM, restarted between samples (new pid, CPU time went up),
+#        no memory limit so memory reads against the host
+# delta: frozen, memory limit as a share of the host
 # gamma: stopped, tagged, disk usage + root size configured
 cat > "$stub/sample1.json" <<'EOF'
 [
@@ -78,7 +79,7 @@ cat > "$stub/sample1.json" <<'EOF'
  {"name":"beta","status":"Running","type":"virtual-machine","expanded_config":{},
   "state":{"pid":200,"cpu":{"usage":9000000000},"memory":{"usage":1073741824},"disk":{},
    "network":{"enp5s0":{"addresses":[{"family":"inet","address":"10.0.0.6","scope":"global"}]}}}},
- {"name":"delta","status":"Frozen","type":"container","expanded_config":{},
+ {"name":"delta","status":"Frozen","type":"container","expanded_config":{"limits.memory":"50%"},
   "state":{"pid":300,"cpu":{"usage":7000000000},"memory":{"usage":188743680},"disk":{},
    "network":{"eth0":{"addresses":[{"family":"inet","address":"10.0.0.8","scope":"global"}]}}}},
  {"name":"gamma","status":"Stopped","type":"container","expanded_config":{"user.managed-by":"boxen"},
@@ -95,15 +96,15 @@ sed 's/"pid":200,"cpu":{"usage":9000000000}/"pid":201,"cpu":{"usage":9500000000}
   "$stub/sample1.json" > "$stub/sample2.json"
 
 cat > "$stub/expected" <<'EOF'
-   NAME   TYPE  CPU   MEMORY              DISK            IPV4
+   NAME   TYPE  CPU   MEMORY             DISK            IPV4
 
 Boxen instances:
-●  alpha  CT    0.0%  412.3MiB / 16.0GiB  2.1GiB          10.0.0.5, 100.64.0.9
-○  gamma  CT    -     -                   3.0GiB / 20GiB  -
+●  alpha  CT    0.0%  412.3MiB / 4GiB    2.1GiB          10.0.0.5, 100.64.0.9
+○  gamma  CT    -     -                  3.0GiB / 20GiB  -
 
 Other Incus instances:
-●  beta   VM    -     1.0GiB / 16.0GiB    -               10.0.0.6
-◐  delta  CT    -     180.0MiB / 16.0GiB  -               10.0.0.8
+●  beta   VM    -     1.0GiB / 16.0GiB   -               10.0.0.6
+◐  delta  CT    -     180.0MiB / 8.0GiB  -               10.0.0.8
 
 2 of 4 running, host has 4 CPUs
 EOF
@@ -113,6 +114,12 @@ assert_eq "table matches" "$(cat "$stub/expected")" "$(run_status)"
 
 echo "once flag:"
 assert_eq "--once prints the same table" "$(cat "$stub/expected")" "$(run_status --once)"
+
+echo "memory limit in bytes:"
+# The table comes from the second sample.
+sed 's/"limits.memory":"50%"/"limits.memory":"2147483648"/' "$stub/sample1.json" > "$stub/sample2.json"
+assert_eq "delta reads a byte count as a size" "180.0MiB / 2.0GiB" \
+  "$(run_status | awk '$2 == "delta" {print $5, $6, $7}')"
 
 echo "busy CPU:"
 # alpha burns 0.6s of CPU between samples taken ~1s apart. On a 4-CPU host
@@ -126,7 +133,9 @@ echo "host resources unavailable:"
 mv "$stub/resources.json" "$stub/resources.json.off"
 out=$(run_status)
 assert_eq "alpha CPU is -" "-" "$(awk '$2 == "alpha" {print $4}' <<<"$out")"
-assert_eq "alpha memory has no total" "412.3MiB 2.1GiB" "$(awk '$2 == "alpha" {print $5, $6}' <<<"$out")"
+assert_eq "alpha memory keeps its own limit" "412.3MiB / 4GiB" "$(awk '$2 == "alpha" {print $5, $6, $7}' <<<"$out")"
+assert_eq "beta memory has no total" "1.0GiB -" "$(awk '$2 == "beta" {print $5, $6}' <<<"$out")"
+assert_eq "delta memory has no total to take a share of" "180.0MiB -" "$(awk '$2 == "delta" {print $5, $6}' <<<"$out")"
 assert_eq "footer omits host" "2 of 4 running" "$(tail -n 1 <<<"$out")"
 mv "$stub/resources.json.off" "$stub/resources.json"
 
@@ -262,7 +271,7 @@ alpha
 State         Running
 Type          Container
 CPU           0.0%
-Memory        412.3MiB / 16.0GiB
+Memory        412.3MiB / 4GiB
 Disk          2.1GiB
 IPv4          10.0.0.5, 100.64.0.9
 Image         Ubuntu noble amd64

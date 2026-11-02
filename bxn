@@ -301,9 +301,10 @@ cmd_set_env() {
 # for now; $host = {cpus, mem} from the Incus resources API, either may be
 # null; $color = bool; $sel = index of the row to highlight, or -1, counted
 # in display order (ordered, from STATUS_ORDER_DEFS). Instances are grouped into Boxen
-# instances and all others. CPU and memory are shown relative to the whole
-# host. Keep the program free of single quotes — it lives in a single-quoted
-# string.
+# instances and all others. CPU is shown relative to the whole host; memory
+# against the instance's own limits.memory when it has one (every VM does),
+# else the host total. Keep the program free of single quotes — it lives in a
+# single-quoted string.
 # ---------------------------------------------------------------------------
 STATUS_ORDER_DEFS='
 def managed: .expanded_config["user.managed-by"] == "boxen";
@@ -322,6 +323,16 @@ def ipv4:
     | .value.addresses[]?
     | select(.family == "inet" and .scope == "global") | .address ]
   | if length == 0 then "-" else join(", ") end;
+# The memory denominator: the instance limit as Incus spells it ("4GiB",
+# "6GB"), a bare byte count or a percentage of the host made readable, else
+# the host total. Null when neither is known.
+def memtotal($c):
+  ($c["limits.memory"] // "") as $l
+  | if $l == "" then (if $host.mem != null then ($host.mem | human) else null end)
+    elif ($l | test("^[0-9]+$")) then ($l | tonumber | human)
+    elif ($l | test("^[0-9]+%$")) then
+      (if $host.mem != null then ($host.mem * ($l | rtrimstr("%") | tonumber) / 100 | human) else null end)
+    else $l end;
 def row($t):
   .state as $s | ($s.cpu.usage // null) as $u | ($prev.cpu[.name] // null) as $p
   | ([.expanded_devices // {} | .[] | select(.type == "disk" and .path == "/") | .size // empty] | first // null) as $quota
@@ -337,7 +348,7 @@ def row($t):
               and $u >= $p[0] and $t > $prev.t
            then "\(($u - $p[0]) / 1e9 / ($t - $prev.t) / $host.cpus * 100 | dp1)%" else "-" end),
         (if (.status == "Running" or .status == "Frozen") and ($s.memory.usage // 0) > 0
-           then ($s.memory.usage | human) + (if $host.mem != null then " / " + ($host.mem | human) else "" end)
+           then ($s.memory.usage | human) + (memtotal($c) as $m | if $m != null then " / " + $m else "" end)
            else "-" end),
         (if ($s.disk.root.usage // 0) > 0
            then ($s.disk.root.usage | human) + (if $quota then " / " + $quota else "" end)
