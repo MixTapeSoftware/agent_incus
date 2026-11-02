@@ -155,7 +155,7 @@ Options:
 
 1. Launches an Ubuntu 24.04 container (override with `--image`) with the `boxen` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits. It joins the `boxenbr0` bridge, isolated from other instances and the host (see [Network Isolation](#network-isolation))
 2. Installs build tools, dev libraries, Python, and Node.js
-3. Creates a user matching your host UID/GID (no sudo by default; use `bxn shell --with-sudo` for interactive sessions), with your git identity: the `user.name` and `user.email` git would use in the folder you're copying, so a repository's own identity or an `includeIf` for its path (a work email for `~/work`) carries over, else your global one. With none on the host it asks; a template carries no one's
+3. Creates a user matching your host UID/GID (no sudo by default; use `bxn shell --with-sudo` for interactive sessions), with your git identity: the `user.name` and `user.email` git would use in the folder you're copying, so `GIT_AUTHOR_NAME`/`GIT_AUTHOR_EMAIL` in your environment, a repository's own identity or an `includeIf` for its path (a work email for `~/work`) carries over, else your global one (or `$EMAIL`). With none on the host it asks; a template carries no one's
 4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
 5. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 6. Presents a picker for the coding agent, then one for optional plugins (see below)
@@ -375,7 +375,7 @@ claude                                  #   ...then start the agent inside it
 bxn shell-project                      # Pane 2: the dev container (tests, git, servers)
 # prefix + "  (split), then:
 bxn -n shell-project 4000              # Pane 3 on the host: proxy the dev server to localhost:4000
-bxn status                             #   ...and check CPU, memory, and disk; space starts/stops
+bxn status                             #   ...and check CPU, memory, and disk; space starts/stops, S force-stops
 ```
 
 Leave tmux with prefix + `d`; containers keep running. Come back with `tmux attach -t project`, and stop everything at the end of the day with `bxn -ka`.
