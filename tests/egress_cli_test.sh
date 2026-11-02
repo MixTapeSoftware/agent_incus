@@ -57,7 +57,7 @@ gen_file() { cat "$FAKE_INCUS_STATE/ctl/$E/$1/gens/$(gen_of "$1")/$2"; }
 calls_since() { tail -n +"$(( $1 + 1 ))" "$FAKE_INCUS_STATE/calls.log"; }
 ncalls() { wc -l < "$FAKE_INCUS_STATE/calls.log" | tr -d ' '; }
 
-# An instance as bxn -i makes it on the isolated bridge, autostart unset.
+# An instance as bxn -c makes it on the isolated bridge, autostart unset.
 make_box() {
   incus launch img "$1" -p default -p boxen-net -d "eth0,ipv4.address=$2" >/dev/null
   incus config set "$1" user.managed-by=boxen user.boxen.net=isolated

@@ -27,7 +27,7 @@ error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 # ---------------------------------------------------------------------------
 usage() {
   cat << EOF
-Usage: $(basename "$0") [OPTIONS] <project>
+Usage: bxn create [OPTIONS] <project>
 
 Create an Incus instance with a copy of a host directory as its workspace and
 at most one coding agent. It's named HANDLE-AGENT-PROJECT (chad-claude-web, or
@@ -203,7 +203,7 @@ cleanup_on_exit() {
           warn "Could not delete '$CONTAINER_NAME'"
         fi
       else
-        warn "Container left in place. Clean up manually with: bxn -d $CONTAINER_NAME"
+        warn "Container left in place. Clean up manually with: bxn rm $CONTAINER_NAME"
       fi
     fi
   fi
@@ -962,7 +962,7 @@ TOKENS"
 
   wait_for_network "$CONTAINER_NAME" "$READY_TIMEOUT"
   log "Saved template: $alias"
-  echo "  Reuse with: $(basename "$0") --from $CONTAINER_NAME <new-name>"
+  echo "  Reuse with: bxn create --from $CONTAINER_NAME <new-name>"
 }
 
 # ---------------------------------------------------------------------------

@@ -199,7 +199,7 @@ assert_contains "and says so" "Nothing changed" "$(last_frame "$out" | plain)"
 out=$(keys j j j d | tui) || true
 assert_eq "a lowercase d in the list deletes nothing" "" "$(cat "$S/calls" 2>/dev/null)"
 out=$(keys j j j D y | tui) || true
-assert_eq "y deletes it through bxn delete" "delete --force plain" "$(cat "$S/calls" 2>/dev/null)"
+assert_eq "y deletes it through bxn rm" "delete --force plain" "$(cat "$S/calls" 2>/dev/null)"
 assert_contains "the result is shown" "Deleted plain" "$(last_frame "$out" | plain)"
 out=$(keys j j j j D y | tui) || true
 assert_eq "the egress container isn't deleted from here" "" "$(cat "$S/calls" 2>/dev/null)"

@@ -56,9 +56,9 @@ Commands:
   <container>                    Shell into container (default)
   -s, shell [--with-sudo] <container> [cmd]
                                  Shell into container (--with-sudo grants temporary sudo)
-  -i, init <project> [args...]   Create a container named HANDLE-AGENT-PROJECT,
+  -c, create <project> [args...] Create a container named HANDLE-AGENT-PROJECT,
                                  with one agent (or a shell); numbered -1, -2
-                                 when the name is taken
+                                 when the name is taken (bxn create -h)
   handle [<new>]                 Show or change your handle, the first part of
                                  every container name
   -n, net <container> [ports...] Manage port proxies
@@ -69,7 +69,7 @@ Commands:
                                  list them, map tailnet HTTPS <port> to the
                                  app's <target> (default: the same), or remove
   -e, env <container> <VAR>      Set env variable (prompts silently, paste-friendly)
-  -d, delete <container>          Force delete a container
+  rm <container>                 Force delete a container
   -k, kill <container>           Stop a container
   -ka, kill-all                  Stop all boxen containers
   -u, update <container>         Update packages in a container
@@ -95,14 +95,15 @@ Examples:
   bxn your-container                        Shell into your-container
   bxn -s your-container                     Shell into your-container (explicit)
   bxn -s your-container mix test            Run a command in your-container
-  bxn -i your-container --from base-dev     Init your-container from template
+  bxn -c your-container                     Create your-container
+  bxn -c your-container --from base-dev     Create your-container from template
   bxn -n your-container 4000 3241           Proxy ports 4000 and 3241
   bxn -n your-container 4000:8080           Host 4000 -> container 8080
   bxn -n your-container -b 10.0.0.5 4000   Bind to a specific IP (e.g. Tailscale)
   bxn -n your-container -H host.ts.net 4000 Bind to the IP resolved from an FQDN
   bxn -n your-container -l                  List proxies on your-container
   bxn -e your-container OPENAI_API_KEY      Set env var in your-container (prompts silently)
-  bxn -d your-container                     Delete your-container
+  bxn rm your-container                     Delete your-container
   bxn -k your-container                     Stop your-container
   bxn -ka                       Stop all boxen containers
   bxn -u your-container                     Update packages in your-container
@@ -787,7 +788,7 @@ status_interactive() {
     fi
     if [[ "$ask" == delete ]] && ((${#ask_desc} >= term_cols)); then
       ask=""
-      msg=$(status_note "$msg" "The question does not fit; widen the terminal or use bxn delete.")
+      msg=$(status_note "$msg" "The question does not fit; widen the terminal or use bxn rm.")
     fi
     wide=false
     if ((term_cols >= STATUS_WIDE_COLS)); then wide=true; fi
@@ -908,7 +909,7 @@ status_interactive() {
               status_job delete "${ask_args[0]}" "$SCRIPT_DIR/bxn" delete "${ask_args[0]}"
               msg=$(status_note "$msg" "Deleting ${ask_args[0]}…")
             else
-              msg=$(status_note "$msg" "The question does not fit; widen the terminal or use bxn delete.")
+              msg=$(status_note "$msg" "The question does not fit; widen the terminal or use bxn rm.")
             fi
           else
             msg=$(status_note "$msg" "Nothing changed")
@@ -1141,7 +1142,7 @@ case "$1" in
     resolve_container_arg "$@"
     exec "$SCRIPT_DIR/boxen.shell" ${RARGS[@]+"${RARGS[@]}"}
     ;;
-  -i|init)
+  -c|create|-i|init)  # -i and init are the old spellings, kept for scripts
     shift
     exec "$SCRIPT_DIR/boxen.init" "$@"
     ;;
@@ -1174,15 +1175,15 @@ case "$1" in
   handle)
     shift
     if [[ $# -eq 0 ]]; then
-      names_saved_handle || echo "No handle yet: bxn -i asks for one, or set it with bxn handle <new>"
+      names_saved_handle || echo "No handle yet: bxn create asks for one, or set it with bxn handle <new>"
     else
       names_save_handle "$1"
       log "Your handle is now $1: new containers are named $1-AGENT-PROJECT"
     fi
     ;;
-  -d|delete)
+  rm|-d|delete)  # -d and delete are the old spellings, kept for scripts
     shift
-    [[ $# -lt 1 ]] && error "Usage: bxn delete <container>"
+    [[ $# -lt 1 ]] && error "Usage: bxn rm <container>"
     resolve_container_arg "$@"
     set -- "${RARGS[@]}"
     _egress="$(incus config get "$1" user.boxen.egress.container 2>/dev/null || true)"
