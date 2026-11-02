@@ -559,7 +559,7 @@ egress_boot_id() {
   cat /proc/sys/kernel/random/boot_id 2>/dev/null || sysctl -n kern.boottime 2>/dev/null | tr -cd '0-9' || echo unknown
 }
 
-# A build is abandoned when the bxn -i that started it has exited or the
+# A build is abandoned when the bxn -c that started it has exited or the
 # host has rebooted since, so a status check never stops a healthy one.
 egress_build_abandoned() {
   local build b pid

@@ -1,6 +1,6 @@
 #!/bin/bash
 # tests/egress_init_test.sh
-# bxn -i under an allowlist (the default): a fresh build installs plugins
+# bxn -c under an allowlist (the default): a fresh build installs plugins
 # that take no credentials while open, locks, then copies the workspace and
 # installs the rest; a template launch is locked before its first start; and
 # --egress off, report and the refusals. Runs boxen.init end to end against

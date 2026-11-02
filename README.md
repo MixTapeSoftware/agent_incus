@@ -51,7 +51,7 @@ It then offers to install [Chadmux](https://github.com/chadfennell/chadmux), Cha
 ```bash
 # Create a container with a copy of the current directory in /workspace and
 # one coding agent. It's named HANDLE-AGENT-PROJECT, here chad-claude-my-project.
-bxn -i my-project --agent claude
+bxn -c my-project --agent claude
 # Or: --agent codex, --agent grok, or --agent shell for none
 
 # Open a shell: the project alone finds it
@@ -83,8 +83,8 @@ bxn my-project                        # Shell into container (default)
 bxn -s my-project                     # Shell (explicit)
 bxn -s my-project mix test            # Run a command in container
 bxn -s my-project "mix test | tail"   # One quoted string runs as a shell line
-bxn -i my-project                     # Create a new container
-bxn -i my-project --from base-dev     # Create from template
+bxn -c my-project                     # Create a new container
+bxn -c my-project --from base-dev     # Create from template
 bxn -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
 bxn -n my-project 4000:8080           # Host 4000 -> container 8080
 bxn -n my-project -b 10.0.0.5 4000   # Proxy on a specific address (e.g. Tailscale IP for remote access)
@@ -96,7 +96,7 @@ bxn -ua                               # Update all boxen containers
 bxn                                   # Live view of all instances (same as bxn status)
 bxn status                            # Live view of all instances; space starts/stops one, D deletes it (asks first)
 bxn status --once                     # Print the status table once
-bxn -d my-project                     # Delete a container
+bxn rm my-project                     # Delete a container
 bxn cron install                      # Install 7pm daily update cron
 bxn cron install 3                    # Install 3am daily update cron
 bxn cron status                       # Show current cron schedule
@@ -181,11 +181,11 @@ before the plugin picker and starts on "Shell (no agent)", or pass
 `--agent NAME` (`--agent shell` for none). Choosing two is refused.
 
 ```bash
-bxn -i web --agent claude          # chad-claude-web
-bxn -i web --agent claude          # chad-claude-web-1, a second agent on its own copy
-bxn -i web --agent codex           # chad-codex-web
-bxn -i web --agent shell           # chad-shell-web, for tests, git and servers
-bxn -i --from web-base web --agent grok
+bxn -c web --agent claude          # chad-claude-web
+bxn -c web --agent claude          # chad-claude-web-1, a second agent on its own copy
+bxn -c web --agent codex           # chad-codex-web
+bxn -c web --agent shell           # chad-shell-web, for tests, git and servers
+bxn -c --from web-base web --agent grok
 ```
 
 **Names.** A container is named `HANDLE-AGENT-PROJECT`. Your handle is asked
@@ -322,8 +322,8 @@ Containers have no sudo by default, which takes away an AI agent's easiest route
 
 ```mermaid
 graph LR
-    H["Host checkout"] -- "copied at bxn -i" --> A["Agent container"]
-    H -- "copied at bxn -i" --> D["Dev container"]
+    H["Host checkout"] -- "copied at bxn -c" --> A["Agent container"]
+    H -- "copied at bxn -c" --> D["Dev container"]
     A -- "git push" --> R["Git remote"]
     D -- "git push" --> R
     R -- "git fetch" --> H
@@ -331,17 +331,17 @@ graph LR
 
 ```bash
 # Agent container — no credentials
-bxn -i project --agent claude                      # chad-claude-project
+bxn -c project --agent claude                      # chad-claude-project
 
 # Dev container — with credentials
-bxn -i project --agent shell --1pass --gh-token    # chad-shell-project
+bxn -c project --agent shell --1pass --gh-token    # chad-shell-project
 
 # Shell in with temporary sudo to install something
 bxn shell --with-sudo shell-project
 
 # Save as reusable template, then spin up new containers instantly
-bxn -i --template project-base
-bxn -i --from project-base project --agent claude  # chad-claude-project-1
+bxn -c --template project-base
+bxn -c --from project-base project --agent claude  # chad-claude-project-1
 ```
 
 Each container works on its own copy. Work moves between containers, and back to the host, through git.
@@ -357,7 +357,7 @@ git diff main..origin/<branch>
 
 A fetch brings commits, never the container's git config or hooks. The commits can still change anything in the tree, including `package.json` scripts, `Makefile`s, `.envrc`, `.vscode/tasks.json` and hook managers like husky, so read the diff before you run it.
 
-The copy lives only in the container. Deleting the container (`bxn -d`) deletes any work you haven't pushed.
+The copy lives only in the container. Deleting the container (`bxn rm`) deletes any work you haven't pushed.
 
 ### Daily Flow with tmux
 
@@ -366,8 +366,8 @@ This is the full flow we use day to day: tmux runs on the host with [Chadmux](ht
 ```bash
 tmux new -s project                     # One session per project, on the host
 
-bxn -i project --agent claude         # First time only: chad-claude-project
-bxn -i project --agent shell --1pass --gh-token   # chad-shell-project
+bxn -c project --agent claude         # First time only: chad-claude-project
+bxn -c project --agent shell --1pass --gh-token   # chad-shell-project
 
 bxn claude-project                     # Pane 1: the agent container
 claude                                  #   ...then start the agent inside it
@@ -408,7 +408,7 @@ Provisioning a container from scratch installs packages, build tools, mise, Oh M
 **Build once:**
 
 ```bash
-bxn -i --template my-base
+bxn -c --template my-base
 ```
 
 This provisions the container (with an empty workspace) and saves it locally as `incus-init/my-base`. Before publishing it removes:
@@ -422,10 +422,10 @@ Anything else stays in the image, including logins made during the build (for ex
 
 ```bash
 # Spin up a new container from the base image — seconds, not minutes
-bxn -i --from my-base my-project
+bxn -c --from my-base my-project
 
 # Same base, different credentials
-bxn -i --from my-base --1pass --gh-token my-dev
+bxn -c --from my-base --1pass --gh-token my-dev
 ```
 
 When launching from a template, provisioning (packages, shell setup, Oh My Zsh) is skipped entirely. Only the workspace copy, user creation (if needed), and selected plugins run.
@@ -445,9 +445,9 @@ system container. Everything else — provisioning, plugins, user, shell — is
 identical; only the workspace model and resources differ.
 
 ```bash
-bxn -i --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
-bxn -i --vm --no-copy my-vm                # VM with an empty /workspace
-bxn -i --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
+bxn -c --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
+bxn -c --vm --no-copy my-vm                # VM with an empty /workspace
+bxn -c --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
 ```
 
 **Workspace:** the same as a container: your working tree is copied in
@@ -464,8 +464,8 @@ native `/dev/net/tun` instead of a device passthrough.
 are VMs automatically, because a published VM image can only launch as a VM.
 
 ```bash
-bxn -i --vm --template my-vm-base          # publishes a VM-type template
-bxn -i --from my-vm-base my-vm             # launches as a VM; --vm is inferred
+bxn -c --vm --template my-vm-base          # publishes a VM-type template
+bxn -c --from my-vm-base my-vm             # launches as a VM; --vm is inferred
 ```
 
 Adding `--vm` to a launch from a container template fails early with a clear
@@ -487,7 +487,7 @@ There are two ways to set it up. The plugin is the recommended one.
 **Option 1: Tailscale inside the container (plugin).** Pick the Tailscale plugin in the TUI or pass `--tailscale`. The container joins the tailnet as its own machine, named after the container:
 
 ```bash
-bxn -i --tailscale project-dev
+bxn -c --tailscale project-dev
 ```
 
 During creation you're asked for two things:
@@ -620,7 +620,7 @@ bxn -u my-project
 bxn -ua
 ```
 
-`bxn -ua` starts stopped containers, updates them, then stops them again. Containers that were already running are left running. Only containers tagged with `user.managed-by=boxen` (set automatically during `bxn -i`) are updated. Non-Debian containers are skipped.
+`bxn -ua` starts stopped containers, updates them, then stops them again. Containers that were already running are left running. Only containers tagged with `user.managed-by=boxen` (set automatically during `bxn -c`) are updated. Non-Debian containers are skipped.
 
 Logs are written to `~/.local/state/boxen/logs/` and cleaned up on success.
 
@@ -671,7 +671,7 @@ New containers and VMs join `boxenbr0`, a bridge bxn creates on first use with t
 - IPv6 is off on the bridge.
 - bxn assigns each instance its address, recorded on the instance's `eth0`.
 
-It needs Incus 7.5.1 or later with the nftables firewall. On an older Incus, `bxn -i` refuses and explains. `--insecure-network` (or `BOXEN_INSECURE_NETWORK=1`) puts an instance on the default bridge with no isolation instead. The bridge's subnet is a free `10.x.0.0/16`; set `BOXEN_NET_SUBNET` (for example `10.201.0.1/16`) before the first `bxn -i` to choose it.
+It needs Incus 7.5.1 or later with the nftables firewall. On an older Incus, `bxn -c` refuses and explains. `--insecure-network` (or `BOXEN_INSECURE_NETWORK=1`) puts an instance on the default bridge with no isolation instead. The bridge's subnet is a free `10.x.0.0/16`; set `BOXEN_NET_SUBNET` (for example `10.201.0.1/16`) before the first `bxn -c` to choose it.
 
 Instances created before this keep the default bridge. What changes for new ones:
 
@@ -695,7 +695,7 @@ bxn egress refresh [my-project|--all]   # finish an interrupted change, review a
 
 - **Hosts** are hostnames for ports 80 and 443. A leading `*.` matches any subdomain, not the name itself.
 - **The list** is the approved baseline (`~/.config/boxen/egress-approved-baseline.txt`, AI APIs, package managers, code hosts and registries; copied from [`egress/baseline.txt`](egress/baseline.txt) on first use), your additions for every container (`bxn egress allow --all`, kept in `~/.config/boxen/egress-baseline.txt`), and the container's own hosts. When an update changes the shipped baseline, nothing uses it until `bxn egress refresh` shows you the difference and you approve it.
-- **New containers** (`bxn -i`) are built on the allowlist (`--egress enforce`; `--egress off` for none). Plugins that take no credentials install first, with the internet open; then the container is locked, and only then do the workspace and the plugins that take credentials go in. A container from a template is locked before its first start, since a template may hold logins or startup services.
+- **New containers** (`bxn -c`) are built on the allowlist (`--egress enforce`; `--egress off` for none). Plugins that take no credentials install first, with the internet open; then the container is locked, and only then do the workspace and the plugins that take credentials go in. A container from a template is locked before its first start, since a template may hold logins or startup services.
 - **Turning it on** for an open container stops it, locks its card, ends its old proxies, moves it to a fresh address so no old connection survives, and starts it again. Until that finishes it won't start on its own, and `bxn` won't start it; `bxn egress refresh` finishes an interrupted one.
 - **Proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, a narrow `NO_PROXY`, `NODE_USE_ENV_PROXY=1`) go into the Incus environment, `/etc/environment`, every systemd service, and apt. A tool that ignores them fails rather than getting around the proxy. Node's built-in `fetch` needs Node 22.21 or 24 or later for this.
 - **Without DNS**: an allowlisted container can't look names up itself; the proxy does it.

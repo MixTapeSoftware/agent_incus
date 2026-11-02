@@ -91,7 +91,7 @@ attach() {
   local c="$1" group="$2" egress
   [[ "$(incus config get "$c" user.boxen.role 2>/dev/null)" != "egress" ]] || error "$c is an egress container"
   [[ "$(incus config get "$c" user.boxen.net 2>/dev/null)" == "isolated" ]] ||
-    error "$c is on the default bridge, so its traffic can't be confined. Recreate it with bxn -i (new instances join $BOXEN_NET)."
+    error "$c is on the default bridge, so its traffic can't be confined. Recreate it with bxn -c (new instances join $BOXEN_NET)."
   egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
   if [[ -n "$egress" ]]; then
     [[ -z "$group" || "$(egress_name "$group")" == "$egress" ]] ||
@@ -371,7 +371,7 @@ cmd_refresh() {
         warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)), and it couldn't be stopped. Stop it: incus stop --force $c"
         continue
       fi
-      warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)); it's stopped. Rebuild it, or delete it: bxn -d $c"
+      warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)); it's stopped. Rebuild it, or delete it: bxn rm $c"
       continue
     fi
     converge_one "$c" || failed="$failed $c"
