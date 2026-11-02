@@ -171,11 +171,14 @@ if script -qec true /dev/null >/dev/null 2>&1; then
       printf 'S';      sleep 0.3   # already stopped: nothing
       printf 'j';      sleep 0.3   # gamma -> beta (running)
       printf ' ';      sleep 0.1   # a stop that's still pending (the stub takes 0.3s)
-      printf 'S';      sleep 1.5   # force stop beside it
+      printf 'S';      sleep 0.1   # force stop beside it
+      printf 'S';      sleep 1.5   # a second S waits for the first
       printf 'q';      sleep 1
     } | STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/bxn' status" /dev/null
   ) || true
-  assert_eq "S force-stops, even while a stop of the same instance is pending" "$(printf 'stop --force beta\nstop beta')" "$(sort "$stub/calls" 2>/dev/null)"
+  assert_eq "S force-stops once, even while a stop of the same instance is pending" "$(printf 'stop --force beta\nstop beta')" "$(LC_ALL=C sort "$stub/calls" 2>/dev/null)"
+  if [[ "$out" == *"beta is busy"* ]]; then said=yes; else said=no; fi
+  assert_eq "a second S finds it busy" "yes" "$said"
   if [[ "$out" == *"gamma is already stopped"* ]]; then said=yes; else said=no; fi
   assert_eq "S on a stopped instance says so" "yes" "$said"
   if [[ "$out" == *"Force stopping beta"* ]]; then said=yes; else said=no; fi

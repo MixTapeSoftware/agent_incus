@@ -121,7 +121,7 @@ In a terminal, `bxn status` is a live view that refreshes every second. On a ter
 | `Esc` | Back to the list from the details, otherwise quit |
 | `q` | Quit |
 
-Start, stop and delete run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. `bxn` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `bxn -s status`.
+Start, stop and delete run in the background, and the result appears below the table. `S` force-stops the selected instance (`incus stop --force`) for when a stop hangs: it's the one action still allowed while that instance's graceful stop is pending, and it waits like the others while anything else is. When output is piped, or with `--once`, it prints the table once instead. `bxn` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `bxn -s status`.
 
 ## boxen.init Options
 
