@@ -644,8 +644,13 @@ Point the tool's own proxy setting at \$HTTPS_PROXY: npm-style installers read
 npm_config_https_proxy (already set); a JVM reads -Dhttps.proxyHost and
 -Dhttps.proxyPort; a Dockerfile or compose service needs any such variable
 passed in (ENV, or environment:), since Docker forwards only HTTP_PROXY,
-HTTPS_PROXY and NO_PROXY. Inside Docker, add sibling services (http://api:3000)
-to NO_PROXY, or the proxy is asked for them and refuses.
+HTTPS_PROXY and NO_PROXY. A tool that creates Docker containers itself (the
+Supabase CLI, for one) doesn't read Docker's client config, so its containers
+get the variables only through that tool's own config: for Supabase,
+[edge_runtime.secrets] in config.toml with HTTPS_PROXY = "env(HTTPS_PROXY)".
+Inside Docker, add sibling services to NO_PROXY (localhost,127.0.0.1,::1,
+host.docker.internal plus their names: api, kong, supabase_kong_api), or the
+proxy is asked for them and refuses.
 <!-- bxn egress: end -->
 NOTE
 done
