@@ -94,7 +94,7 @@ bxn -n my-project -r all             # Remove all proxies
 bxn -u my-project                     # Update packages in a container
 bxn -ua                               # Update all boxen containers
 bxn                                   # Live view of all instances (same as bxn status)
-bxn status                            # Live view of all instances; space starts/stops one, D deletes it (asks first)
+bxn status                            # Live view of all instances; space starts/stops one, S force-stops it, D deletes it (asks first)
 bxn status --once                     # Print the status table once
 bxn rm my-project                     # Delete a container
 bxn cron install                      # Install 7pm daily update cron
@@ -375,7 +375,7 @@ claude                                  #   ...then start the agent inside it
 bxn shell-project                      # Pane 2: the dev container (tests, git, servers)
 # prefix + "  (split), then:
 bxn -n shell-project 4000              # Pane 3 on the host: proxy the dev server to localhost:4000
-bxn status                             #   ...and check CPU, memory, and disk; space starts/stops
+bxn status                             #   ...and check CPU, memory, and disk; space starts/stops, S force-stops
 ```
 
 Leave tmux with prefix + `d`; containers keep running. Come back with `tmux attach -t project`, and stop everything at the end of the day with `bxn -ka`.
