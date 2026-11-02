@@ -112,7 +112,7 @@ case "$cmd" in
 
   init|launch)
     # incus init <image> <name> [flags]
-    name="${2:-}"
+    image="${1:-}" name="${2:-}"
     [[ -n "$name" ]] || die "name required"
     profiles=(); devs=()
     shift 2
@@ -130,6 +130,8 @@ case "$cmd" in
     done
     if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
     else create_instance "$name" STOPPED; fi
+    # An instance from a local image starts with the image's filesystem.
+    if [[ -d "$S/images/$image/root" ]]; then cp -R "$S/images/$image/root/." "$(inst_dir "$name")/root/"; fi
     printf '%s\n' ${profiles[@]+"${profiles[@]}"} > "$(inst_dir "$name")/profiles"
     # -d <device>,<key>=<value>: an instance device override at create.
     for d in ${devs[@]+"${devs[@]}"}; do

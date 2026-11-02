@@ -40,6 +40,8 @@ printf '#!/bin/sh\nexit 0\n' > "$SANDBOX/bin/git"
 chmod +x "$SANDBOX/bin/"*
 cp "$REPO_ROOT"/boxen.* "$SANDBOX/repo/"
 cp -R "$REPO_ROOT/egress" "$SANDBOX/repo/egress"
+# The real Docker plugin, for its proxy settings; it's never selected here.
+cp "$REPO_ROOT/plugins/10-docker.sh" "$SANDBOX/repo/plugins/"
 # Two plugins that record the build phase they ran in.
 cat > "$SANDBOX/repo/plugins/10-open.sh" <<EOF
 PLUGIN_ID="open-one"; PLUGIN_NAME="Open one"; PLUGIN_DESC="no credentials"; PLUGIN_DEFAULT=1
@@ -65,9 +67,14 @@ fresh() {
   export FAKE_INCUS_STATE="$SANDBOX/state-$RANDOM$RANDOM"
   export BOXEN_LOCK_DIR="$FAKE_INCUS_STATE/lock"
   export BOXEN_CONFIG_DIR="$FAKE_INCUS_STATE/config"
-  mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"
+  # The template has Docker, and a client config from the proxy it was built behind.
+  local img="$FAKE_INCUS_STATE/images/incus-init/base/root"
+  mkdir -p "$img/usr/bin" "$img/home/$(whoami)/.docker"
+  touch "$img/usr/bin/docker"
+  echo '{"auths":{"ghcr.io":{}},"proxies":{"default":{"httpProxy":"http://10.201.0.9:10009"}}}' > "$img/home/$(whoami)/.docker/config.json"
   rm -f "$SANDBOX/order"
 }
+docker_cfg() { jq -c "$2" "$FAKE_INCUS_STATE/instances/$1/root/home/$(whoami)/.docker/config.json" 2>/dev/null; }
 # The fixtures have exact names; naming itself is in names_test.sh.
 init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.init" --name "$n" "$@" --no-tui -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
 cfg() { cat "$FAKE_INCUS_STATE/instances/$1/config/$2" 2>/dev/null; }
@@ -95,6 +102,9 @@ assert_contains "the proxy is in its environment" "http://10.201.0.11:10000" "$(
 assert_contains "github remotes use HTTPS" 'insteadOf "git@github.com:"' "$(stdin_all)"
 assert_contains "the agents get a note" "## Network allowlist" "$(stdin_all)"
 assert_contains "the note names the allow command" "bxn egress allow box <host>" "$(stdin_all)"
+assert_contains "the note explains a tool that skips the proxy" "Point the tool's own proxy setting at \$HTTPS_PROXY" "$(stdin_all)"
+assert_eq "npm's variables are set with the others" "http://10.201.0.11:10000" "$(cfg box environment.npm_config_https_proxy)"
+assert_eq "no Docker, so no Docker proxy settings" "" "$(docker_cfg box .)"
 assert_contains "the login banner" "This container is on an allowlist (enforce)" "$(stdin_all)"
 assert_contains "networking is checked through the proxy after the lock" "curl -fsS -o /dev/null --max-time 5 https://github.com" "$(cat "$FAKE_INCUS_STATE/exec.log")"
 
@@ -110,6 +120,9 @@ assert_eq "both plugins ran locked, in name order" "locked-one:locked open-one:l
 assert_eq "the build is done" "done" "$(cfg tbox user.boxen.egress.build)"
 assert_eq "autostart is back to unset" "" "$(cfg tbox boot.autostart)"
 assert_eq "the barrier keys are cleared" "none" "$(cfg tbox user.boxen.egress.autostart-saved)"
+assert_eq "the template's Docker client config points at this container's proxy" "\"$(cfg tbox environment.HTTPS_PROXY)\"" "$(docker_cfg tbox .proxies.default.httpsProxy)"
+assert_contains "and keeps Docker's own networks off it" "host.docker.internal" "$(docker_cfg tbox .proxies.default.noProxy)"
+assert_eq "the rest of the config is kept" '{"ghcr.io":{}}' "$(docker_cfg tbox .auths)"
 
 echo "modes and refusals"
 fresh
@@ -119,6 +132,8 @@ assert_eq "--egress off starts it as soon as it's created" "start obox" "$(grep 
 assert_eq "--egress off makes no egress container" "no" "$([[ -d "$FAKE_INCUS_STATE/instances/boxen-egress" ]] && echo yes || echo no)"
 assert_eq "--egress off has no build state" "" "$(cfg obox user.boxen.egress.build)"
 assert_contains "an off launch from a template clears its old proxy settings" "rm -f /etc/apt/apt.conf.d/95boxen-proxy" "$(cat "$FAKE_INCUS_STATE/exec.log")"
+assert_eq "and takes them out of Docker's client config" "null" "$(docker_cfg obox .proxies)"
+assert_eq "keeping the rest" '{"ghcr.io":{}}' "$(docker_cfg obox .auths)"
 fresh
 mkdir -p "$SANDBOX/globdir"; touch "$SANDBOX/globdir/x.api.locked.example"
 (cd "$SANDBOX/globdir" && init gl --from base)

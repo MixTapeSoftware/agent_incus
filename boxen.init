@@ -610,7 +610,23 @@ _reset_plugin_state() {
   PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
   PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
   PLUGIN_REQUIRES="" PLUGIN_AGENT_COMMAND="" PLUGIN_PHASE="" PLUGIN_EGRESS_ALLOW=""
-  unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch 2>/dev/null || true
+  unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch plugin_proxy 2>/dev/null || true
+}
+
+# Proxy settings a tool keeps in its own files, not the environment. Every
+# plugin that declares plugin_proxy and whose tool is installed gets PROXY_URL
+# (empty: remove the settings) and PROXY_NO_PROXY. Installed, not selected:
+# a template's tools count, whatever this launch picked.
+# Usage: _run_plugin_proxy_hooks <url|"">
+_run_plugin_proxy_hooks() {
+  local url="$1" i
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    _reset_plugin_state
+    source "${_P_FILE[$i]}"
+    declare -F plugin_proxy >/dev/null || continue
+    declare -F plugin_is_installed >/dev/null && plugin_is_installed || continue
+    PROXY_URL="$url" PROXY_NO_PROXY="$EGRESS_NO_PROXY" _run_plugin_hook plugin_proxy
+  done
 }
 
 _run_plugin_prompts() {
@@ -880,21 +896,14 @@ lock_build() {
 
 # Settings a locked container needs, then the build is done:
 # - github.com over HTTPS, since SSH (port 22) can't get out;
-# - Docker's client proxy settings, for builds and containers inside Docker;
+# - the proxy settings of tools that keep their own (plugin_proxy);
 # - the login banner and the coding agents' note.
 finish_locked_build() {
-  local url
-  url="$(egress_proxy_url "$CONTAINER_NAME")"
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c 'sh -s' <<GITCFG || warn "Could not set git and Docker proxy settings"
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c 'sh -s' <<'GITCFG' || warn "Could not point github remotes at HTTPS"
 git config --global url."https://github.com/".insteadOf "git@github.com:"
 git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
-if command -v docker >/dev/null 2>&1; then
-  mkdir -p "\$HOME/.docker"
-  f="\$HOME/.docker/config.json"
-  [ -s "\$f" ] || echo '{}' > "\$f"
-  jq --arg u "$url" --arg n "$EGRESS_NO_PROXY" '.proxies.default = {httpProxy: \$u, httpsProxy: \$u, noProxy: \$n}' "\$f" > "\$f.new" && mv "\$f.new" "\$f"
-fi
 GITCFG
+  _run_plugin_proxy_hooks "$(egress_proxy_url "$CONTAINER_NAME")"
   egress_write_notices "$CONTAINER_NAME" "$HOST_USER"
   egress_commit "$CONTAINER_NAME"
   incus config set "$CONTAINER_NAME" user.boxen.egress.build=done
@@ -1355,9 +1364,10 @@ if [[ "$LOCKED_BUILD" == "1" ]]; then
   [[ "$FROM_BASE_IMAGE" == "1" ]] && egress_write_proxy_env "$CONTAINER_NAME"
 elif [[ "$FROM_BASE_IMAGE" == "1" ]]; then
   # A template built under an allowlist carries proxy settings for a proxy
-  # this container doesn't have.
+  # this container doesn't have, in the environment and in tools' own files.
   wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
   egress_clear_proxy_env "$CONTAINER_NAME"
+  _run_plugin_proxy_hooks ""
 fi
 
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"

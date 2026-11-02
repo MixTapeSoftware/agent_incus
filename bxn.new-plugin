@@ -143,6 +143,14 @@ plugin_install() {
 #   # symlinks, host-side config, etc.). Often calls plugin_install for simple cases.
 #   plugin_install
 # }
+
+# plugin_proxy() {
+#   # Only for a tool that ignores HTTP_PROXY/HTTPS_PROXY and keeps proxy
+#   # settings in its own file. Runs when the container is locked behind the
+#   # egress proxy, with PROXY_URL and PROXY_NO_PROXY set, and again with an
+#   # empty PROXY_URL when a template launches without an allowlist: remove them.
+#   if [ -n "\$PROXY_URL" ]; then ...; else ...; fi
+# }
 PLUGIN_EOF
 
 log "Created $DEST_FILE"

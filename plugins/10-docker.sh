@@ -129,3 +129,23 @@ DOCKER_EOF
 plugin_on_launch() {
   plugin_install
 }
+
+# Under an allowlist, the client config forwards HTTP_PROXY, HTTPS_PROXY and
+# NO_PROXY into every build and container. Those three are all Docker can
+# forward; anything else (npm_config_*, Java's properties) has to be passed in
+# by the Dockerfile or compose file. An empty PROXY_URL takes the settings out
+# again, for a template launched without an allowlist.
+plugin_proxy() {
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c 'sh -s' <<DOCKER_PROXY
+set -e
+mkdir -p "\$HOME/.docker"
+f="\$HOME/.docker/config.json"
+[ -s "\$f" ] || echo '{}' > "\$f"
+if [ -n "$PROXY_URL" ]; then
+  jq --arg u "$PROXY_URL" --arg n "$PROXY_NO_PROXY" '.proxies.default = {httpProxy: \$u, httpsProxy: \$u, noProxy: \$n}' "\$f" > "\$f.new"
+else
+  jq 'del(.proxies)' "\$f" > "\$f.new"
+fi
+mv "\$f.new" "\$f"
+DOCKER_PROXY
+}
