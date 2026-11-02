@@ -49,10 +49,13 @@ Options:
   --colima-disk N           Colima VM disk in GB (default: 100, macOS only)
   --vm                      Provision a KVM virtual machine instead of a container
   --no-copy                 Start with an empty workspace instead of copying the host directory
+  --memory SIZE             Memory limit, e.g. 8GiB (default: the boxen profile's
+                            6GB for a container, 4GiB for a VM; a selected plugin
+                            can raise it). Refused when the host can't back it
   --vm-disk SIZE            VM root disk size (default: 20GiB)
-  --vm-memory SIZE          VM memory (default: 4GiB)
+  --vm-memory SIZE          Same as --memory
   --vm-cpus N               VM vCPUs (default: 4)
-  --ack-env                 Acknowledge .env files in the workspace (skip prompt)
+  --ack-env                Acknowledge .env files in the workspace (skip prompt)
   --agent NAME              The coding agent: claude, codex, grok, or shell for none
   --name NAME               Use NAME exactly, instead of HANDLE-AGENT-PROJECT
   --no-tui                  Skip interactive plugin selector, use defaults
@@ -239,6 +242,10 @@ VM_OPT_SET=0
 VM_DISK="20GiB"
 VM_MEMORY="4GiB"
 VM_CPUS="4"
+MEMORY=""          # --memory, for either type
+MEMORY_LIMIT=""    # a container's own limits.memory; empty leaves the profile's
+MEMORY_SHOWN=""    # what the instance gets, and why, for the summaries
+MEMORY_WHY=""
 READY_TIMEOUT=30
 INSECURE_NETWORK="${BOXEN_INSECURE_NETWORK:-0}"
 EGRESS_MODE=""
@@ -609,7 +616,7 @@ ZSHEOF
 _reset_plugin_state() {
   PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
   PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
-  PLUGIN_REQUIRES="" PLUGIN_AGENT_COMMAND="" PLUGIN_PHASE="" PLUGIN_EGRESS_ALLOW=""
+  PLUGIN_REQUIRES="" PLUGIN_AGENT_COMMAND="" PLUGIN_PHASE="" PLUGIN_EGRESS_ALLOW="" PLUGIN_MIN_MEMORY=""
   unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch 2>/dev/null || true
 }
 
@@ -861,6 +868,88 @@ _selected_plugin_hosts() {
   done
 }
 
+# ---------------------------------------------------------------------------
+# Memory. An instance gets --memory, else the largest PLUGIN_MIN_MEMORY among
+# the selected plugins when that beats the default (the boxen profile's limit
+# for a container, 4GiB for a VM). A plugin's floor is for what it runs: the
+# local Supabase stack wants more than most whole projects. The build is
+# refused when the host can't back the figure with 2GiB left over: a VM
+# really takes it, and a container's cap shouldn't promise what isn't there.
+# ---------------------------------------------------------------------------
+
+# Bytes for an Incus size: 8GiB, 6GB, 512MiB, 1073741824. Fails on anything else.
+size_to_bytes() {
+  local n unit
+  [[ "$1" =~ ^([0-9]+)[[:space:]]*(B|kB|KB|KiB|MB|MiB|GB|GiB|TB|TiB)?$ ]] || return 1
+  n=${BASH_REMATCH[1]} unit=${BASH_REMATCH[2]}
+  case "$unit" in
+    ""|B) echo "$n" ;;
+    kB|KB) echo $((n * 1000)) ;;
+    KiB)   echo $((n * 1024)) ;;
+    MB)    echo $((n * 1000000)) ;;
+    MiB)   echo $((n * 1048576)) ;;
+    GB)    echo $((n * 1000000000)) ;;
+    GiB)   echo $((n * 1073741824)) ;;
+    TB)    echo $((n * 1000000000000)) ;;
+    TiB)   echo $((n * 1099511627776)) ;;
+  esac
+}
+
+# GiB to one decimal, for messages.
+bytes_to_gib() {
+  local t=$(( $1 * 10 / 1073741824 ))
+  echo "$((t / 10)).$((t % 10))GiB"
+}
+
+# The memory of the machine Incus runs on, in bytes: on macOS that's Colima's
+# VM. From the resources API with jq, else /proc/meminfo; empty if neither.
+host_memory_bytes() {
+  local v=""
+  if command -v jq >/dev/null 2>&1; then
+    v="$(incus query /1.0/resources 2>/dev/null | jq -r '.memory.total // empty' 2>/dev/null)" || v=""
+  fi
+  if [[ -z "$v" && -r /proc/meminfo ]]; then
+    v="$(awk '/^MemTotal:/ { printf "%d", $2 * 1024; exit }' /proc/meminfo)"
+  fi
+  [[ "$v" =~ ^[0-9]+$ ]] && echo "$v"
+  return 0
+}
+
+# Sets MEMORY_LIMIT, MEMORY_SHOWN and MEMORY_WHY (and VM_MEMORY for a VM).
+resolve_memory() {
+  local default want want_bytes floor_bytes=0 floor="" floor_by="" i min b host headroom=$((2 * 1073741824)) where=""
+  if [[ "$IS_VM" == "1" ]]; then default="$VM_MEMORY"; else default="$AGENT_PROFILE_MEMORY"; fi
+  if [[ -n "$MEMORY" ]]; then
+    want_bytes="$(size_to_bytes "$MEMORY")" || error "--memory must be a size such as 8GiB or 6GB (got: $MEMORY)"
+    want="$MEMORY" MEMORY_WHY="--memory"
+  else
+    want="$default" MEMORY_WHY="default"
+    want_bytes="$(size_to_bytes "$default")" || error "The default memory isn't a size: $default"
+  fi
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    [[ "${_P_SELECTED[$i]}" == "1" ]] || continue
+    min="$( _reset_plugin_state; source "${_P_FILE[$i]}"; echo "${PLUGIN_MIN_MEMORY:-}" )"
+    [[ -n "$min" ]] || continue
+    b="$(size_to_bytes "$min")" || { warn "${_P_NAME[$i]}: PLUGIN_MIN_MEMORY '$min' isn't a size; ignored"; continue; }
+    if (( b > floor_bytes )); then floor_bytes=$b floor="$min" floor_by="${_P_NAME[$i]}"; fi
+  done
+  if (( floor_bytes > want_bytes )); then
+    want="$floor" want_bytes=$floor_bytes MEMORY_WHY="$floor_by needs at least $floor"
+  fi
+  host="$(host_memory_bytes)"
+  if [[ -n "$host" ]] && (( want_bytes > host - headroom )); then
+    [[ "$(uname)" == Darwin ]] && where=" Here that's Colima's VM: raise it with --colima-memory."
+    error "This host has $(bytes_to_gib "$host") of memory; $CONTAINER_NAME would get $want ($MEMORY_WHY), leaving it less than 2GiB.$where Choose less with --memory."
+  fi
+  if [[ "$IS_VM" == "1" ]]; then
+    VM_MEMORY="$want"
+  elif [[ "$MEMORY_WHY" != default ]]; then
+    MEMORY_LIMIT="$want"
+  fi
+  MEMORY_SHOWN="$want"
+  [[ "$MEMORY_WHY" == default || "$MEMORY_WHY" == --memory ]] || log "Memory: $want ($MEMORY_WHY)"
+}
+
 # The lock, between a fresh build's open and locked phases: the container's
 # proxy, then the same lockdown `bxn egress mode` uses (stop, locked card, a
 # new address, a verified proxy, start).
@@ -983,7 +1072,7 @@ while [[ $# -gt 0 ]]; do
     --vm)            IS_VM=1; shift ;;
     --no-copy)       NO_COPY=1; shift ;;
     --vm-disk)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_DISK="$2"; VM_OPT_SET=1; shift 2 ;;
-    --vm-memory)     [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_MEMORY="$2"; VM_OPT_SET=1; shift 2 ;;
+    --memory|--vm-memory) [[ $# -lt 2 ]] && error "$1 requires an argument"; MEMORY="$2"; shift 2 ;;
     --vm-cpus)       [[ $# -lt 2 ]] && error "$1 requires an argument"; VM_CPUS="$2"; VM_OPT_SET=1; shift 2 ;;
     --ack-env)       ACK_ENV=1; shift ;;
     --agent)         [[ $# -lt 2 ]] && error "$1 requires an argument"; select_agent "$2"; shift 2 ;;
@@ -1094,7 +1183,7 @@ if [[ "$IS_VM" == "1" ]]; then
   [[ "$VM_CPUS" =~ ^[1-9][0-9]*$ ]] || error "--vm-cpus must be a positive integer (got: $VM_CPUS)"
   READY_TIMEOUT=90
 elif [[ "$VM_OPT_SET" == "1" ]]; then
-  warn "VM options (--vm-disk/--vm-memory/--vm-cpus) are ignored without --vm"
+  warn "VM options (--vm-disk/--vm-cpus) are ignored without --vm"
 fi
 
 HOST_USER="$(whoami)"
@@ -1183,6 +1272,7 @@ done
 log "Agent: $(agent_label "$AGENT_SLOT")"
 log "Plugins selected: ${_sel_names:-none}"
 unset _i _sel_names
+resolve_memory
 
 # ---------------------------------------------------------------------------
 # Component prompts — called once, after TUI decision
@@ -1215,6 +1305,7 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "Type:        container"
   fi
+  echo "Memory:      $MEMORY_SHOWN ($MEMORY_WHY)"
   if [[ "$INSECURE_NETWORK" == "1" ]]; then
     echo "Network:     default bridge, not isolated (--insecure-network)"
   else
@@ -1297,7 +1388,10 @@ create_instance() {
       -c limits.cpu="$VM_CPUS" \
       -d root,size="$VM_DISK"
   else
-    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
+    # Its own limit only when something asked for one; else the profile's.
+    local mem=()
+    [[ -z "$MEMORY_LIMIT" ]] || mem=(-c "limits.memory=$MEMORY_LIMIT")
+    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"} ${mem[@]+"${mem[@]}"}
   fi
 }
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
@@ -1635,6 +1729,7 @@ if [[ "$IS_VM" == "1" ]]; then
 else
   echo "Type:        container"
 fi
+echo "Memory:      $MEMORY_SHOWN ($MEMORY_WHY)"
 if [[ "$SAVE_TEMPLATE" == "1" ]]; then
   echo "Workspace:   empty (template base)"
 elif [[ "$NO_COPY" == "1" ]]; then

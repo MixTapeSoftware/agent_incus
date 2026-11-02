@@ -142,8 +142,11 @@ Options:
   --insecure-network        Use the default bridge: no isolation from other instances or the host
   --egress MODE             Internet allowlist: enforce (default), report or off
   --egress-container NAME   Run the container's proxy in boxen-egress-NAME
+  --memory SIZE             Memory limit, e.g. 8GiB (default: the boxen profile's
+                            6GB for a container, 4GiB for a VM; a selected plugin
+                            can raise it). Refused when the host can't back it
   --vm-disk SIZE            VM root disk size (default: 20GiB)
-  --vm-memory SIZE          VM memory (default: 4GiB)
+  --vm-memory SIZE          Same as --memory
   --vm-cpus N               VM vCPUs (default: 4)
   --colima-cpus N           Colima VM CPUs (default: 4, macOS only)
   --colima-memory N         Colima VM memory in GB (default: 8, macOS only)
@@ -307,6 +310,7 @@ Optional extras:
 - `PLUGIN_EGRESS_ALLOW="host *.example.com"` — hosts the plugin needs under the [egress allowlist](#egress-allowlist), recorded on the container when it's created
 - `PLUGIN_PHASE=open|locked` — when it installs under an allowlist: `open`, before the container is locked, or `locked`, after, with the workspace. Plugins that prompt (they usually take a credential) default to `locked`, others to `open`
 - `PLUGIN_REQUIRES="other-id ..."` — auto-select these plugins whenever this one is selected (single level: a required plugin's own requirements aren't chased)
+- `PLUGIN_MIN_MEMORY="8GiB"` — the instance gets at least this much memory when the plugin is selected, unless `--memory` asks for more. The build is refused if the host can't back it with 2GiB to spare. The Supabase serve plugin sets 8GiB for the local Supabase stack
 
 **Overriding a built-in:** define a plugin in your user dir with the same `PLUGIN_ID` as a built-in. You'll see a `[!] Plugin 'foo' from ... overrides ...` warning at discovery time.
 
@@ -447,13 +451,15 @@ identical; only the workspace model and resources differ.
 ```bash
 bxn -c --vm my-vm                          # VM; copies your cwd into /workspace (incl .git)
 bxn -c --vm --no-copy my-vm                # VM with an empty /workspace
-bxn -c --vm --vm-memory 8GiB --vm-cpus 8 my-vm   # override resources
+bxn -c --vm --memory 8GiB --vm-cpus 8 my-vm   # override resources
 ```
 
 **Workspace:** the same as a container: your working tree is copied in
 (including `.git`), and `--no-copy` starts empty. Resource
 defaults are `20GiB` disk / `4GiB` memory / `4` vCPUs (override with
-`--vm-disk`/`--vm-memory`/`--vm-cpus`).
+`--vm-disk`/`--memory`/`--vm-cpus`). `--memory` works for containers too,
+which otherwise share the boxen profile's 6GB limit; a plugin that needs
+more raises it, and a figure the host can't back is refused.
 
 **Plugins are VM-aware:** Docker installs natively inside a VM (no
 `security.nesting` or syscall interception — those config keys are

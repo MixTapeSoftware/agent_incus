@@ -79,6 +79,11 @@ cmd="${1:-}"; shift || true
 case "$cmd" in
   query)
     # The server record, as Incus 7.6 prints it.
+    if [[ "${1:-}" == "/1.0/resources" ]]; then
+      # The host's memory, in bytes (default 64GiB).
+      printf '{"memory": {"total": %s, "used": 0}}\n' "${FAKE_INCUS_MEMORY:-68719476736}"
+      exit 0
+    fi
     [[ "${1:-}" == "/1.0" ]] || die "not found"
     echo "{"
     echo '  "api_extensions": ['
@@ -114,7 +119,7 @@ case "$cmd" in
     # incus init <image> <name> [flags]
     name="${2:-}"
     [[ -n "$name" ]] || die "name required"
-    profiles=(); devs=()
+    profiles=(); devs=(); confs=()
     shift 2
     while [[ $# -gt 0 ]]; do
       if [[ "$1" == "-p" || "$1" == "--profile" ]]; then
@@ -124,6 +129,9 @@ case "$cmd" in
       elif [[ "$1" == "-d" || "$1" == "--device" ]]; then
         devs+=("$2")
         shift 2
+      elif [[ "$1" == "-c" || "$1" == "--config" ]]; then
+        confs+=("$2")
+        shift 2
       else
         shift
       fi
@@ -131,6 +139,10 @@ case "$cmd" in
     if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
     else create_instance "$name" STOPPED; fi
     printf '%s\n' ${profiles[@]+"${profiles[@]}"} > "$(inst_dir "$name")/profiles"
+    # -c <key>=<value>: instance config at create.
+    for c in ${confs[@]+"${confs[@]}"}; do
+      printf '%s' "${c#*=}" > "$(inst_dir "$name")/config/${c%%=*}"
+    done
     # -d <device>,<key>=<value>: an instance device override at create.
     for d in ${devs[@]+"${devs[@]}"}; do
       kv="${d#*,}"
