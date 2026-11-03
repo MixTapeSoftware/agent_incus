@@ -1,0 +1,23 @@
+incus.init
+  s_fea6d8ad3495bc::t_6b4b0426dae9d0 169,184,187-197
+plugins/55-supabase-serve.sh
+  s_fea6d8ad3495bc::t_3d6abfb3c20106 10-11
+tests/egress_init_test.sh
+  s_fea6d8ad3495bc::t_bee29c638a9d49 169-236
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "204eeb198fe4c12f8faffbbba0c11edecc0b1035",
+  "prompts": {},
+  "sessions": {
+    "s_fea6d8ad3495bc": {
+      "agent_id": {
+        "tool": "codex",
+        "id": "01a18f58-693d-7101-a9cd-0783ad5a93b5",
+        "model": "unknown"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+README.md
+  s_b30f197dc8418c::t_258e0f66b480d4 435-436,440,443-445
+incus.init
+  s_b30f197dc8418c::t_449c2b57f761a6 747-768
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "b4f6fb5e0b979f20b4f43a297e57c001b206cce8",
+  "prompts": {},
+  "sessions": {
+    "s_b30f197dc8418c": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "26612d30-f75e-4077-9f0a-6e3b1d3a9254",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}

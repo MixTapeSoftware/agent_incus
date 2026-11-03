@@ -1,0 +1,19 @@
+spikes/sprite-spike.sh
+  s_6b91e65bcd49e4::t_ea30e35de9ce44 1-176
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "f0a9dd0bacab93c34fb79a07274d90412844c461",
+  "prompts": {},
+  "sessions": {
+    "s_6b91e65bcd49e4": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "d3634bb6-6c91-4649-a068-1980ebccbfb6",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
