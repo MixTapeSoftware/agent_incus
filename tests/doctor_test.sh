@@ -116,11 +116,19 @@ kill "$sleeper" 2>/dev/null || true
 wait "$sleeper" 2>/dev/null || true
 rm -rf "$BOXEN_LOCK_DIR"
 
+echo "instances that can't be listed"
+FAKE_INCUS_FAIL_CALL='^list --format csv --columns ns$' doctor
+assert_eq "a list that fails is a failure, not all clear" "1" "$RC"
+assert_contains "and says nothing was checked" "Incus wouldn't list its instances, so none of them was checked" "$OUT"
+assert_not_contains "never all clear" "All clear" "$OUT"
+
 echo "the bridge"
 printf '10.0.0.0/8 dev tun0 scope link\n' >> "$FAKE_INCUS_STATE/routes"
 doctor
 assert_eq "an overlapping route fails" "1" "$RC"
 assert_contains "and names it" "overlaps 10.0.0.0/8 on tun0" "$OUT"
+FAKE_INCUS_REMOTE=other doctor
+assert_not_contains "a remote server isn't judged by this host's routes" "overlaps 10.0.0.0/8 on tun0" "$OUT"
 sed -i '/tun0/d' "$FAKE_INCUS_STATE/routes"
 
 rmdir "$SANDBOX/sys/boxenbr0"

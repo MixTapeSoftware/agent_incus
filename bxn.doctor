@@ -142,9 +142,16 @@ check_lock() {
 # One row per instance, tab separated: name, status, eth0 address, managed-by,
 # egress container, egress transition, egress port, build abandoned (yes/no).
 INSTANCES=()
+# Returns 1 when Incus won't list its instances, after saying so: an empty
+# list would otherwise pass every check that reads it.
 read_instances() {
-  local name st ip mgd eg tr port ab
+  local name st ip mgd eg tr port ab list
   INSTANCES=()
+  if ! list="$(incus list --format csv --columns ns 2>/dev/null)"; then
+    section "Instances"
+    bad "Incus wouldn't list its instances, so none of them was checked" "incus list"
+    return 1
+  fi
   while IFS=, read -r name st; do
     [[ -n "$name" ]] || continue
     ip="$(incus config device get "$name" eth0 ipv4.address 2>/dev/null)" || ip=""
@@ -155,7 +162,7 @@ read_instances() {
     ab=no
     egress_build_abandoned "$name" && ab=yes
     INSTANCES+=("$name"$'\t'"$st"$'\t'"${ip:--}"$'\t'"${mgd:--}"$'\t'"${eg:--}"$'\t'"${tr:--}"$'\t'"${port:--}"$'\t'"$ab")
-  done <<< "$(incus list --format csv --columns ns 2>/dev/null)"
+  done <<< "$list"
 }
 
 # Usage: inst_field <row> <n>   (1-based, as cut counts)
@@ -190,7 +197,8 @@ check_bridge() {
   ok "$BOXEN_NET is $subnet"
 
   # A route added after the bridge (a VPN, often) can take its replies.
-  if command -v ip >/dev/null 2>&1; then
+  # Only this machine's routes, so only when the server runs here.
+  if server_is_local && command -v ip >/dev/null 2>&1; then
     while IFS= read -r line; do
       c="${line%% *}"
       [[ "$c" == default ]] && continue
@@ -372,9 +380,10 @@ check_egress() {
 echo "bxn doctor: checking what would stop bxn creating or starting containers"
 if check_incus; then
   check_lock
-  read_instances
-  check_bridge
-  check_egress
+  if read_instances; then
+    check_bridge
+    check_egress
+  fi
 fi
 
 echo ""
