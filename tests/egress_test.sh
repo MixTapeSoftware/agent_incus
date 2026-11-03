@@ -125,6 +125,7 @@ assert_eq "it has an assigned address" "10.201.0.10" "$(cfg $e devices.eth0.ipv4
 assert_eq "it uses its own rules" "boxen-egress" "$(cfg $e devices.eth0.security.acls)"
 assert_eq "outbound defaults to reject" "reject" "$(cfg $e devices.eth0.security.acls.default.egress.action)"
 assert_eq "inbound defaults to drop" "drop" "$(cfg $e devices.eth0.security.acls.default.ingress.action)"
+assert_eq "its rules come with incus init, not a later step" "0" "$(grep -c "^config device set $e " "$FAKE_INCUS_STATE/calls.log" || true)"
 assert_eq "it starts on its own" "true" "$(cfg $e boot.autostart)"
 assert_eq "before the agents" "100" "$(cfg $e boot.autostart.priority)"
 assert_eq "it's set up" "1" "$(cfg $e user.boxen.egress.ready)"
