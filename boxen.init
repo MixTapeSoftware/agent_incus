@@ -952,8 +952,14 @@ resolve_memory() {
   if [[ -z "$host" ]]; then
     warn "Couldn't read this host's memory from Incus or /proc/meminfo, so whether it can back $want wasn't checked"
   elif (( want_bytes > host - headroom )); then
-    [[ "$(uname)" == Darwin ]] && where=" Here that's Colima's VM: raise it with --colima-memory."
-    error "This host has $(bytes_to_gib "$host") of memory; $CONTAINER_NAME would get $want ($MEMORY_WHY), leaving it less than 2GiB.$where Choose less with --memory."
+    if [[ "$IS_VM" != "1" && "$MEMORY_WHY" == default ]]; then
+      # Nothing asked for this: it's the profile's cap, which a container
+      # doesn't reserve, so a small host still builds as it always has.
+      warn "This host has $(bytes_to_gib "$host") of memory, less than the profile's $want limit plus 2GiB; $CONTAINER_NAME can use up to that. Set a lower limit with --memory."
+    else
+      [[ "$(uname)" == Darwin ]] && where=" Here that's Colima's VM, which --colima-memory sizes only when it's first made; to resize it: colima stop -p ${COLIMA_PROFILE:-boxen} && colima start -p ${COLIMA_PROFILE:-boxen} --memory N."
+      error "This host has $(bytes_to_gib "$host") of memory; $CONTAINER_NAME would get $want ($MEMORY_WHY), leaving it less than 2GiB.$where Choose less with --memory."
+    fi
   fi
   if [[ "$IS_VM" == "1" ]]; then
     VM_MEMORY="$want"

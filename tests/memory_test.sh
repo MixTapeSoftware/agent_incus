@@ -133,6 +133,11 @@ fresh
 FAKE_INCUS_MEMORY=$((8 * GIB)) init okbox
 assert_eq "the profile's 6GB fits an 8GiB host" "0" "$RC"
 fresh
+FAKE_INCUS_MEMORY=$((4 * GIB)) init sbox
+assert_eq "a small host still builds when nothing asked for memory" "0" "$RC"
+assert_contains "with a warning" "This host has 4.0GiB of memory, less than the profile's 6GB limit plus 2GiB" "$(out)"
+assert_eq "and the container keeps the profile's limit" "" "$(cfg sbox limits.memory)"
+fresh
 FAKE_INCUS_MEMORY=$((16 * GIB)) init vbig --vm --memory 15GiB --dry-run
 assert_eq "a VM is held to the same rule" "1" "$RC"
 assert_contains "naming the figures" "This host has 16.0GiB of memory; vbig would get 15GiB" "$(out)"
@@ -148,8 +153,8 @@ assert_contains "from incus info --resources, decimals and all" "This host has 8
 fresh
 PATH="$SANDBOX/nojq:$PATH" FAKE_INCUS_MEMORY=$((64 * GIB)) init tbox2 --memory 8GiB
 assert_eq "and a host that can back it builds" "0" "$RC"
-# An Incus that won't say falls back to /proc/meminfo: this machine's, which
-# is large enough for the profile's default. Either way nothing is skipped.
+# An Incus that won't say falls back to /proc/meminfo: this machine's. The
+# profile's default builds whatever its size. Either way nothing is skipped.
 fresh
 FAKE_INCUS_NO_RESOURCES=1 init fbox
 assert_eq "an Incus without resources still builds" "0" "$RC"
@@ -167,7 +172,7 @@ chmod +x "$SANDBOX/mac/uname"
 fresh
 PATH="$SANDBOX/mac:$PATH" FAKE_INCUS_MEMORY=$((8 * GIB)) init mbox2 --memory 8GiB
 assert_eq "a Mac refuses the same way" "1" "$RC"
-assert_contains "and names Colima" "leaving it less than 2GiB. Here that's Colima's VM: raise it with --colima-memory. Choose less with --memory." "$(out)"
+assert_contains "and says how to resize Colima's VM" "leaving it less than 2GiB. Here that's Colima's VM, which --colima-memory sizes only when it's first made; to resize it: colima stop -p boxen && colima start -p boxen --memory N. Choose less with --memory." "$(out)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
