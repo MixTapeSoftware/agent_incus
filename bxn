@@ -1036,7 +1036,9 @@ status_interactive() {
         # Force stop: the one key that works while a stop of the same
         # instance is still pending, since a stuck graceful stop is what
         # it's for. Anything else pending (a start, a delete) still waits.
+        # Only where the key help offers it, like D: not in Network or Rules.
         ((count > 0)) || continue
+        [[ $focus == list || $tab == info ]] || continue
         name=${names[$sel]}
         if [[ "${states[$sel]}" == Stopped ]]; then
           msg=$(status_note "$msg" "$name is already stopped")
