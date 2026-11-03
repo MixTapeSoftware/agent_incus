@@ -627,14 +627,31 @@ status_frame_panels() {
 # the host an action applies to. Hostnames come from proxy logs and are
 # treated as hostile: control characters are already replaced by the egress
 # ctl, and they're clipped here and never run as shell.
-# Usage: status_tab_rows <name> network|rules
+# The log records what the proxy decided at the time. A host the list has
+# changed for since then is shown as it stands now: a blocked one that's
+# listed is "allowed now", and an allowed one that isn't listed is "blocked
+# now" under enforce, or "unlisted now" under report. A leading "*." matches
+# subdomains only, as in the proxy.
+# Usage: status_tab_rows <name> network|rules [<mode>]
 status_tab_rows() {
   if [[ "$2" == network ]]; then
-    "$SCRIPT_DIR/bxn.egress" log "$1" --raw 2>/dev/null | tail -n +2 | awk -F'\t' '
+    "$SCRIPT_DIR/bxn.egress" log "$1" --raw 2>/dev/null | tail -n +2 | awk -F'\t' -v mode="${3:-enforce}" '
+      FILENAME == ARGV[1] { if ($1 != "") listed[$1] = 1; next }
+      function covered(h,   d) {
+        if (h in listed) return 1
+        for (d = h; index(d, ".") > 0; ) { d = substr(d, index(d, ".") + 1); if (("*." d) in listed) return 1 }
+        return 0
+      }
       { gsub(/[[:cntrl:]]/, "?", $2); k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = substr($1, 12, 8) }
-      END { for (k in n) { split(k, f, "\t"); r = (f[3] == "blocked") ? 0 : (f[3] == "would-block") ? 1 : 2
+      END { for (k in n) { split(k, f, "\t"); d = f[3]
+                           if (mode != "off") {
+                             if ((d == "blocked" || d == "would-block") && covered(f[1])) d = "allowed now"
+                             else if (d == "allowed" && !covered(f[1])) d = (mode == "report") ? "unlisted now" : "blocked now"
+                           }
+                           r = (d ~ /^blocked/) ? 0 : (d ~ /^(would-block|unlisted)/) ? 1 : 2
                            h = f[1]; if (length(h) > 60) h = substr(h, 1, 57) "..."
-                           print r "\t" n[k] "\t" f[1] "\t" sprintf("%-12s %5d  %-8s  %s:%s", f[3], n[k], last[k], h, f[2]) } }' |
+                           print r "\t" n[k] "\t" f[1] "\t" sprintf("%-12s %5d  %-8s  %s:%s", d, n[k], last[k], h, f[2]) } }' \
+      <("$SCRIPT_DIR/bxn.egress" ls "$1" --tsv 2>/dev/null | cut -f1) - |
       sort -t$'\t' -k1,1n -k2,2nr | cut -f3-
   else
     "$SCRIPT_DIR/bxn.egress" ls "$1" --tsv 2>/dev/null | awk -F'\t' '{ gsub(/[[:cntrl:]]/, "?", $1); gsub(/[[:cntrl:]]/, "?", $2); printf "%s\t%-44s %s\n", $1, substr($1, 1, 44), $2 }'
@@ -675,8 +692,14 @@ status_egress_job() {
     mv "$log_file.tmp" "$log_file.rc"
   ) &
   pending+="egress"$'\t'"$name"$'\t'"$log_file"$'\n'
+  # The row it changes is marked until it finishes: <log> <container, or *
+  # for every one> <host> <what's happening>.
+  case "$1:${2:-}" in
+    allow:--all) busy+="$log_file"$'\t*\t'"${3:-}"$'\tallowing\n' ;;
+    allow:*) busy+="$log_file"$'\t'"$2"$'\t'"${3:-}"$'\tallowing\n' ;;
+    rm:*) busy+="$log_file"$'\t'"$2"$'\t'"${3:-}"$'\tremoving\n' ;;
+  esac
   msg=$(status_note "$msg" "$desc…")
-  tab_at=0
 }
 
 status_interactive() {
@@ -684,6 +707,7 @@ status_interactive() {
   local names=() states=() count=0 sel=0 sel_name="" hl i
   local pending="" still msg="" fetch=true last=-1 jobs=0
   local key rc rest line out table tagged keys name state verb log_file p_verb p_name p_log err
+  local busy="" modes=() md
   local egs=() trans=() mgds=() roles=() eg tr mgd role tab=info tabs_n=1 rsel=0 tab_rows=() tab_for="" tab_at=0 ask="" ask_args=() ask_desc="" r
   local frame=() size term_rows term_cols msg_lines wide focus=list top=0 rtop=0
   if [[ -n "${NO_COLOR:-}" ]]; then color=false; fi
@@ -716,6 +740,11 @@ status_interactive() {
           err=$(sed -e $'s/\033\\[[0-9;]*m//g' -e '/^$/d' "$p_log" | tail -n 1 | tr -d '[:cntrl:]')
           if [[ "$(cat "$p_log.rc")" == 0 ]]; then line="${err#\[+\] }"; else line="Failed: $(head -n 1 "$p_log.desc"): ${err#\[ERROR\] }"; fi
           msg=$(status_note "$msg" "$line")
+          # The list changed (or didn't): read the open tab again now, not
+          # when its five seconds are up.
+          busy=$(printf '%s' "$busy" | awk -F'\t' -v l="$p_log" '$1 != l')
+          [[ -z "$busy" ]] || busy+=$'\n'
+          tab_at=-100
         elif [[ "$(cat "$p_log.rc")" == 0 ]]; then
           case "$p_verb" in stop) line="Stopped $p_name" ;; delete) line="Deleted $p_name" ;; *) line="Started $p_name" ;; esac
           msg=$(status_note "$msg" "$line")
@@ -741,7 +770,8 @@ status_interactive() {
         trans=()
         mgds=()
         roles=()
-        while IFS=$'\t' read -r name state eg tr mgd role; do
+        modes=()
+        while IFS=$'\t' read -r name state eg tr mgd role md; do
           [[ -n "$name" ]] || continue
           names+=("$name")
           states+=("$state")
@@ -749,11 +779,13 @@ status_interactive() {
           trans+=("$tr")
           mgds+=("$mgd")
           roles+=("$role")
+          modes+=("$md")
         done <<<"$(jq -r "$STATUS_ORDER_DEFS"' ordered[] | [.name, .status,
           (.expanded_config["user.boxen.egress.container"] // "-" | if . == "" then "-" else . end),
           (.expanded_config["user.boxen.egress.transition"] // "none"),
           (if managed then "yes" else "no" end),
-          (.expanded_config["user.boxen.role"] // "-" | if . == "" then "-" else . end)] | @tsv' <<<"$json")"
+          (.expanded_config["user.boxen.role"] // "-" | if . == "" then "-" else . end),
+          (.expanded_config["user.boxen.egress"] // "enforce" | if . == "" then "enforce" else . end)] | @tsv' <<<"$json")"
         count=${#names[@]}
         # Keep the highlight on the same instance when the list changes.
         for ((i = 0; i < count; i++)); do
@@ -809,9 +841,18 @@ status_interactive() {
       if [[ "$tab" != info ]]; then
         # Read only while the tab is open, at most every five seconds.
         if [[ "$tab_for" != "$sel_name/$tab" ]] || ((SECONDS - tab_at >= 5)); then
+          # A change can reorder the rows: keep the cursor on its host.
+          r=""
+          if [[ "$tab_for" == "$sel_name/$tab" ]] && ((rsel < ${#tab_rows[@]})); then r=${tab_rows[$rsel]%%$'\t'*}; fi
           tab_rows=()
-          while IFS= read -r r; do [[ -n "$r" ]] && tab_rows+=("$r"); done <<<"$(status_tab_rows "$sel_name" "$tab")"
-          if [[ "$tab_for" != "$sel_name/$tab" ]]; then rsel=0; fi
+          while IFS= read -r line; do [[ -n "$line" ]] && tab_rows+=("$line"); done <<<"$(status_tab_rows "$sel_name" "$tab" "${modes[$sel]:-enforce}")"
+          if [[ "$tab_for" != "$sel_name/$tab" ]]; then
+            rsel=0
+          elif [[ -n "$r" ]]; then
+            for ((i = 0; i < ${#tab_rows[@]}; i++)); do
+              if [[ "${tab_rows[$i]%%$'\t'*}" == "$r" ]]; then rsel=$i; break; fi
+            done
+          fi
           tab_for="$sel_name/$tab"
           tab_at=$SECONDS
         fi
@@ -830,6 +871,11 @@ status_interactive() {
           if ((rsel - rtop > term_rows - 10)); then rtop=$((rsel - term_rows + 10)); fi
           for ((i = 0; i < ${#tab_rows[@]}; i++)); do
             line=${tab_rows[$i]#*$'\t'}
+            # A change still running for this host, here or everywhere.
+            r=""
+            [[ -z "$busy" ]] || r=$(printf '%s' "$busy" | awk -F'\t' -v c="$sel_name" -v h="${tab_rows[$i]%%$'\t'*}" \
+              '($2 == c || $2 == "*") && $3 == h { print $4; exit }')
+            if [[ -n "$r" ]]; then line+="  · $r…"; fi
             if ((i == rsel)) && [[ $focus == info ]]; then line=$'\033[7m'"$line"$'\033[27m'; fi
             tagged+=$'\n'"R"$'\t'"$line"
           done

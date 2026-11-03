@@ -55,8 +55,17 @@ case "$1" in
     printf '2026-10-30T10:03:00Z\tdocs.rs\t443\tblocked\tdefault rule policy used\t3\n'
     printf '2026-10-30T10:04:00Z\tevil\033]0;pwned\007.example\t443\tblocked\tdefault rule policy used\t3\n'
     ;;
-  ls) printf 'api.anthropic.com\tbaseline\nown.example\tbox\n' ;;
-  *) echo "$*" >> "$STUB/egress-calls"; [[ "$*" == "mode box off" ]] || echo "[+] box: done" ;;
+  ls) cat "$STUB/rules" ;;
+  *)
+    echo "$*" >> "$STUB/egress-calls"
+    # A change takes this long, so a test can see the view while it runs.
+    sleep "$(cat "$STUB/slow" 2>/dev/null || echo 0)"
+    case "$1:$2" in
+      allow:--all) printf '%s\tbaseline\n' "$3" >> "$STUB/rules" ;;
+      allow:*) printf '%s\t%s\n' "$3" "$2" >> "$STUB/rules" ;;
+      rm:*) awk -F'\t' -v h="$3" '$1 != h' "$STUB/rules" > "$STUB/rules.new"; mv "$STUB/rules.new" "$STUB/rules" ;;
+    esac
+    [[ "$*" == "mode box off" ]] || echo "[+] box: done" ;;
 esac
 EOF
 chmod +x "$S/bin/incus" "$S/repo/bxn.egress"
@@ -84,8 +93,12 @@ cat > "$S/instances.json" <<'EOF'
 ]
 EOF
 
+# The hosts each container's list has, as `bxn egress ls --tsv` prints them.
+# Every run starts from these unless KEEP_RULES is set.
+printf 'api.anthropic.com\tbaseline\nown.example\tbox\n' > "$S/rules.default"
 tui() {
   rm -f "$S/calls" "$S/egress-calls"
+  [[ -n "${KEEP_RULES:-}" ]] || cp "$S/rules.default" "$S/rules"
   STUB="$S" PATH="$S/bin:$PATH" TERM=xterm script -qfec "stty rows 30 cols 140; tty > '$S/tty'; bash '$S/repo/bxn' status" "${TUI_TRANSCRIPT:-/dev/null}"
 }
 last_frame() { local f=${1##*$'\033[H'}; printf '%s\n' "${f%%$'\033[J'*}"; }
@@ -127,6 +140,29 @@ out=$(keys '\t' l A | tui) || true
 assert_contains "A asks about every container" "Allow docs.rs for every container? y/n" "$(plain <<<"$out")"
 out=$(keys '\t' l A y | tui) || true
 assert_eq "y allows it everywhere" "allow --all docs.rs --yes" "$(cat "$S/egress-calls" 2>/dev/null)"
+
+echo "the tabs follow a change as soon as it's made"
+echo 1 > "$S/slow"
+out=$(keys '\t' l a y x x x | tui) || true
+assert_contains "while the allow runs, its row says so" "docs.rs:443  · allowing…" "$(plain <<<"$out")"
+frame=$(last_frame "$out" | plain)
+assert_contains "once it finishes, the host reads as allowed" "allowed now      2  10:03:00  docs.rs:443" "$frame"
+assert_eq "and the marker is gone" "no" "$([[ "$frame" == *"allowing…"* ]] && echo yes || echo no)"
+out=$(keys '\t' l l j d y x x x | tui) || true
+assert_contains "while a removal runs, its row says so" "own.example" "$(plain <<<"$out" | grep -o 'own.example.*removing…' | head -1)"
+assert_eq "once it finishes, the host is gone from Rules" "no" "$([[ "$(last_frame "$out" | plain)" == *"own.example                                  box"* ]] && echo yes || echo no)"
+rm -f "$S/slow"
+printf 'own.example\tbox\n' > "$S/rules"
+out=$(keys '\t' l | KEEP_RULES=1 tui) || true
+assert_contains "an allowed host taken off an enforced list reads as blocked" "blocked now      1  10:01:00  api.anthropic.com:443" "$(last_frame "$out" | plain)"
+out=$(keys j '\t' l | KEEP_RULES=1 tui) || true
+assert_contains "and as unlisted under report" "unlisted now     1  10:01:00  api.anthropic.com:443" "$(last_frame "$out" | plain)"
+printf 'api.anthropic.com\tbaseline\n*.rs\tbox\n' > "$S/rules"
+out=$(keys '\t' l | KEEP_RULES=1 tui) || true
+assert_contains "a wildcard covers a subdomain" "allowed now      2  10:03:00  docs.rs:443" "$(last_frame "$out" | plain)"
+printf 'api.anthropic.com\tbaseline\n*.docs.rs\tbox\n' > "$S/rules"
+out=$(keys '\t' l | KEEP_RULES=1 tui) || true
+assert_contains "but not the name itself" "blocked          2  10:03:00  docs.rs:443" "$(last_frame "$out" | plain)"
 
 echo "long host confirmations"
 long_host="docs.rs.$(printf '%063d' 0).$(printf '%063d' 0).attacker.example"
