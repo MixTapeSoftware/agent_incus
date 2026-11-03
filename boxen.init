@@ -1288,16 +1288,32 @@ fi
 # ---------------------------------------------------------------------------
 # Create container
 # ---------------------------------------------------------------------------
+# The tags go on at creation, so an instance whose first start fails is
+# still one bxn knows: status, rm, update-all and short names find it.
+# boxen.shell starts sessions in user.boxen.workspace; commands find a
+# container from its project by the handle and project (boxen.names).
+TAG_ARGS=(-c user.managed-by=boxen -c user.boxen=1 -c "user.boxen.agent=$AGENT_TOKEN"
+  -c "user.boxen.workspace=$CONTAINER_WORKSPACE")
+if [[ -n "$HANDLE" ]]; then
+  TAG_ARGS+=(-c "user.boxen.handle=$HANDLE" -c "user.boxen.project=$PROJECT")
+fi
+if [[ "$INSECURE_NETWORK" == "1" ]]; then
+  TAG_ARGS+=(-c user.boxen.net=open)
+else
+  TAG_ARGS+=(-c user.boxen.net=isolated)
+fi
+
 create_instance() {
   if [[ "$IS_VM" == "1" ]]; then
     # Naming any profile replaces the implicit default, so name it too.
     incus init "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
-      ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
+      ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} "${TAG_ARGS[@]}" \
       -c limits.memory="$VM_MEMORY" \
       -c limits.cpu="$VM_CPUS" \
       -d root,size="$VM_DISK"
   else
-    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
+    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" \
+      ${NET_ARGS[@]+"${NET_ARGS[@]}"} "${TAG_ARGS[@]}"
   fi
 }
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
@@ -1317,18 +1333,6 @@ unset _create_tries
 CREATED_INSTANCE=1
 # Under an allowlist it stays stopped, so bxn decides when it first runs.
 [[ "$LOCKED_BUILD" == "1" ]] || incus start "$CONTAINER_NAME"
-incus config set "$CONTAINER_NAME" user.managed-by=boxen user.boxen=1 "user.boxen.agent=$AGENT_TOKEN"
-# Commands find a container from its project by these (boxen.names).
-if [[ -n "$HANDLE" ]]; then
-  incus config set "$CONTAINER_NAME" "user.boxen.handle=$HANDLE" "user.boxen.project=$PROJECT"
-fi
-if [[ "$INSECURE_NETWORK" == "1" ]]; then
-  incus config set "$CONTAINER_NAME" user.boxen.net=open
-else
-  incus config set "$CONTAINER_NAME" user.boxen.net=isolated
-fi
-# boxen.shell starts sessions here.
-incus config set "$CONTAINER_NAME" user.boxen.workspace="$CONTAINER_WORKSPACE"
 
 if [[ "$LOCKED_BUILD" == "1" ]]; then
   # Kept from starting on its own until the build finishes; the original

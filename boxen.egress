@@ -179,14 +179,15 @@ egress_ensure() {
     log "Creating egress container: $egress"
     ip="$(net_next_address)"
     egress_sync_acl "$egress"
+    # Tagged at creation, so a setup that stops partway leaves one bxn knows.
+    # It starts on its own, before the agents.
     incus init "$BOXEN_EGRESS_IMAGE" "$egress" -p default -p "$BOXEN_NET_PROFILE" \
-      -d "eth0,ipv4.address=$ip" >/dev/null || error "Could not create $egress"
+      -d "eth0,ipv4.address=$ip" -c user.managed-by=boxen -c user.boxen.role=egress \
+      -c user.boxen.net=isolated -c boot.autostart=true -c boot.autostart.priority=100 >/dev/null ||
+      error "Could not create $egress"
     incus config device set "$egress" eth0 security.acls="$egress" \
       security.acls.default.egress.action=reject security.acls.default.ingress.action=drop >/dev/null ||
       error "Could not set $egress's network rules"
-    # It starts on its own, before the agents.
-    incus config set "$egress" user.managed-by=boxen user.boxen.role=egress user.boxen.net=isolated \
-      boot.autostart=true boot.autostart.priority=100 >/dev/null
   fi
   [[ "$(incus config get "$egress" user.boxen.egress.ready 2>/dev/null)" == "1" ]] && { egress_start "$egress"; return 0; }
   egress_sync_acl "$egress"

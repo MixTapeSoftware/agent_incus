@@ -76,6 +76,15 @@ assert_eq "it is labelled for boxen" "1" "$(cfg chad-shell-web user.boxen)"
 assert_eq "with its handle" "chad" "$(cfg chad-shell-web user.boxen.handle)"
 assert_eq "its agent" "shell" "$(cfg chad-shell-web user.boxen.agent)"
 assert_eq "and its project" "web" "$(cfg chad-shell-web user.boxen.project)"
+# A first start that fails leaves a container bxn still knows (kept: no
+# answer to the delete prompt). Before the labels went on at creation it
+# was left unlabelled, invisible to bxn status, rm and short names.
+FAKE_INCUS_FAIL_CALL='^start chad-shell-fails$' build fails </dev/null
+assert_eq "a failed first start fails the build" "1" "$RC"
+assert_eq "and keeps the container" "yes" "$(exists chad-shell-fails)"
+assert_eq "labelled for boxen" "boxen" "$(cfg chad-shell-fails user.managed-by)"
+assert_eq "with its project" "fails" "$(cfg chad-shell-fails user.boxen.project)"
+assert_eq "and its workspace" "/workspace" "$(cfg chad-shell-fails user.boxen.workspace)"
 build web
 assert_eq "the next one for the project is numbered" "yes" "$(exists chad-shell-web-1)"
 build web
