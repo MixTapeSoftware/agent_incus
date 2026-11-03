@@ -1454,6 +1454,17 @@ incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'MISECFG'
   fi
 MISECFG
 
+# GitHub's stacked PRs (gh stack), for every user: an extension lives in the
+# user's home, so a template built by someone else doesn't carry it. It needs
+# no login. Missing it shouldn't fail a build: the next one adds it.
+log "Installing gh stack (GitHub stacked PRs)..."
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'GHSTACK' ||
+  set -e
+  if gh extension list 2>/dev/null | grep -q 'github/gh-stack'; then exit 0; fi
+  gh extension install github/gh-stack >/dev/null
+GHSTACK
+  warn "Could not install gh stack. Install it later: bxn -s $CONTAINER_NAME gh extension install github/gh-stack"
+
 # ---------------------------------------------------------------------------
 # Copy the workspace in. A fresh build under an allowlist copies it after the
 # lock instead, below.

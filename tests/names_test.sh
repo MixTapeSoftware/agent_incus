@@ -76,6 +76,14 @@ assert_eq "it is labelled for boxen" "1" "$(cfg chad-shell-web user.boxen)"
 assert_eq "with its handle" "chad" "$(cfg chad-shell-web user.boxen.handle)"
 assert_eq "its agent" "shell" "$(cfg chad-shell-web user.boxen.agent)"
 assert_eq "and its project" "web" "$(cfg chad-shell-web user.boxen.project)"
+echo "gh stack"
+rm -f "$FAKE_INCUS_STATE/gh.log"
+build stacks
+assert_contains "every build installs GitHub's gh stack" "extension install github/gh-stack" "$(cat "$FAKE_INCUS_STATE/gh.log" 2>/dev/null)"
+FAKE_GH_FAIL='^extension install' build stackless
+assert_eq "a failed install doesn't fail the build" "0" "$RC"
+assert_contains "it says how to add it later" "gh extension install github/gh-stack" "$(cat "$SANDBOX/out")"
+echo "names and labels, continued"
 build web
 assert_eq "the next one for the project is numbered" "yes" "$(exists chad-shell-web-1)"
 build web
