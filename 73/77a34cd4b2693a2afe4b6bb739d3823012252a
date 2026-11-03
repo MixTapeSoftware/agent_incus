@@ -1,0 +1,24 @@
+plugins/45-vibe-wise.sh
+  s_a9dab2c3525007::t_38b7800ad86514 1-27
+README.md
+  s_a9dab2c3525007::t_f12c97695309ed 261,272
+  s_a9dab2c3525007::t_1601be11ac4d7d 273
+tests/vibe_wise_test.sh
+  s_a9dab2c3525007::t_b7b28afdcabb67 1-74
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "7377a34cd4b2693a2afe4b6bb739d3823012252a",
+  "prompts": {},
+  "sessions": {
+    "s_a9dab2c3525007": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "0f8d56ae-defa-45e9-8ae7-282d0c1213ef",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
