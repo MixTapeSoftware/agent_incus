@@ -33,6 +33,7 @@
 #   FAKE_INCUS_IMAGE_TYPE  the Type `incus image info` reports (default container)
 #   FAKE_INCUS_FIREWALL    the firewall driver `incus query /1.0` reports (default
 #                          nftables; none leaves it out)
+#   FAKE_INCUS_REMOTE      what `incus remote get-default` prints (default local)
 #   FAKE_INCUS_EXTENSIONS  API extensions `incus query /1.0` lists
 #                          (default: network_bridge_acl_devices network_address_set)
 set -uo pipefail
@@ -476,6 +477,8 @@ case "$cmd" in
         create) [[ -f "$a" ]] && die "The network ACL already exists"; mkdir -p "$S/acls"; : > "$a" ;;
         edit)   [[ -f "$a" ]] || die "Network ACL not found"; cat > "$a" ;;
         delete) [[ -f "$a" ]] || die "Network ACL not found"; rm -f "$a" ;;
+        # As `--format csv` prints it: name, description, used by.
+        list) for f in "$S/acls"/*; do [[ -f "$f" ]] && echo "$(basename "$f"),,0"; done ;;
         *) die "unsupported network acl op: $op" ;;
       esac
       exit 0
@@ -514,6 +517,11 @@ case "$cmd" in
         ;;
       *) die "unsupported network subcommand: $sub" ;;
     esac
+    ;;
+
+  remote)
+    [[ "${1:-}" == get-default ]] || die "unsupported remote subcommand: ${1:-}"
+    echo "${FAKE_INCUS_REMOTE:-local}"
     ;;
 
   version)
