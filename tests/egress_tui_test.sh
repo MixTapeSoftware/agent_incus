@@ -54,6 +54,9 @@ case "$1" in
     printf '2026-10-30T10:02:00Z\tdocs.rs\t443\tblocked\tdefault rule policy used\t3\n'
     printf '2026-10-30T10:03:00Z\tdocs.rs\t443\tblocked\tdefault rule policy used\t3\n'
     printf '2026-10-30T10:04:00Z\tevil\033]0;pwned\007.example\t443\tblocked\tdefault rule policy used\t3\n'
+    if [[ -f "$STUB/private-host" ]]; then
+      printf '2026-10-30T10:05:00Z\tinternal.example\t443\tblocked\tresolved to a denied address\t3\n'
+    fi
     ;;
   ls) cat "$STUB/rules" ;;
   *)
@@ -163,6 +166,11 @@ assert_contains "a wildcard covers a subdomain" "allowed now      2  10:03:00  d
 printf 'api.anthropic.com\tbaseline\n*.docs.rs\tbox\n' > "$S/rules"
 out=$(keys '\t' l | KEEP_RULES=1 tui) || true
 assert_contains "but not the name itself" "blocked          2  10:03:00  docs.rs:443" "$(last_frame "$out" | plain)"
+touch "$S/private-host"
+printf 'internal.example\tbox\n' > "$S/rules"
+out=$(keys '\t' l | KEEP_RULES=1 tui) || true
+assert_contains "a host blocked for its address stays blocked when listed" "blocked          1  10:05:00  internal.example:443" "$(last_frame "$out" | plain)"
+rm -f "$S/private-host"
 
 echo "long host confirmations"
 long_host="docs.rs.$(printf '%063d' 0).$(printf '%063d' 0).attacker.example"

@@ -630,7 +630,9 @@ status_frame_panels() {
 # The log records what the proxy decided at the time. A host the list has
 # changed for since then is shown as it stands now: a blocked one that's
 # listed is "allowed now", and an allowed one that isn't listed is "blocked
-# now" under enforce, or "unlisted now" under report. A leading "*." matches
+# now" under enforce, or "unlisted now" under report. Only a block the list
+# made ("default rule policy used") can become "allowed now": one for a
+# private address stays blocked whatever is listed. A leading "*." matches
 # subdomains only, as in the proxy.
 # Usage: status_tab_rows <name> network|rules [<mode>]
 status_tab_rows() {
@@ -642,10 +644,11 @@ status_tab_rows() {
         for (d = h; index(d, ".") > 0; ) { d = substr(d, index(d, ".") + 1); if (("*." d) in listed) return 1 }
         return 0
       }
-      { gsub(/[[:cntrl:]]/, "?", $2); k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = substr($1, 12, 8) }
+      { gsub(/[[:cntrl:]]/, "?", $2); k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = substr($1, 12, 8)
+        if ($5 != "default rule policy used") other[k] = 1 }
       END { for (k in n) { split(k, f, "\t"); d = f[3]
                            if (mode != "off") {
-                             if ((d == "blocked" || d == "would-block") && covered(f[1])) d = "allowed now"
+                             if ((d == "blocked" || d == "would-block") && !(k in other) && covered(f[1])) d = "allowed now"
                              else if (d == "allowed" && !covered(f[1])) d = (mode == "report") ? "unlisted now" : "blocked now"
                            }
                            r = (d ~ /^blocked/) ? 0 : (d ~ /^(would-block|unlisted)/) ? 1 : 2
