@@ -199,8 +199,12 @@ Every container is labelled `user.boxen=1`, with `user.boxen.handle`,
 `user.boxen.agent` and `user.boxen.project`, so `incus list user.boxen=1` lists
 them. Commands that take a container accept the project alone, or
 `AGENT-PROJECT`, when that finds exactly one of yours: `bxn web`,
-`bxn -n claude-web 3000`, `bxn egress log codex-web`. With several, they list
-them and ask you to name one.
+`bxn -n claude-web 3000`, `bxn egress log codex-web`. Add the number for a
+numbered copy: `bxn web-1`, `bxn claude-web-1`. When the name finds a
+container and its numbered copies, they take the one without a number and
+name the others; `bxn rm` refuses instead, so it never deletes a container you
+didn't name. With any other mix, such as two agents' containers for one
+project, they list them and ask you to name one.
 
 | Agent | Selection | Command inside the instance |
 |---|---|---|

@@ -128,6 +128,44 @@ assert_eq "is two containers: the project and the agent's" "1" "$rc"
 assert_contains "and both are listed" "chad-fakeagent-web chad-shell-fakeagent-web" "$out"
 incus delete --force chad-shell-fakeagent-web
 
+echo "a container and its numbered copies"
+build eo
+build eo
+assert_eq "a numbered copy is labelled with the project alone" "eo" "$(cfg chad-shell-eo-1 user.boxen.project)"
+assert_eq "the project finds the one without a number" "chad-shell-eo" "$(names 'names_resolve eo' 2>/dev/null)"
+err="$(names 'names_resolve eo' 2>&1 >/dev/null)"
+assert_contains "and names the others on stderr" "eo also matches chad-shell-eo-1; using chad-shell-eo" "$err"
+assert_eq "PROJECT-N finds that copy" "chad-shell-eo-1" "$(names 'names_resolve eo-1' 2>&1)"
+assert_eq "so does AGENT-PROJECT-N" "chad-shell-eo-1" "$(names 'names_resolve shell-eo-1' 2>&1)"
+assert_eq "AGENT-PROJECT takes the one without a number too" "chad-shell-eo" "$(names 'names_resolve shell-eo' 2>/dev/null)"
+assert_eq "a number with no copy is passed on" "eo-7" "$(names 'names_resolve eo-7')"
+out="$(names 'names_resolve --strict eo' 2>&1)" && rc=0 || rc=$?
+assert_eq "--strict refuses it" "1" "$rc"
+assert_contains "and lists them" "chad-shell-eo chad-shell-eo-1" "$out"
+out="$(bash "$SANDBOX/repo/bxn" rm eo 2>&1)" && rc=0 || rc=$?
+assert_eq "bxn rm doesn't take a default" "1" "$rc"
+assert_eq "and deletes nothing" "yes yes" "$(exists chad-shell-eo) $(exists chad-shell-eo-1)"
+bash "$SANDBOX/repo/bxn" -k eo >/dev/null 2>&1
+assert_eq "other bxn commands take the default" "stop chad-shell-eo" "$(grep -E '^stop ' "$FAKE_INCUS_STATE/calls.log" | tail -1)"
+bash "$SANDBOX/repo/bxn" rm eo-1 >/dev/null 2>&1
+assert_eq "bxn rm takes PROJECT-N" "no yes" "$(exists chad-shell-eo-1) $(exists chad-shell-eo)"
+build eo --agent fakeagent
+out="$(names 'names_resolve eo' 2>&1)" && rc=0 || rc=$?
+assert_eq "two agents' containers for a project are refused" "1" "$rc"
+assert_contains "and both are listed" "chad-fakeagent-eo chad-shell-eo" "$out"
+build eo --agent fakeagent
+assert_eq "AGENT-PROJECT picks among that agent's own" "chad-fakeagent-eo" "$(names 'names_resolve fakeagent-eo' 2>/dev/null)"
+incus delete --force chad-shell-eo
+incus delete --force chad-fakeagent-eo
+out="$(names 'names_resolve eo' 2>&1)" && rc=0 || rc=$?
+assert_eq "a lone numbered copy is found" "chad-fakeagent-eo-1" "$out"
+build eo --agent fakeagent
+build eo --agent fakeagent
+incus delete --force chad-fakeagent-eo
+out="$(names 'names_resolve eo' 2>&1)" && rc=0 || rc=$?
+assert_eq "numbered copies with none unnumbered are refused" "1" "$rc"
+assert_contains "and listed" "chad-fakeagent-eo-1 chad-fakeagent-eo-2" "$out"
+
 echo "a race for a name"
 # Another bxn creates chad-shell-race after this one chose the name.
 mkdir -p "$SANDBOX/racebin"

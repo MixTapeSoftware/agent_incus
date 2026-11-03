@@ -29,13 +29,15 @@ source "$SCRIPT_DIR/boxen.names"
 
 # A command's container from what was typed: bxn web finds chad-claude-web
 # (boxen.names). Replaces the first argument that isn't a flag; the result is
-# in RARGS.
+# in RARGS. RESOLVE_STRICT=1 refuses a name that also matches numbered
+# copies instead of taking the one without a number, for bxn rm.
 resolve_container_arg() {
-  local a found=0 c
+  local a found=0 c strict=""
+  [[ "${RESOLVE_STRICT:-0}" != 1 ]] || strict="--strict"
   RARGS=()
   for a in "$@"; do
     if [[ $found == 0 && "$a" != -* ]]; then
-      c="$(names_resolve "$a")" || exit 1
+      c="$(names_resolve $strict "$a")" || exit 1
       a="$c"
       found=1
     fi
@@ -1184,7 +1186,9 @@ case "$1" in
   rm|-d|delete)  # -d and delete are the old spellings, kept for scripts
     shift
     [[ $# -lt 1 ]] && error "Usage: bxn rm <container>"
-    resolve_container_arg "$@"
+    # Deleting takes no default: chad-claude-web and chad-claude-web-1 make
+    # bxn rm web ambiguous, though bxn web opens the first.
+    RESOLVE_STRICT=1 resolve_container_arg "$@"
     set -- "${RARGS[@]}"
     _egress="$(incus config get "$1" user.boxen.egress.container 2>/dev/null || true)"
     incus delete --force "$1"
