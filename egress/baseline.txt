@@ -205,6 +205,11 @@ figma.com
 # upload: Linear's file attachments.
 uploads.linear.app
 app.daytona.io
+# upload: Let's Encrypt's ACME endpoints, production and staging. Anyone can
+# open an account and order certificates for names it picks, and validation
+# looks those names up, so this is an outbound channel, not a status check.
+acme-v02.api.letsencrypt.org
+acme-staging-v02.api.letsencrypt.org
 
 # --- Operating system packages ----------------------------------------------
 archive.ubuntu.com
@@ -228,9 +233,6 @@ packagecloud.io
 # Certificate authorities serve these from many numbered hosts.
 *.amazontrust.com
 *.lencr.org
-# Let's Encrypt's ACME endpoints, production and staging
-# (acme-v02.api.letsencrypt.org, acme-staging-v02.api.letsencrypt.org).
-*.api.letsencrypt.org
 *.pki.goog
 *.pki.microsoft.com
 *.one.digicert.com
