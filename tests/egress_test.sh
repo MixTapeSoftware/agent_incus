@@ -125,6 +125,7 @@ assert_eq "it has an assigned address" "10.201.0.10" "$(cfg $e devices.eth0.ipv4
 assert_eq "it uses its own rules" "boxen-egress" "$(cfg $e devices.eth0.security.acls)"
 assert_eq "outbound defaults to reject" "reject" "$(cfg $e devices.eth0.security.acls.default.egress.action)"
 assert_eq "inbound defaults to drop" "drop" "$(cfg $e devices.eth0.security.acls.default.ingress.action)"
+assert_eq "its rules come with incus init, not a later step" "0" "$(grep -c "^config device set $e " "$FAKE_INCUS_STATE/calls.log" || true)"
 assert_eq "it starts on its own" "true" "$(cfg $e boot.autostart)"
 assert_eq "before the agents" "100" "$(cfg $e boot.autostart.priority)"
 assert_eq "it's set up" "1" "$(cfg $e user.boxen.egress.ready)"
@@ -190,9 +191,14 @@ assert_contains "an unknown mode is refused" "unknown egress mode" "$(eg 'egress
 incus config set box user.boxen.egress=enforce
 
 echo "forgetting an agent"
+# Its own rule set, as egress_nic_restrict leaves it.
+incus network acl create boxen-a-box 2>/dev/null || true
+eg 'egress_forget box boxen-egress' 2>/dev/null
+assert_eq "a container that still exists keeps its rule set" "yes" "$([[ -f "$FAKE_INCUS_STATE/acls/boxen-a-box" ]] && echo yes || echo no)"
 incus delete --force box
 eg 'egress_forget box boxen-egress' 2>/dev/null
 assert_contains "its proxy is removed" "remove box" "$(ctl_calls $e)"
+assert_eq "and its own rule set is deleted" "no" "$([[ -f "$FAKE_INCUS_STATE/acls/boxen-a-box" ]] && echo yes || echo no)"
 acl="$(cat "$FAKE_INCUS_STATE/acls/$e")"
 assert_not_contains "its rule is gone" "10.201.0.20/32" "$acl"
 assert_contains "the other agent's stays" "10.201.0.21/32" "$acl"

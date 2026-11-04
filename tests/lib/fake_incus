@@ -33,6 +33,7 @@
 #   FAKE_INCUS_IMAGE_TYPE  the Type `incus image info` reports (default container)
 #   FAKE_INCUS_FIREWALL    the firewall driver `incus query /1.0` reports (default
 #                          nftables; none leaves it out)
+#   FAKE_INCUS_REMOTE      what `incus remote get-default` prints (default local)
 #   FAKE_GH_FAIL           regex; a `gh` run inside an instance whose arguments match exits 1
 #   FAKE_INCUS_EXTENSIONS  API extensions `incus query /1.0` lists
 #                          (default: network_bridge_acl_devices network_address_set)
@@ -115,10 +116,13 @@ case "$cmd" in
     # incus init <image> <name> [flags]
     name="${2:-}"
     [[ -n "$name" ]] || die "name required"
-    profiles=(); devs=()
+    profiles=(); devs=(); cfgs=()
     shift 2
     while [[ $# -gt 0 ]]; do
-      if [[ "$1" == "-p" || "$1" == "--profile" ]]; then
+      if [[ "$1" == "-c" || "$1" == "--config" ]]; then
+        cfgs+=("$2")
+        shift 2
+      elif [[ "$1" == "-p" || "$1" == "--profile" ]]; then
         [[ "$2" == "default" || -d "$S/profiles/$2" ]] || die "Profile not found: $2"
         profiles+=("$2")
         shift 2
@@ -132,6 +136,10 @@ case "$cmd" in
     if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
     else create_instance "$name" STOPPED; fi
     printf '%s\n' ${profiles[@]+"${profiles[@]}"} > "$(inst_dir "$name")/profiles"
+    # -c <key>=<value>: instance config set at create.
+    for kv in ${cfgs[@]+"${cfgs[@]}"}; do
+      printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/${kv%%=*}"
+    done
     # -d <device>,<key>=<value>: an instance device override at create.
     for d in ${devs[@]+"${devs[@]}"}; do
       kv="${d#*,}"
@@ -472,6 +480,8 @@ case "$cmd" in
         create) [[ -f "$a" ]] && die "The network ACL already exists"; mkdir -p "$S/acls"; : > "$a" ;;
         edit)   [[ -f "$a" ]] || die "Network ACL not found"; cat > "$a" ;;
         delete) [[ -f "$a" ]] || die "Network ACL not found"; rm -f "$a" ;;
+        # As `--format csv` prints it: name, description, used by.
+        list) for f in "$S/acls"/*; do [[ -f "$f" ]] && echo "$(basename "$f"),,0"; done ;;
         *) die "unsupported network acl op: $op" ;;
       esac
       exit 0
@@ -510,6 +520,11 @@ case "$cmd" in
         ;;
       *) die "unsupported network subcommand: $sub" ;;
     esac
+    ;;
+
+  remote)
+    [[ "${1:-}" == get-default ]] || die "unsupported remote subcommand: ${1:-}"
+    echo "${FAKE_INCUS_REMOTE:-local}"
     ;;
 
   version)

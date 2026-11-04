@@ -807,17 +807,31 @@ _host_git_config() {
   printf '%s' "$v"
 }
 
+# An email as git means it. Git takes "<foo@example.com>" as foo@example.com
+# when it writes a commit, so a config with the brackets works on the host;
+# copied as is, they'd reach every tool in the container that reads
+# user.email. Strips surrounding spaces and one pair of angle brackets.
+_git_email_clean() {
+  local e="$1"
+  e="${e#"${e%%[![:space:]]*}"}"; e="${e%"${e##*[![:space:]]}"}"
+  if [[ "$e" == "<"*">" ]]; then
+    e="${e#<}"; e="${e%>}"
+    e="${e#"${e%%[![:space:]]*}"}"; e="${e%"${e##*[![:space:]]}"}"
+  fi
+  printf '%s' "$e"
+}
+
 capture_git_identity() {
   local name email
   command -v git >/dev/null 2>&1 || return 0
   name="$(_host_git_config user.name)"
-  email="$(_host_git_config user.email)"
+  email="$(_git_email_clean "$(_host_git_config user.email)")"
   # One line each: they go to the container as lines on stdin.
   [[ "$name$email" != *$'\n'* ]] || { name=""; email=""; }
   if [[ -n "$name" && -n "$email" ]]; then
     GIT_NAME="$name" GIT_EMAIL="$email"
     if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] &&
-       [[ "$(git -C / config --global --includes --get user.email 2>/dev/null)" != "$email" ||
+       [[ "$(_git_email_clean "$(git -C / config --global --includes --get user.email 2>/dev/null)")" != "$email" ||
           "$(git -C / config --global --includes --get user.name 2>/dev/null)" != "$name" ]]; then
       GIT_ID_SOURCE="$WORKSPACE_PATH's git config"
     else
@@ -834,6 +848,7 @@ prompt_git_identity() {
   log "Git has no user.name or user.email on this host. Commits in $CONTAINER_NAME use these:"
   read_value GIT_NAME "Git user.name: "
   read_value GIT_EMAIL "Git user.email: "
+  GIT_EMAIL="$(_git_email_clean "$GIT_EMAIL")"
   if [[ -n "$GIT_NAME" && -n "$GIT_EMAIL" ]]; then GIT_ID_SOURCE="what you entered"
   else GIT_NAME="" GIT_EMAIL=""; fi
 }
@@ -1288,16 +1303,32 @@ fi
 # ---------------------------------------------------------------------------
 # Create container
 # ---------------------------------------------------------------------------
+# The tags go on at creation, so an instance whose first start fails is
+# still one bxn knows: status, rm, update-all and short names find it.
+# boxen.shell starts sessions in user.boxen.workspace; commands find a
+# container from its project by the handle and project (boxen.names).
+TAG_ARGS=(-c user.managed-by=boxen -c user.boxen=1 -c "user.boxen.agent=$AGENT_TOKEN"
+  -c "user.boxen.workspace=$CONTAINER_WORKSPACE")
+if [[ -n "$HANDLE" ]]; then
+  TAG_ARGS+=(-c "user.boxen.handle=$HANDLE" -c "user.boxen.project=$PROJECT")
+fi
+if [[ "$INSECURE_NETWORK" == "1" ]]; then
+  TAG_ARGS+=(-c user.boxen.net=open)
+else
+  TAG_ARGS+=(-c user.boxen.net=isolated)
+fi
+
 create_instance() {
   if [[ "$IS_VM" == "1" ]]; then
     # Naming any profile replaces the implicit default, so name it too.
     incus init "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
-      ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
+      ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} "${TAG_ARGS[@]}" \
       -c limits.memory="$VM_MEMORY" \
       -c limits.cpu="$VM_CPUS" \
       -d root,size="$VM_DISK"
   else
-    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
+    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" \
+      ${NET_ARGS[@]+"${NET_ARGS[@]}"} "${TAG_ARGS[@]}"
   fi
 }
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
@@ -1317,18 +1348,6 @@ unset _create_tries
 CREATED_INSTANCE=1
 # Under an allowlist it stays stopped, so bxn decides when it first runs.
 [[ "$LOCKED_BUILD" == "1" ]] || incus start "$CONTAINER_NAME"
-incus config set "$CONTAINER_NAME" user.managed-by=boxen user.boxen=1 "user.boxen.agent=$AGENT_TOKEN"
-# Commands find a container from its project by these (boxen.names).
-if [[ -n "$HANDLE" ]]; then
-  incus config set "$CONTAINER_NAME" "user.boxen.handle=$HANDLE" "user.boxen.project=$PROJECT"
-fi
-if [[ "$INSECURE_NETWORK" == "1" ]]; then
-  incus config set "$CONTAINER_NAME" user.boxen.net=open
-else
-  incus config set "$CONTAINER_NAME" user.boxen.net=isolated
-fi
-# boxen.shell starts sessions here.
-incus config set "$CONTAINER_NAME" user.boxen.workspace="$CONTAINER_WORKSPACE"
 
 if [[ "$LOCKED_BUILD" == "1" ]]; then
   # Kept from starting on its own until the build finishes; the original

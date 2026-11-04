@@ -97,6 +97,7 @@ bxn                                   # Live view of all instances (same as bxn 
 bxn status                            # Live view of all instances; space starts/stops one, D deletes it (asks first)
 bxn status --once                     # Print the status table once
 bxn rm my-project                     # Delete a container
+bxn doctor                            # Check what would stop a create or start
 bxn cron install                      # Install 7pm daily update cron
 bxn cron install 3                    # Install 3am daily update cron
 bxn cron status                       # Show current cron schedule
@@ -199,8 +200,12 @@ Every container is labelled `user.boxen=1`, with `user.boxen.handle`,
 `user.boxen.agent` and `user.boxen.project`, so `incus list user.boxen=1` lists
 them. Commands that take a container accept the project alone, or
 `AGENT-PROJECT`, when that finds exactly one of yours: `bxn web`,
-`bxn -n claude-web 3000`, `bxn egress log codex-web`. With several, they list
-them and ask you to name one.
+`bxn -n claude-web 3000`, `bxn egress log codex-web`. Add the number for a
+numbered copy: `bxn web-1`, `bxn claude-web-1`. When the name finds a
+container and its numbered copies, they take the one without a number and
+name the others; `bxn rm` refuses instead, so it never deletes a container you
+didn't name. With any other mix, such as two agents' containers for one
+project, they list them and ask you to name one.
 
 | Agent | Selection | Command inside the instance |
 |---|---|---|
@@ -703,6 +708,17 @@ bxn egress refresh [my-project|--all]   # finish an interrupted change, review a
 - **Separate egress containers** (`--egress-container <name>` on `bxn egress mode`, making `boxen-egress-<name>`) keep groups of containers, such as different clients' work, from reaching each other's proxies. Each egress container is one security boundary.
 
 What an allowlist doesn't stop: data sent to an allowed host (a gist, a package upload), and anything reachable through an allowed shared front end such as a CDN. Hosts in the baseline that accept uploads from anyone with an account are marked `upload:` in the file.
+
+## When a Create Fails: bxn doctor
+
+`bxn doctor` checks what would stop bxn creating or starting containers, and prints the fix for each problem it finds. It changes nothing, and exits 1 when something would block a create or start. It checks:
+
+- **Incus**: the server answers, and has the version, nftables firewall and per-container network rules that isolation needs.
+- **The lock** bxn commands share: one with no owner, or whose process ID now belongs to something else (after a reboot, say), makes every command wait 15 minutes and fail.
+- **boxenbr0**: a /16 that no route or other network overlaps (a VPN often does), the host's interface, IPv4 forwarding, the DHCP server, ufw rules, two containers on one address, and containers a failed create left unlabelled.
+- **Egress**: each egress container is running, starts at boot and answers; each allowlisted container has a listening proxy and no unfinished lockdown; proxies and network rule sets left for containers that are gone.
+
+The host checks (interface, forwarding, DHCP) run only when the Incus server is on the same machine. Checks that need root, such as the firewall rules themselves, aren't in it yet.
 
 ## Runtime Management
 

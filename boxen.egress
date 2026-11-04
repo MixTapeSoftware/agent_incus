@@ -179,14 +179,15 @@ egress_ensure() {
     log "Creating egress container: $egress"
     ip="$(net_next_address)"
     egress_sync_acl "$egress"
+    # Tagged and given its network rules at creation, so a setup that stops
+    # partway leaves one bxn knows, never one without its rules (a rerun
+    # skips this block). It starts on its own, before the agents.
     incus init "$BOXEN_EGRESS_IMAGE" "$egress" -p default -p "$BOXEN_NET_PROFILE" \
-      -d "eth0,ipv4.address=$ip" >/dev/null || error "Could not create $egress"
-    incus config device set "$egress" eth0 security.acls="$egress" \
-      security.acls.default.egress.action=reject security.acls.default.ingress.action=drop >/dev/null ||
-      error "Could not set $egress's network rules"
-    # It starts on its own, before the agents.
-    incus config set "$egress" user.managed-by=boxen user.boxen.role=egress user.boxen.net=isolated \
-      boot.autostart=true boot.autostart.priority=100 >/dev/null
+      -d "eth0,ipv4.address=$ip" -d "eth0,security.acls=$egress" \
+      -d eth0,security.acls.default.egress.action=reject -d eth0,security.acls.default.ingress.action=drop \
+      -c user.managed-by=boxen -c user.boxen.role=egress \
+      -c user.boxen.net=isolated -c boot.autostart=true -c boot.autostart.priority=100 >/dev/null ||
+      error "Could not create $egress"
   fi
   [[ "$(incus config get "$egress" user.boxen.egress.ready 2>/dev/null)" == "1" ]] && { egress_start "$egress"; return 0; }
   egress_sync_acl "$egress"
@@ -288,11 +289,21 @@ egress_apply() {
   incus config set "$agent" "user.boxen.egress.active=$mode:$id" >/dev/null
 }
 
-# Removes an agent's proxy when the agent is deleted. Its port isn't reused.
+# Removes an agent's proxy and its own rule set when the agent is deleted.
+# Its port isn't reused. The rule set goes only once the agent is gone, so a
+# live container never loses its rules, and even when its egress container
+# is gone too.
 # Usage: egress_forget <agent> <egress>
 egress_forget() {
-  local agent="$1" egress="$2"
+  local agent="$1" egress="$2" acl
   [[ -n "$egress" ]] || return 0
+  if ! incus info "$agent" &>/dev/null; then
+    acl="$(egress_agent_acl "$agent")"
+    if incus network acl show "$acl" &>/dev/null; then
+      incus network acl delete "$acl" >/dev/null 2>&1 ||
+        warn "Could not delete $agent's network rule set. Delete it: incus network acl delete $acl"
+    fi
+  fi
   incus info "$egress" &>/dev/null || return 0
   egress_ctl "$egress" remove "$agent" </dev/null >/dev/null 2>&1 ||
     warn "Could not remove $agent's proxy from $egress"
