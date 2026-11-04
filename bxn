@@ -630,7 +630,9 @@ status_frame_panels() {
 # The log records what the proxy decided at the time. A host the list has
 # changed for since then is shown as it stands now: a blocked one that's
 # listed is "allowed now", and an allowed one that isn't listed is "blocked
-# now" under enforce, or "unlisted now" under report. Only a block the list
+# now" under enforce, or "unlisted now" under report. "Listed" means what the
+# running proxy enforces, so a change that failed to apply relabels nothing,
+# and nothing is relabelled when that list can't be read. Only a block the list
 # made ("default rule policy used") can become "allowed now": one for a
 # private address stays blocked whatever is listed. A leading "*." matches
 # subdomains only, as in the proxy.
@@ -638,7 +640,7 @@ status_frame_panels() {
 status_tab_rows() {
   if [[ "$2" == network ]]; then
     "$SCRIPT_DIR/bxn.egress" log "$1" --raw 2>/dev/null | tail -n +2 | awk -F'\t' -v mode="${3:-enforce}" '
-      FILENAME == ARGV[1] { if ($1 != "") listed[$1] = 1; next }
+      FILENAME == ARGV[1] { if ($1 != "") { listed[$1] = 1; nlisted++ }; next }
       function covered(h,   d) {
         if (h in listed) return 1
         for (d = h; index(d, ".") > 0; ) { d = substr(d, index(d, ".") + 1); if (("*." d) in listed) return 1 }
@@ -647,14 +649,14 @@ status_tab_rows() {
       { gsub(/[[:cntrl:]]/, "?", $2); k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = substr($1, 12, 8)
         if ($5 != "default rule policy used") other[k] = 1 }
       END { for (k in n) { split(k, f, "\t"); d = f[3]
-                           if (mode != "off") {
+                           if (mode != "off" && nlisted) {
                              if ((d == "blocked" || d == "would-block") && !(k in other) && covered(f[1])) d = "allowed now"
                              else if (d == "allowed" && !covered(f[1])) d = (mode == "report") ? "unlisted now" : "blocked now"
                            }
                            r = (d ~ /^blocked/) ? 0 : (d ~ /^(would-block|unlisted)/) ? 1 : 2
                            h = f[1]; if (length(h) > 60) h = substr(h, 1, 57) "..."
                            print r "\t" n[k] "\t" f[1] "\t" sprintf("%-12s %5d  %-8s  %s:%s", d, n[k], last[k], h, f[2]) } }' \
-      <("$SCRIPT_DIR/bxn.egress" ls "$1" --tsv 2>/dev/null | cut -f1) - |
+      <("$SCRIPT_DIR/bxn.egress" ls "$1" --tsv --applied 2>/dev/null | cut -f1) - |
       sort -t$'\t' -k1,1n -k2,2nr | cut -f3-
   else
     "$SCRIPT_DIR/bxn.egress" ls "$1" --tsv 2>/dev/null | awk -F'\t' '{ gsub(/[[:cntrl:]]/, "?", $1); gsub(/[[:cntrl:]]/, "?", $2); printf "%s\t%-44s %s\n", $1, substr($1, 1, 44), $2 }'

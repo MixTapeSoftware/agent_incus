@@ -58,7 +58,9 @@ case "$1" in
       printf '2026-10-30T10:05:00Z\tinternal.example\t443\tblocked\tresolved to a denied address\t3\n'
     fi
     ;;
-  ls) cat "$STUB/rules" ;;
+  # --applied: what the running proxy enforces; "applied" stands in for a
+  # change that didn't apply.
+  ls) if [[ "${4:-}" == --applied && -f "$STUB/applied" ]]; then cat "$STUB/applied"; else cat "$STUB/rules"; fi ;;
   *)
     echo "$*" >> "$STUB/egress-calls"
     # A change takes this long, so a test can see the view while it runs.
@@ -171,6 +173,14 @@ printf 'internal.example\tbox\n' > "$S/rules"
 out=$(keys '\t' l | KEEP_RULES=1 tui) || true
 assert_contains "a host blocked for its address stays blocked when listed" "blocked          1  10:05:00  internal.example:443" "$(last_frame "$out" | plain)"
 rm -f "$S/private-host"
+printf 'api.anthropic.com\tbaseline\ndocs.rs\tbox\n' > "$S/rules"
+printf 'api.anthropic.com\tbaseline\n' > "$S/applied"
+out=$(keys '\t' l | KEEP_RULES=1 tui) || true
+assert_contains "a host listed by a change that didn't apply stays blocked" "blocked          2  10:03:00  docs.rs:443" "$(last_frame "$out" | plain)"
+: > "$S/applied"
+out=$(keys '\t' l | KEEP_RULES=1 tui) || true
+assert_contains "when the running list can't be read, nothing is relabelled" "allowed          1  10:01:00  api.anthropic.com:443" "$(last_frame "$out" | plain)"
+rm -f "$S/applied"
 
 echo "long host confirmations"
 long_host="docs.rs.$(printf '%063d' 0).$(printf '%063d' 0).attacker.example"
