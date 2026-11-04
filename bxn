@@ -78,6 +78,7 @@ Commands:
   -ua, update-all                Update packages in all boxen containers
   status [--once]                Live view of all instances: state, CPU, memory, disk,
                                  IPv4; j/k or arrows select, space starts/stops,
+                                 S force-stops (also one whose stop is stuck),
                                  D deletes (asks first), tab or enter shows
                                  details; h/l switch to an allowlisted
                                  container's Network and Rules tabs
@@ -112,7 +113,7 @@ Examples:
   bxn -ka                       Stop all boxen containers
   bxn -u your-container                     Update packages in your-container
   bxn -ua                       Update all boxen containers
-  bxn status                    Live status; space starts/stops the selected row
+  bxn status                    Live status; space starts/stops the selected row, S force-stops it
   bxn status --once             Print the status table once
   bxn cron install              Install 7pm daily update cron
   bxn cron install 3            Install 3am daily update cron
@@ -663,6 +664,15 @@ status_job() {
   pending+="$verb"$'\t'"$name"$'\t'"$log_file"$'\n'
 }
 
+# True when a job other than a graceful stop is pending for <name>.
+status_busy_except_stop() {
+  local v n l
+  while IFS=$'\t' read -r v n l; do
+    [[ -n "$v" && "$n" == "$1" && "$v" != stop ]] && return 0
+  done <<<"$pending"
+  return 1
+}
+
 # Starts an egress change as a background job, like start and stop.
 # Usage: status_egress_job <description> <bxn egress args...>
 status_egress_job() {
@@ -721,7 +731,7 @@ status_interactive() {
           if [[ "$(cat "$p_log.rc")" == 0 ]]; then line="${err#\[+\] }"; else line="Failed: $(head -n 1 "$p_log.desc"): ${err#\[ERROR\] }"; fi
           msg=$(status_note "$msg" "$line")
         elif [[ "$(cat "$p_log.rc")" == 0 ]]; then
-          case "$p_verb" in stop) line="Stopped $p_name" ;; delete) line="Deleted $p_name" ;; *) line="Started $p_name" ;; esac
+          case "$p_verb" in stop|force-stop) line="Stopped $p_name" ;; delete) line="Deleted $p_name" ;; *) line="Started $p_name" ;; esac
           msg=$(status_note "$msg" "$line")
         else
           err=$(sed -e $'s/\033\\[[0-9;]*m//g' -e '/^$/d' "$p_log" | grep -m 1 -i 'error' || head -n 1 "$p_log")
@@ -803,7 +813,8 @@ status_interactive() {
     if [[ $wide == false && $focus == list ]]; then
       table=$(status_render "$json" "$prev" "$at" "$host" "$color" "$hl") || table="Failed to render status"
       status_frame_table "$table"
-      keys="↑/↓ or j/k select · enter details · space start/stop · D delete · q quit"
+      # 80 columns: j/k also select, as the help says, but don't fit here.
+      keys="↑/↓ select · enter details · space start/stop · S force stop · D delete · q quit"
     else
       tabs_n=1
       if ((count > 0)) && [[ "${egs[$sel]}" != "-" ]]; then tabs_n=3; fi
@@ -841,15 +852,15 @@ status_interactive() {
       fi
       status_frame_panels "$tagged" "$wide"
       if [[ $focus == list ]]; then
-        keys="↑/↓ or j/k select · tab details · space start/stop · D delete · q quit"
+        keys="↑/↓ or j/k select · tab details · space start/stop · S force stop · D delete · q quit"
       elif [[ $tab == network ]]; then
         keys="j/k select · a allow here · A allow everywhere · m mode · h/l tabs · tab list · q quit"
       elif [[ $tab == rules ]]; then
         keys="j/k select · d remove · m mode · h/l tabs · tab list · q quit"
       elif [[ $wide == true ]]; then
-        keys="↑/↓ or j/k scroll · tab list · space start/stop · D delete · q quit"
+        keys="↑/↓ or j/k scroll · tab list · space start/stop · S force stop · D delete · q quit"
       else
-        keys="↑/↓ or j/k scroll · esc back · space start/stop · D delete · q quit"
+        keys="↑/↓ or j/k scroll · esc back · space start/stop · S force stop · D delete · q quit"
       fi
       if ((tabs_n > 1)) && [[ $focus == info && $tab == info ]]; then keys="${keys/ · q quit/ · h/l tabs · m mode · q quit}"; fi
     fi
@@ -1022,6 +1033,22 @@ status_interactive() {
           ask=delete
           ask_desc="Delete $name and everything in it? This can't be undone. y/n"
           ask_args=("$name")
+        fi
+        ;;
+      S)
+        # Force stop: the one key that works while a graceful stop of the
+        # same instance is pending, since a stuck stop is what it's for.
+        # Any other pending job (a start, a delete, an egress change, or an
+        # earlier force stop) still makes it busy.
+        ((count > 0)) || continue
+        name=${names[$sel]}
+        if status_busy_except_stop "$name"; then
+          msg=$(status_note "$msg" "$name is busy")
+        elif [[ "${states[$sel]}" == Stopped ]]; then
+          msg=$(status_note "$msg" "$name is already stopped")
+        else
+          status_job force-stop "$name" incus stop --force "$name"
+          msg=$(status_note "$msg" "Force stopping $name…")
         fi
         ;;
       " ")

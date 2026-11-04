@@ -39,7 +39,7 @@ case "$1" in
     exit ;;
   start|stop)
     sleep 0.3
-    echo "$1 $2" >> "$STUB/calls"
+    echo "$*" >> "$STUB/calls"
     exit ;;
   list) ;;
   *) exit 1 ;;
@@ -159,6 +159,32 @@ if script -qec true /dev/null >/dev/null 2>&1; then
   frame=${out##*$'\033[H'}
   if [[ "$frame" == *"Stopped beta"* && "$frame" == *"Started gamma"* ]]; then both=yes; else both=no; fi
   assert_eq "earlier results stay visible" "yes" "$both"
+
+  # S force-stops the selected instance. It does nothing to one that's
+  # already stopped, and it still works while that instance's graceful
+  # stop is pending, which is what it's for.
+  rm -f "$stub/count" "$stub/calls"
+  out=$(
+    {
+      sleep 1.5
+      printf 'j';      sleep 0.3   # alpha -> gamma (stopped)
+      printf 'S';      sleep 0.3   # already stopped: nothing
+      printf 'j';      sleep 0.3   # gamma -> beta (running)
+      printf ' ';      sleep 0.1   # a stop that's still pending (the stub takes 0.3s)
+      printf 'S';      sleep 0.1   # force stop beside it
+      printf 'S';      sleep 1.5   # a second S waits for the first
+      printf 'q';      sleep 1
+    } | STUB="$stub" PATH="$stub:$PATH" TERM=xterm script -qec "bash '$REPO_ROOT/bxn' status" /dev/null
+  ) || true
+  assert_eq "S force-stops once, even while a stop of the same instance is pending" "$(printf 'stop --force beta\nstop beta')" "$(LC_ALL=C sort "$stub/calls" 2>/dev/null)"
+  if [[ "$out" == *"beta is busy"* ]]; then said=yes; else said=no; fi
+  assert_eq "a second S finds it busy" "yes" "$said"
+  if [[ "$out" == *"gamma is already stopped"* ]]; then said=yes; else said=no; fi
+  assert_eq "S on a stopped instance says so" "yes" "$said"
+  if [[ "$out" == *"Force stopping beta"* ]]; then said=yes; else said=no; fi
+  assert_eq "S says what it's doing" "yes" "$said"
+  if [[ "$out" == *"S force stop"* ]]; then said=yes; else said=no; fi
+  assert_eq "the key help offers it" "yes" "$said"
 
   # --once on a terminal prints the table and never opens the live view.
   rm -f "$stub/count"

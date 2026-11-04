@@ -94,7 +94,7 @@ bxn -n my-project -r all             # Remove all proxies
 bxn -u my-project                     # Update packages in a container
 bxn -ua                               # Update all boxen containers
 bxn                                   # Live view of all instances (same as bxn status)
-bxn status                            # Live view of all instances; space starts/stops one, D deletes it (asks first)
+bxn status                            # Live view of all instances; space starts/stops one, S force-stops it, D deletes it (asks first)
 bxn status --once                     # Print the status table once
 bxn rm my-project                     # Delete a container
 bxn doctor                            # Check what would stop a create or start
@@ -122,7 +122,7 @@ In a terminal, `bxn status` is a live view that refreshes every second. On a ter
 | `Esc` | Back to the list from the details, otherwise quit |
 | `q` | Quit |
 
-Start, stop and delete run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. `bxn` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `bxn -s status`.
+Start, stop and delete run in the background, and the result appears below the table. `S` force-stops the selected instance (`incus stop --force`) for when a stop hangs: it's the one action still allowed while that instance's graceful stop is pending, and it waits like the others while anything else is. When output is piped, or with `--once`, it prints the table once instead. `bxn` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `bxn -s status`.
 
 ## boxen.init Options
 
@@ -384,7 +384,7 @@ claude                                  #   ...then start the agent inside it
 bxn shell-project                      # Pane 2: the dev container (tests, git, servers)
 # prefix + "  (split), then:
 bxn -n shell-project 4000              # Pane 3 on the host: proxy the dev server to localhost:4000
-bxn status                             #   ...and check CPU, memory, and disk; space starts/stops
+bxn status                             #   ...and check CPU, memory, and disk; space starts/stops, S force-stops
 ```
 
 Leave tmux with prefix + `d`; containers keep running. Come back with `tmux attach -t project`, and stop everything at the end of the day with `bxn -ka`.
