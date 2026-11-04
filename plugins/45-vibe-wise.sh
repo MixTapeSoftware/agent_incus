@@ -1,6 +1,6 @@
 PLUGIN_ID="vibe-wise"
 PLUGIN_NAME="VibeWise"
-PLUGIN_DESC="Claude Code plugin for learning to build while Claude writes the code (/vibe-wise:learn)"
+PLUGIN_DESC="Learn to build while Claude writes the code (a Claude Code plugin)"
 PLUGIN_DEFAULT=0
 PLUGIN_CLI_FLAGS="--vibe-wise"
 # A Claude Code plugin: in any other agent's container it's refused with a

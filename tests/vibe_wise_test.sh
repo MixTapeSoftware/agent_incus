@@ -51,6 +51,8 @@ assert_eq "it's off unless asked for" "0" "$PLUGIN_DEFAULT"
 assert_eq "--vibe-wise asks for it" "--vibe-wise" "$PLUGIN_CLI_FLAGS"
 assert_eq "it needs the Claude Code agent" "claude-code" "$PLUGIN_REQUIRES"
 assert_eq "it needs no hosts beyond the baseline" "" "${PLUGIN_EGRESS_ALLOW:-}"
+# The menu splits each plugin's entry on colons.
+assert_eq "its description has no colon" "no" "$([[ "$PLUGIN_DESC" == *:* ]] && echo yes || echo no)"
 
 echo "install"
 plugin_is_installed && before=yes || before=no
