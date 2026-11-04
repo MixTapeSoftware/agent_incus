@@ -62,34 +62,74 @@ names_next() {
   printf '%s\n' "$name"
 }
 
-# The container a command means: the exact name if it exists, else your
-# container for that project, or for AGENT-PROJECT. Prints the argument
-# unchanged when nothing matches, so the command itself says it's not found.
-names_resolve() {
-  local arg="$1" h found="" more agent proj rest i
-  if incus info "$arg" >/dev/null 2>&1; then printf '%s\n' "$arg"; return 0; fi
-  # Only plain names: these values become Incus filters.
-  if ! [[ "$arg" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] || ! h="$(names_saved_handle)"; then
-    printf '%s\n' "$arg"; return 0
-  fi
-  found="$(incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.project=$arg" --format csv --columns n 2>/dev/null)" || found=""
-  # And as AGENT-PROJECT; an agent's own name may hold a hyphen, so try each
-  # split. Every reading counts, so a name that could mean two containers is
-  # refused rather than taken as the first one found.
+# Every container of handle H that ARG names as PROJECT or as AGENT-PROJECT,
+# one per line, unsorted. An agent's own name may hold a hyphen, so each split
+# is tried. Usage: names_matches H ARG
+names_matches() {
+  local h="$1" arg="$2" agent proj rest i
+  incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.project=$arg" --format csv --columns n 2>/dev/null || true
   rest="$arg"
   i=0
   while [[ "$rest" == *-* ]]; do
     i=$((i + 1))
     agent="$(printf '%s' "$arg" | cut -d- -f1-"$i")"
     proj="${arg#"$agent"-}"
-    more="$(incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.agent=$agent" "user.boxen.project=$proj" --format csv --columns n 2>/dev/null)" || more=""
-    [[ -z "$more" ]] || found="$found"$'\n'"$more"
+    incus list user.boxen=1 "user.boxen.handle=$h" "user.boxen.agent=$agent" "user.boxen.project=$proj" --format csv --columns n 2>/dev/null || true
     rest="${rest#*-}"
   done
+}
+
+# The container a command means: the exact name if it exists, else your
+# container for that project, or for AGENT-PROJECT; with a number on the end
+# (web-1, claude-web-1), that numbered copy. Prints the argument unchanged
+# when nothing matches, so the command itself says it's not found.
+#
+# When the name means a container and its numbered copies (chad-claude-web
+# and chad-claude-web-1), the one without a number is taken and the others
+# are named on stderr; with --strict, as bxn rm asks, it is refused instead.
+# Any other mix, such as two agents' containers for the project, is refused.
+# Usage: names_resolve [--strict] ARG
+names_resolve() {
+  local strict=0 arg h found="" base n c first="" others="" count
+  if [[ "${1:-}" == "--strict" ]]; then strict=1; shift; fi
+  arg="$1"
+  if incus info "$arg" >/dev/null 2>&1; then printf '%s\n' "$arg"; return 0; fi
+  # Only plain names: these values become Incus filters.
+  if ! [[ "$arg" =~ ^[a-zA-Z][a-zA-Z0-9-]*$ ]] || ! h="$(names_saved_handle)"; then
+    printf '%s\n' "$arg"; return 0
+  fi
+  found="$(names_matches "$h" "$arg")"
+  # PROJECT-N or AGENT-PROJECT-N: the copy names_next numbered N, which is
+  # labelled with the project alone.
+  if [[ "$arg" =~ ^(.+)-([0-9]+)$ ]]; then
+    base="${BASH_REMATCH[1]}"
+    n="${BASH_REMATCH[2]}"
+    for c in $(names_matches "$h" "$base"); do
+      [[ "$c" != *"-$base-$n" ]] || found="$found"$'\n'"$c"
+    done
+  fi
+  # Every reading counts, so a name that could mean two containers is never
+  # taken as the first one found.
   found="$(printf '%s\n' "$found" | grep . | sort -u)" || found=""
-  case "$(printf '%s\n' "$found" | grep -c .)" in
-    0) printf '%s\n' "$arg" ;;
-    1) printf '%s\n' "$found" ;;
-    *) error "$arg is more than one container: $(printf '%s\n' "$found" | paste -sd ' ' -). Name the one you mean." ;;
+  count="$(printf '%s\n' "$found" | grep -c .)" || count=0
+  case "$count" in
+    0) printf '%s\n' "$arg"; return 0 ;;
+    1) printf '%s\n' "$found"; return 0 ;;
   esac
+  # One container, the rest its numbered copies (it plus -N).
+  for c in $found; do
+    if [[ "$c" =~ ^(.+)-[0-9]+$ ]] && printf '%s\n' "$found" | grep -qxF "${BASH_REMATCH[1]}"; then
+      others="$others $c"
+    elif [[ -z "$first" ]]; then
+      first="$c"
+    else
+      first=""; break
+    fi
+  done
+  if [[ -n "$first" && "$strict" == 0 ]]; then
+    printf '[!] %s also matches%s; using %s. Name another to use it.\n' "$arg" "$others" "$first" >&2
+    printf '%s\n' "$first"
+    return 0
+  fi
+  error "$arg is more than one container: $(printf '%s\n' "$found" | paste -sd ' ' -). Name the one you mean."
 }
