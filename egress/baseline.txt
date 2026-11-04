@@ -43,6 +43,8 @@ chatgpt.com
 cdn.openaimerge.com
 x.ai
 api.x.ai
+# xAI's documentation, Grok Build's included.
+docs.x.ai
 cursor.com
 # Cursor's API and update servers.
 *.cursor.sh
