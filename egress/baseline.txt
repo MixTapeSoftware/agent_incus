@@ -24,6 +24,8 @@ api.anthropic.com
 claude.ai
 claude.com
 platform.claude.com
+# Claude Code's documentation.
+code.claude.com
 console.anthropic.com
 downloads.claude.ai
 statsig.anthropic.com
