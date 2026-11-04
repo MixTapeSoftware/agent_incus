@@ -172,7 +172,7 @@ Every container is provisioned with the following packages before any optional p
 | Dev libraries | libssl-dev, libreadline-dev, libyaml-dev, libsqlite3-dev, libffi-dev, libncurses-dev, zlib1g-dev, and more |
 | Runtimes | python3, python3-dev, python3-pip, python3-venv, nodejs, npm |
 | Utilities | gpg, ca-certificates, psmisc, fontconfig, fzf, bat |
-| Tools | [mise](https://mise.jdx.dev/) (runtime version manager), [Oh My Zsh](https://ohmyz.sh/) (with zsh-autosuggestions), [GitHub CLI](https://cli.github.com/) |
+| Tools | [mise](https://mise.jdx.dev/) (runtime version manager), [Oh My Zsh](https://ohmyz.sh/) (with zsh-autosuggestions), [GitHub CLI](https://cli.github.com/) with [gh stack](https://github.com/github/gh-stack) (GitHub stacked PRs) |
 
 ### Coding Agents
 

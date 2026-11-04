@@ -34,6 +34,7 @@
 #   FAKE_INCUS_FIREWALL    the firewall driver `incus query /1.0` reports (default
 #                          nftables; none leaves it out)
 #   FAKE_INCUS_REMOTE      what `incus remote get-default` prints (default local)
+#   FAKE_GH_FAIL           regex; a `gh` run inside an instance whose arguments match exits 1
 #   FAKE_INCUS_EXTENSIONS  API extensions `incus query /1.0` lists
 #                          (default: network_bridge_acl_devices network_address_set)
 set -uo pipefail
@@ -388,7 +389,9 @@ case "$cmd" in
     root="$(inst_dir "$name")/root"
     stub="$S/stub-bin"; mkdir -p "$stub"
     printf '#!/bin/sh\nexit 0\n' > "$stub/systemctl"
-    printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\nexit 0\n' "$S" > "$stub/gh"
+    # FAKE_GH_FAIL is written in: `su -` runs commands with a bare environment.
+    printf '#!/bin/sh\necho "$*" >> "%s/gh.log"\n[ -n "%s" ] && echo "$*" | grep -qE "%s" && exit 1\nexit 0\n' \
+      "$S" "${FAKE_GH_FAIL:-}" "${FAKE_GH_FAIL:-}" > "$stub/gh"
     chmod +x "$stub/systemctl" "$stub/gh"
 
     # `su - <user> [-s <shell>] [-c <cmd>]`: run it for real with HOME inside

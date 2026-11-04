@@ -85,6 +85,14 @@ assert_eq "and keeps the container" "yes" "$(exists chad-shell-fails)"
 assert_eq "labelled for boxen" "boxen" "$(cfg chad-shell-fails user.managed-by)"
 assert_eq "with its project" "fails" "$(cfg chad-shell-fails user.boxen.project)"
 assert_eq "and its workspace" "/workspace" "$(cfg chad-shell-fails user.boxen.workspace)"
+echo "gh stack"
+rm -f "$FAKE_INCUS_STATE/gh.log"
+build stacks
+assert_contains "every build installs GitHub's gh stack" "extension install github/gh-stack" "$(cat "$FAKE_INCUS_STATE/gh.log" 2>/dev/null)"
+FAKE_GH_FAIL='^extension install' build stackless
+assert_eq "a failed install doesn't fail the build" "0" "$RC"
+assert_contains "it says how to add it later" "gh extension install github/gh-stack" "$(cat "$SANDBOX/out")"
+echo "names and labels, continued"
 build web
 assert_eq "the next one for the project is numbered" "yes" "$(exists chad-shell-web-1)"
 build web
