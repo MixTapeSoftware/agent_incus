@@ -114,10 +114,13 @@ case "$cmd" in
     # incus init <image> <name> [flags]
     name="${2:-}"
     [[ -n "$name" ]] || die "name required"
-    profiles=(); devs=()
+    profiles=(); devs=(); cfgs=()
     shift 2
     while [[ $# -gt 0 ]]; do
-      if [[ "$1" == "-p" || "$1" == "--profile" ]]; then
+      if [[ "$1" == "-c" || "$1" == "--config" ]]; then
+        cfgs+=("$2")
+        shift 2
+      elif [[ "$1" == "-p" || "$1" == "--profile" ]]; then
         [[ "$2" == "default" || -d "$S/profiles/$2" ]] || die "Profile not found: $2"
         profiles+=("$2")
         shift 2
@@ -131,6 +134,10 @@ case "$cmd" in
     if [[ "$cmd" == "launch" ]]; then create_instance "$name" RUNNING
     else create_instance "$name" STOPPED; fi
     printf '%s\n' ${profiles[@]+"${profiles[@]}"} > "$(inst_dir "$name")/profiles"
+    # -c <key>=<value>: instance config set at create.
+    for kv in ${cfgs[@]+"${cfgs[@]}"}; do
+      printf '%s' "${kv#*=}" > "$(inst_dir "$name")/config/${kv%%=*}"
+    done
     # -d <device>,<key>=<value>: an instance device override at create.
     for d in ${devs[@]+"${devs[@]}"}; do
       kv="${d#*,}"
