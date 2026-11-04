@@ -74,6 +74,19 @@ assert_eq "and still called global" "your global git config" "$GIT_ID_SOURCE"
 mv "$HOME/.gitconfig.main" "$HOME/.gitconfig"
 NO_COPY=0
 
+# Git accepts an email written as <foo@example.com>; the brackets aren't part of it.
+git config --global user.email "<foo@users.noreply.github.com>"
+capture "$SANDBOX/plain"
+assert_eq "an email in angle brackets loses them" "foo@users.noreply.github.com" "$GIT_EMAIL"
+assert_eq "and is still the global one" "your global git config" "$GIT_ID_SOURCE"
+git config --global user.email "  < spaced@example.com >  "
+capture "$SANDBOX/plain"
+assert_eq "spaces around and inside the brackets go too" "spaced@example.com" "$GIT_EMAIL"
+git config --global user.email "a<b>@example.com"
+capture "$SANDBOX/plain"
+assert_eq "brackets that don't wrap it are left alone" "a<b>@example.com" "$GIT_EMAIL"
+git config --global user.email global@example.com
+
 echo "write"
 capture "$SANDBOX/plain"
 GIT_NAME="Zoë O'Brien; rm -rf ~" GIT_EMAIL='z@example.com'
