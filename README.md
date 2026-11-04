@@ -263,6 +263,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
+| [VibeWise](https://github.com/nykooi1/vibe-wise) | Claude Code plugin from Anthropic's plugin directory: learn to build while Claude writes the code (`/vibe-wise:learn`). Opt-in (`--vibe-wise`); needs the Claude Code agent |
 | Tailscale + Supabase serve | Preset `tailscale serve` map for app + Supabase ports (443→3000, 4410→3010, 4431→3001, 5432→54321, 5433→54323, 5434→54324, 8443→8000); auto-selects Tailscale |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`, `--docker`).
@@ -272,6 +273,8 @@ Chadmux clones the `main` branch into `~/.config/tmux` and links `~/.tmux.conf` 
 Installation preserves an existing config directory or unrelated Git checkout in a sibling `tmux.backup.*` directory after the download succeeds. An existing legacy `~/.tmux.conf` is also preserved in a sibling `.tmux.conf.backup.*` directory before linking the new config. Only a checkout with the Chadmux upstream as its origin is updated in place.
 
 Matt Pocock Skills is opt-in: tick it in the menu or pass `--matt-pocock-skills`. It installs the full collection, from the repository's main branch, globally for the instance user. Codex and Grok discover the shared `~/.agents/skills` directory, and Claude Code receives its own discovery links, so the same collection is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
+
+VibeWise is a third-party plugin (by Noah Kim) that Anthropic's plugin directory lists. It does nothing until you run `/vibe-wise:learn`, which switches Claude into learning-first mode: you lead the design, and Claude explains and writes the agreed code. Its session hook only points Claude at a project's `.vibe-wise/` notes when they exist. Update it with `claude plugin update vibe-wise@anthropic-plugin-directory`.
 
 MixTape Skills is opt-in too (`--mixtape-skills`). It clones the repository's `main` branch into `~/.local/share/mixtape-skills` and links each skill into `~/.agents/skills` (Codex and Grok) and `~/.claude/skills` (Claude Code), so `/botfight` is available in every project. A skill of the same name that is already there and isn't from this checkout is left alone. To get newer skills, run `git -C ~/.local/share/mixtape-skills pull --ff-only`; new skills need a link of their own, or rebuild the container.
 
