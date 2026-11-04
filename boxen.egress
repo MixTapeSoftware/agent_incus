@@ -377,7 +377,11 @@ egress_nic_is_restricted() {
 # environment (incus exec sessions), /etc/environment (login shells), every
 # systemd service, and apt. NO_PROXY keeps local dev servers and OAuth
 # callbacks off the proxy.
-EGRESS_NO_PROXY="localhost,127.0.0.1,::1"
+# Local traffic stays off the proxy: the container's own services, and what
+# runs inside Docker on it (its bridges, and the host alias Docker gives
+# containers). Compose service names can't be listed here; the agent note
+# tells the agent to add them to NO_PROXY itself.
+EGRESS_NO_PROXY="localhost,127.0.0.1,::1,host.docker.internal,172.16.0.0/12"
 egress_proxy_url() {
   local egress
   egress="$(incus config get "$1" user.boxen.egress.container)"
@@ -388,16 +392,25 @@ egress_write_proxy_env() {
   local agent="$1" url
   url="$(egress_proxy_url "$agent")"
   [[ "$url" =~ ^http://[0-9.]+:[0-9]+$ ]] || error "Could not work out $agent's proxy address"
+  # Besides the standard variables: npm_config_* for npm, pnpm and yarn,
+  # which pass them to every install script (the ones that download a binary
+  # read only those); NODE_USE_ENV_PROXY for Node's own fetch (22.21+, 24);
+  # ELECTRON_GET_USE_PROXY for Electron's downloader. Tools that keep proxy
+  # settings in their own files get them from their plugin's plugin_proxy.
   incus config set "$agent" "environment.HTTP_PROXY=$url" "environment.HTTPS_PROXY=$url" \
     "environment.http_proxy=$url" "environment.https_proxy=$url" \
     "environment.NO_PROXY=$EGRESS_NO_PROXY" "environment.no_proxy=$EGRESS_NO_PROXY" \
-    environment.NODE_USE_ENV_PROXY=1 >/dev/null || error "Could not set $agent's proxy environment"
+    "environment.npm_config_proxy=$url" "environment.npm_config_https_proxy=$url" \
+    "environment.npm_config_noproxy=$EGRESS_NO_PROXY" \
+    environment.NODE_USE_ENV_PROXY=1 environment.ELECTRON_GET_USE_PROXY=1 >/dev/null ||
+    error "Could not set $agent's proxy environment"
   incus exec "$agent" -- sh -s -- "$url" "$EGRESS_NO_PROXY" <<'SH' || error "Could not write $agent's proxy settings"
 set -e
 url="$1" np="$2"
 vars() {
-  for k in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do echo "$k=$url"; done
-  echo "NO_PROXY=$np"; echo "no_proxy=$np"; echo "NODE_USE_ENV_PROXY=1"
+  for k in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy npm_config_proxy npm_config_https_proxy; do echo "$k=$url"; done
+  echo "NO_PROXY=$np"; echo "no_proxy=$np"; echo "npm_config_noproxy=$np"
+  echo "NODE_USE_ENV_PROXY=1"; echo "ELECTRON_GET_USE_PROXY=1"
 }
 touch /etc/environment
 sed -i '/^# bxn proxy: begin$/,/^# bxn proxy: end$/d' /etc/environment
@@ -635,6 +648,20 @@ the user the exact host and ask them to run, on their own machine:
     bxn egress allow $agent <host>
 
 They can see what was blocked with: bxn egress log $agent
+
+A failure that names DNS (EAI_AGAIN, ENOTFOUND, "Temporary failure in name
+resolution") means the tool skipped the proxy, not that the host is blocked.
+Point the tool's own proxy setting at \$HTTPS_PROXY: npm-style installers read
+npm_config_https_proxy (already set); a JVM reads -Dhttps.proxyHost and
+-Dhttps.proxyPort; a Dockerfile or compose service needs any such variable
+passed in (ENV, or environment:), since Docker forwards only HTTP_PROXY,
+HTTPS_PROXY and NO_PROXY. A tool that creates Docker containers itself (the
+Supabase CLI, for one) doesn't read Docker's client config, so its containers
+get the variables only through that tool's own config: for Supabase,
+[edge_runtime.secrets] in config.toml with HTTPS_PROXY = "env(HTTPS_PROXY)".
+Inside Docker, add sibling services to NO_PROXY (localhost,127.0.0.1,::1,
+host.docker.internal plus their names: api, kong, supabase_kong_api), or the
+proxy is asked for them and refuses.
 <!-- bxn egress: end -->
 NOTE
 done
