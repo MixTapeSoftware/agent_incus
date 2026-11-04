@@ -251,8 +251,18 @@ all_hosts() {
 cmd_ls() {
   local c="${1:-}" egress mode active port h
   if [[ "${2:-}" == "--tsv" ]]; then
-    # For the TUI: host, tab, sources.
     need_container "$c"
+    if [[ "${3:-}" == "--applied" ]]; then
+      # For the TUI's Network tab: the hosts the running proxy enforces. A
+      # change that failed to apply leaves these as they were. Fails when
+      # they can't be read.
+      egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
+      [[ -n "$egress" ]] && egress_running "$egress" || return 1
+      h="$(egress_active_hosts "$c" "$egress")" || return 1
+      printf '%s\n' "$h" | sed '/^$/d'
+      return 0
+    fi
+    # For the TUI: host, tab, sources.
     hosts_with_sources "$c"
     return 0
   fi

@@ -252,6 +252,8 @@ assert_contains "with its proxy" "boxen-egress:10000" "$OUT"
 run ls box
 assert_contains "ls box shows where hosts come from" "api.anthropic.com" "$OUT"
 assert_contains "the baseline is a source" "baseline" "$OUT"
+run ls box --tsv --applied
+assert_contains "--applied lists what the running proxy enforces" "api.anthropic.com" "$OUT"
 mkdir -p "$FAKE_INCUS_STATE/ctl/$E/box"
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
   2026-10-30T10:00:00Z docs.rs 443 blocked "default rule policy used" 9 \
