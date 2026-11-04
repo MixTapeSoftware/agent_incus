@@ -79,6 +79,8 @@ Commands:
                                  D deletes (asks first), tab or enter shows
                                  details; h/l switch to an allowlisted
                                  container's Network and Rules tabs
+  doctor                         Check what would stop bxn creating or starting
+                                 containers, and what was left half done
   new-plugin <slug> [opts]       Generate a new plugin file from a template
   -h, help                       Show this help
 
@@ -1236,6 +1238,10 @@ case "$1" in
   cron)
     shift
     cmd_cron "$@"
+    ;;
+  doctor)
+    shift
+    exec "$SCRIPT_DIR/bxn.doctor" "$@"
     ;;
   new-plugin)
     shift

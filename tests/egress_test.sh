@@ -191,9 +191,14 @@ assert_contains "an unknown mode is refused" "unknown egress mode" "$(eg 'egress
 incus config set box user.boxen.egress=enforce
 
 echo "forgetting an agent"
+# Its own rule set, as egress_nic_restrict leaves it.
+incus network acl create boxen-a-box 2>/dev/null || true
+eg 'egress_forget box boxen-egress' 2>/dev/null
+assert_eq "a container that still exists keeps its rule set" "yes" "$([[ -f "$FAKE_INCUS_STATE/acls/boxen-a-box" ]] && echo yes || echo no)"
 incus delete --force box
 eg 'egress_forget box boxen-egress' 2>/dev/null
 assert_contains "its proxy is removed" "remove box" "$(ctl_calls $e)"
+assert_eq "and its own rule set is deleted" "no" "$([[ -f "$FAKE_INCUS_STATE/acls/boxen-a-box" ]] && echo yes || echo no)"
 acl="$(cat "$FAKE_INCUS_STATE/acls/$e")"
 assert_not_contains "its rule is gone" "10.201.0.20/32" "$acl"
 assert_contains "the other agent's stays" "10.201.0.21/32" "$acl"
