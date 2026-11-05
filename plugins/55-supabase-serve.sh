@@ -9,6 +9,9 @@ PLUGIN_CLI_FLAGS="--supabase-serve"
 PLUGIN_REQUIRES="tailscale"
 # Tailscale joins during the locked phase; apply its preset afterwards.
 PLUGIN_PHASE=locked
+# Selecting this means the local Supabase stack runs here: a dozen Docker
+# containers that starve under the profile's 6GB.
+PLUGIN_MIN_MEMORY="8GiB"
 
 # HTTPS port on the tailnet -> localhost target inside the instance.
 #   443  -> 3000   app dev server        4410 -> 3010   secondary app
