@@ -1,0 +1,69 @@
+tests/vibe_wise_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 1-76
+boxen.names
+  s_72cef02a544353::t_b8188b565e7ca7 65-70,77,80-112,114-117,119-134
+tests/egress_tui_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 57-59,61-73,101-103,106,151-185
+  s_72cef02a544353::t_b1851ce6f61e60 186
+tests/git_identity_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 77-89
+tests/names_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 79-95,148-184
+  s_72cef02a544353::t_89a501646c327b 185
+tests/egress_cli_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 76,78-79,255-256
+tests/status_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 183-184,188-190
+tests/lib/fake_egress_ctl
+  s_72cef02a544353::t_b8188b565e7ca7 40-44
+bxn.doctor
+  s_72cef02a544353::t_b8188b565e7ca7 1-398
+bxn.egress
+  s_72cef02a544353::t_b8188b565e7ca7 255-265
+tests/doctor_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 1-212
+tests/lib/fake_incus
+  s_72cef02a544353::t_b8188b565e7ca7 36-37,117,119,122-125,138-139,141-144,394-396,485-486,527-529
+  s_72cef02a544353::t_cceaec1a8036e0 530-531
+README.md
+  s_72cef02a544353::t_8039dceba68fba 159
+  s_72cef02a544353::t_b8188b565e7ca7 97,100,125,175,203-208,266,277-278,318,709,711,716-725
+  s_72cef02a544353::t_def9dcc616bc99 726
+bxn
+  s_72cef02a544353::t_c66d84d0a70e98 1104-1105
+  s_72cef02a544353::t_b8188b565e7ca7 32-33,35-36,40,85-86,646-655,658-672,674-675,700-708,725-731,740,773-777,779,803-804,812,817-818,864-865,875-877,879-886,905-909,1101-1103,1109,1111-1112,1114,1282-1284,1337-1339
+  s_72cef02a544353::t_24ed91ccf0b06c 1340
+plugins/10-docker.sh
+  s_72cef02a544353::t_b8188b565e7ca7 132-153
+boxen.init
+  s_72cef02a544353::t_b8188b565e7ca7 613-629,826-839,844,850,867,914,917,921,1315-1329,1334,1339-1340,1386,1389,1486-1495
+  s_72cef02a544353::t_486b970c324abe 1496
+bxn.new-plugin
+  s_72cef02a544353::t_b8188b565e7ca7 146-153
+boxen.egress
+  s_72cef02a544353::t_b8188b565e7ca7 182-184,186-190,292-295,298,300-306,380-384,395-399,403-406,411-413,651-664
+egress/baseline.txt
+  s_72cef02a544353::t_b8188b565e7ca7 27-28,46-47,203,205-206,209-210,212-216
+tests/egress_init_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 15,44-45,71-75,78,106-108,124-127,137-138
+plugins/45-vibe-wise.sh
+  s_72cef02a544353::t_b8188b565e7ca7 1-27
+tests/egress_test.sh
+  s_72cef02a544353::t_b8188b565e7ca7 128,194-197,201
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bb8f789677af219ddad141b3e472c901820e0afe",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
