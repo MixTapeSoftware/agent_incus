@@ -1,0 +1,21 @@
+README.md
+  s_72cef02a544353::t_a9e60a904d9b86 282
+egress/baseline.txt
+  s_72cef02a544353::t_f13655aa791c76 217-220
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "db2166192d3c73067ca0dd0d214b7a748f9b12a7",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
