@@ -214,7 +214,10 @@ obsidian.md
 # upload: Obsidian Sync and Publish, for the ob CLI (obsidian-headless). The
 # API is api.obsidian.md; the Sync server a vault is assigned to (sync-N) and
 # the host a Publish site is served from are named only in the API's answers,
-# so they can't be listed one by one.
+# so they can't be listed one by one. This is storage per account, like the
+# bucket wildcards left out above; it's listed all the same, so a vault syncs
+# in any container without a `bxn egress allow`. Writing to it takes an
+# Obsidian account with Sync or Publish.
 *.obsidian.md
 # upload: Let's Encrypt's ACME endpoints, production and staging. Anyone can
 # open an account and order certificates for names it picks, and validation
