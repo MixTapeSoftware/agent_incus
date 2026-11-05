@@ -209,6 +209,13 @@ figma.com
 # upload: Linear's file attachments.
 uploads.linear.app
 app.daytona.io
+# Obsidian's site and help pages.
+obsidian.md
+# upload: Obsidian Sync and Publish, for the ob CLI (obsidian-headless). The
+# API is api.obsidian.md; the Sync server a vault is assigned to (sync-N) and
+# the host a Publish site is served from are named only in the API's answers,
+# so they can't be listed one by one.
+*.obsidian.md
 # upload: Let's Encrypt's ACME endpoints, production and staging. Anyone can
 # open an account and order certificates for names it picks, and validation
 # looks those names up, so this is an outbound channel, not a status check.

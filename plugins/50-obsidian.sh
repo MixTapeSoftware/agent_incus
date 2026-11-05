@@ -5,7 +5,8 @@ PLUGIN_DEFAULT=0
 PLUGIN_CLI_FLAGS="--obsidian"
 # Obsidian's API (api), Publish (publish, and the host a site is served from)
 # and the Sync server a vault is assigned to (sync-N). upload: a vault's notes
-# go to these, which is what Sync and Publish are for.
+# go to these, which is what Sync and Publish are for. The baseline lists them
+# too; they stay here for a host whose approved baseline is older than that.
 PLUGIN_EGRESS_ALLOW="*.obsidian.md"
 
 # ob needs Node 22 or later and Ubuntu 24.04 ships 18, so it runs on a Node 22
