@@ -136,21 +136,30 @@ assert_eq "the plugin names its login" "ob login" "$PLUGIN_LOGIN_COMMAND"
 for fn in _reset_plugin_state _plugin_failed print_plugin_logins; do
   eval "$(awk -v f="$fn" '$0 ~ "^" f "\\(\\)" {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
 done
+# One with a login and no way to say it's installed, one with no login.
+printf 'PLUGIN_ID="bare"\nPLUGIN_NAME="Bare"\nPLUGIN_LOGIN_COMMAND="bare auth"\n' > "$SANDBOX/bare.sh"
 printf 'PLUGIN_ID="plain"\nPLUGIN_NAME="Plain"\n' > "$SANDBOX/plain.sh"
-PLUGIN_COUNT=2
-_P_ID=(obsidian plain)
-_P_NAME=("$PLUGIN_NAME" Plain)
-_P_FILE=("$REPO_ROOT/plugins/50-obsidian.sh" "$SANDBOX/plain.sh")
-_P_SELECTED=(1 1)
+PLUGIN_COUNT=3
+_P_ID=(obsidian bare plain)
+_P_NAME=("Obsidian Headless" Bare Plain)
+_P_FILE=("$REPO_ROOT/plugins/50-obsidian.sh" "$SANDBOX/bare.sh" "$SANDBOX/plain.sh")
+_P_SELECTED=(1 0 1)
 FAILED_PLUGIN_IDS=()
-CONTAINER_NAME=tester-claude-notes
-assert_eq "the build says how to log in, in the short form" \
-  "Log in to Obsidian Headless:"$'\n'"  bxn tester-claude-notes ob login" "$(print_plugin_logins)"
+CONTAINER_NAME=box
+OB_HINT="Log in to Obsidian Headless:"$'\n'"  bxn box ob login"
+assert_eq "the build says how to log in, in the short form" "$OB_HINT" "$(print_plugin_logins)"
+# A launch from a template picks nothing the template already holds.
+_P_SELECTED=(0 0 1)
+assert_eq "also when ob came with the template and wasn't picked" "$OB_HINT" "$(print_plugin_logins)"
+_P_SELECTED=(1 1 1)
+assert_eq "a plugin that can't say it's installed is hinted when picked" \
+  "$OB_HINT"$'\n'"Log in to Bare:"$'\n'"  bxn box bare auth" "$(print_plugin_logins)"
+_P_SELECTED=(1 0 1)
 FAILED_PLUGIN_IDS=(obsidian)
 assert_eq "not when the install failed" "" "$(print_plugin_logins)"
 FAILED_PLUGIN_IDS=()
-_P_SELECTED=(0 1)
-assert_eq "and not when the plugin wasn't chosen" "" "$(print_plugin_logins)"
+rm -f "$H/.local/bin/ob"
+assert_eq "and not when ob isn't in the container" "" "$(print_plugin_logins)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
