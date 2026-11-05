@@ -213,6 +213,8 @@ name that opens the new container, under its full one: `bxn web`, or
 `bxn claude-web` when another agent has a container for the project, or
 `bxn web-1` for a numbered copy. It's the one that works when the build
 finishes; a container added later for the same project can make it mean both.
+A container built with `--name`, and a template, have only the name they were
+given.
 
 | Agent | Selection | Command inside the instance |
 |---|---|---|

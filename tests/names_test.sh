@@ -263,6 +263,7 @@ fi
 echo "templates"
 build base2 -t
 assert_eq "a template keeps the name it's given" "yes" "$(exists base2)"
+assert_eq "and has no short form either" "  bxn base2" "$(shell_in)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
