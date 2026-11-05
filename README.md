@@ -260,6 +260,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [Matt Pocock Skills](https://github.com/mattpocock/skills) | Engineering and productivity skills for Claude Code, Codex, and Grok |
 | [MixTape Skills](https://github.com/MixTapeSoftware/skills) | MixTape Software's agent skills, including botfight, for Claude Code, Codex, and Grok (`--mixtape-skills`) |
 | [mermaid-ascii](https://github.com/AlexanderGrooff/mermaid-ascii) | Render mermaid diagrams as ASCII art |
+| [Obsidian Headless](https://obsidian.md/help/headless) | Obsidian Sync and Publish from the command line (`ob`). Opt-in (`--obsidian`) |
 | [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
@@ -277,6 +278,8 @@ Matt Pocock Skills is opt-in: tick it in the menu or pass `--matt-pocock-skills`
 VibeWise is a third-party plugin (by Noah Kim) that Anthropic's plugin directory lists. It does nothing until you run `/vibe-wise:learn`, which switches Claude into learning-first mode: you lead the design, and Claude explains and writes the agreed code. Its session hook only points Claude at a project's `.vibe-wise/` notes when they exist. Update it with `claude plugin update vibe-wise@anthropic-plugin-directory`.
 
 MixTape Skills is opt-in too (`--mixtape-skills`). It clones the repository's `main` branch into `~/.local/share/mixtape-skills` and links each skill into `~/.agents/skills` (Codex and Grok) and `~/.claude/skills` (Claude Code), so `/botfight` is available in every project. A skill of the same name that is already there and isn't from this checkout is left alone. To get newer skills, run `git -C ~/.local/share/mixtape-skills pull --ff-only`; new skills need a link of their own, or rebuild the container.
+
+Obsidian Headless is opt-in: tick it in the menu or pass `--obsidian`. It installs Obsidian's `ob` CLI for the instance user on a Node 22 of its own, since `ob` needs 22 or later and the container's Node is 18. Nothing is logged in at build: run `ob login` in the container, then `ob sync-setup --vault "My Vault"` and `ob sync` in the vault's folder (`ob sync --continuous` keeps it in step). Under the [egress allowlist](#egress-allowlist) the container gets `*.obsidian.md`: Obsidian's API, Publish, and the Sync server a vault is assigned to, which is where that vault's notes go.
 
 ### Adding Custom Plugins
 
