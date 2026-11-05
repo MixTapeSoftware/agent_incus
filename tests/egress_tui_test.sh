@@ -145,6 +145,8 @@ out=$(keys '\t' l A | tui) || true
 assert_contains "A asks about every container" "Allow docs.rs for every container? y/n" "$(plain <<<"$out")"
 out=$(keys '\t' l A y | tui) || true
 assert_eq "y allows it everywhere" "allow --all docs.rs --yes" "$(cat "$S/egress-calls" 2>/dev/null)"
+out=$(keys '\t' l S | tui) || true
+assert_eq "S does nothing in the Network tab" "" "$(cat "$S/calls" 2>/dev/null)"
 
 echo "the tabs follow a change as soon as it's made"
 echo 1 > "$S/slow"

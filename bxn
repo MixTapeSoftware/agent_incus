@@ -305,9 +305,10 @@ cmd_set_env() {
 # for now; $host = {cpus, mem} from the Incus resources API, either may be
 # null; $color = bool; $sel = index of the row to highlight, or -1, counted
 # in display order (ordered, from STATUS_ORDER_DEFS). Instances are grouped into Boxen
-# instances and all others. CPU and memory are shown relative to the whole
-# host. Keep the program free of single quotes — it lives in a single-quoted
-# string.
+# instances and all others. CPU is shown relative to the whole host; memory
+# against the instance's own limits.memory when it has one (every VM does)
+# that the host can back, else the host total. Keep the program free of
+# single quotes — it lives in a single-quoted string.
 # ---------------------------------------------------------------------------
 STATUS_ORDER_DEFS='
 def managed: .expanded_config["user.managed-by"] == "boxen";
@@ -326,6 +327,29 @@ def ipv4:
     | .value.addresses[]?
     | select(.family == "inet" and .scope == "global") | .address ]
   | if length == 0 then "-" else join(", ") end;
+# Bytes for a size as Incus writes one ("6GB", "4GiB", "2147483648",
+# "2147483648 bytes"), else null.
+def sizebytes:
+  if test("^[0-9]+([kMGTPE]B|[KMGTPE]iB|B| ?bytes)?$") then
+    (sub("[ A-Za-z]+$"; "") | tonumber) as $n | sub("^[0-9]+ ?"; "") as $u
+    | if $u == "" or $u == "B" or $u == "bytes" then $n
+      elif ($u | endswith("iB")) then $n * pow(1024; ("KMGTPE" | index($u[0:1])) + 1)
+      else $n * pow(1000; ("kMGTPE" | index($u[0:1])) + 1) end
+  else null end;
+# The memory denominator: the instance limit as Incus spells it ("4GiB",
+# "6GB"), a bare byte count or a percentage of the host made readable, else
+# the host total. A limit above what the host has is a cap nothing backs
+# (the 6GB of the boxen profile on a 4GiB host), so that reads against the
+# host too. Null when neither is known.
+def memtotal($c):
+  ($c["limits.memory"] // "") as $l
+  | (if ($l | test("^[0-9]+%$")) then
+       (if $host.mem != null then $host.mem * ($l | rtrimstr("%") | tonumber) / 100 else null end)
+     else ($l | sizebytes) end) as $b
+  | if $host.mem != null and ($l == "" or ($b != null and $b > $host.mem)) then ($host.mem | human)
+    elif $l == "" then null
+    elif ($l | test("^[0-9]+%?$")) then (if $b != null then ($b | human) else null end)
+    else $l end;
 def row($t):
   .state as $s | ($s.cpu.usage // null) as $u | ($prev.cpu[.name] // null) as $p
   | ([.expanded_devices // {} | .[] | select(.type == "disk" and .path == "/") | .size // empty] | first // null) as $quota
@@ -341,7 +365,7 @@ def row($t):
               and $u >= $p[0] and $t > $prev.t
            then "\(($u - $p[0]) / 1e9 / ($t - $prev.t) / $host.cpus * 100 | dp1)%" else "-" end),
         (if (.status == "Running" or .status == "Frozen") and ($s.memory.usage // 0) > 0
-           then ($s.memory.usage | human) + (if $host.mem != null then " / " + ($host.mem | human) else "" end)
+           then ($s.memory.usage | human) + (memtotal($c) as $m | if $m != null then " / " + $m else "" end)
            else "-" end),
         (if ($s.disk.root.usage // 0) > 0
            then ($s.disk.root.usage | human) + (if $quota then " / " + $quota else "" end)
@@ -1090,8 +1114,10 @@ status_interactive() {
         # Force stop: the one key that works while a graceful stop of the
         # same instance is pending, since a stuck stop is what it's for.
         # Any other pending job (a start, a delete, an egress change, or an
-        # earlier force stop) still makes it busy.
+        # earlier force stop) still makes it busy. Only where the key help
+        # offers it, like D: not in Network or Rules.
         ((count > 0)) || continue
+        [[ $focus == list || $tab == info ]] || continue
         name=${names[$sel]}
         if status_busy_except_stop "$name"; then
           msg=$(status_note "$msg" "$name is busy")

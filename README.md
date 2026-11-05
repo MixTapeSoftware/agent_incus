@@ -106,7 +106,7 @@ bxn cron remove                       # Remove the update cron
 
 The individual scripts and aliases (`bxni`, `bxnn`) still work directly.
 
-`bxn status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `boxen.init` appear first under "Boxen instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the host's total memory, and disk against the root disk size when one is set.
+`bxn status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `boxen.init` appear first under "Boxen instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the instance's own memory limit when it has one (every VM does, and the `boxen` profile gives containers one), else against the host's total memory, as it also is when the limit is more than the host has. Disk is shown against the root disk size when one is set.
 
 ![bxn status live view grouping Boxen instances, with one row highlighted and state, type, CPU, memory, disk, and IPv4 columns](.github/images/boxen-status.png)
 
