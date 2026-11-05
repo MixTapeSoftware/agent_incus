@@ -121,6 +121,18 @@ sed 's/"limits.memory":"50%"/"limits.memory":"2147483648"/' "$stub/sample1.json"
 assert_eq "delta reads a byte count as a size" "180.0MiB / 2.0GiB" \
   "$(run_status | awk '$2 == "delta" {print $5, $6, $7}')"
 
+echo "memory limit the host can't back:"
+# The host has 16GiB: 17GB is under it (15.8GiB) and 18GB over (16.8GiB).
+sed 's/"limits.memory":"4GiB"/"limits.memory":"17GB"/' "$stub/sample1.json" > "$stub/sample2.json"
+assert_eq "a limit the host has is shown as it's spelled" "412.3MiB / 17GB" \
+  "$(run_status | awk '$2 == "alpha" {print $5, $6, $7}')"
+sed 's/"limits.memory":"4GiB"/"limits.memory":"18GB"/' "$stub/sample1.json" > "$stub/sample2.json"
+assert_eq "a limit above the host reads against the host" "412.3MiB / 16.0GiB" \
+  "$(run_status | awk '$2 == "alpha" {print $5, $6, $7}')"
+sed 's/"limits.memory":"50%"/"limits.memory":"34359738368"/' "$stub/sample1.json" > "$stub/sample2.json"
+assert_eq "and so does one given in bytes" "180.0MiB / 16.0GiB" \
+  "$(run_status | awk '$2 == "delta" {print $5, $6, $7}')"
+
 echo "busy CPU:"
 # alpha burns 0.6s of CPU between samples taken ~1s apart. On a 4-CPU host
 # that is at most 15% of the host, never the 60% of one core.

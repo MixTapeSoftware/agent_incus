@@ -306,9 +306,9 @@ cmd_set_env() {
 # null; $color = bool; $sel = index of the row to highlight, or -1, counted
 # in display order (ordered, from STATUS_ORDER_DEFS). Instances are grouped into Boxen
 # instances and all others. CPU is shown relative to the whole host; memory
-# against the instance's own limits.memory when it has one (every VM does),
-# else the host total. Keep the program free of single quotes — it lives in a
-# single-quoted string.
+# against the instance's own limits.memory when it has one (every VM does)
+# that the host can back, else the host total. Keep the program free of
+# single quotes — it lives in a single-quoted string.
 # ---------------------------------------------------------------------------
 STATUS_ORDER_DEFS='
 def managed: .expanded_config["user.managed-by"] == "boxen";
@@ -327,15 +327,27 @@ def ipv4:
     | .value.addresses[]?
     | select(.family == "inet" and .scope == "global") | .address ]
   | if length == 0 then "-" else join(", ") end;
+# Bytes for a size as Incus writes one ("6GB", "4GiB", "2147483648"), else null.
+def sizebytes:
+  if test("^[0-9]+([kMGTPE]B|[KMGTPE]iB|B)?$") then
+    (sub("[A-Za-z]+$"; "") | tonumber) as $n | sub("^[0-9]+"; "") as $u
+    | if $u == "" or $u == "B" then $n
+      elif ($u | endswith("iB")) then $n * pow(1024; ("KMGTPE" | index($u[0:1])) + 1)
+      else $n * pow(1000; ("kMGTPE" | index($u[0:1])) + 1) end
+  else null end;
 # The memory denominator: the instance limit as Incus spells it ("4GiB",
 # "6GB"), a bare byte count or a percentage of the host made readable, else
-# the host total. Null when neither is known.
+# the host total. A limit above what the host has is a cap nothing backs
+# (the 6GB of the boxen profile on a 4GiB host), so that reads against the
+# host too. Null when neither is known.
 def memtotal($c):
   ($c["limits.memory"] // "") as $l
-  | if $l == "" then (if $host.mem != null then ($host.mem | human) else null end)
-    elif ($l | test("^[0-9]+$")) then ($l | tonumber | human)
-    elif ($l | test("^[0-9]+%$")) then
-      (if $host.mem != null then ($host.mem * ($l | rtrimstr("%") | tonumber) / 100 | human) else null end)
+  | (if ($l | test("^[0-9]+%$")) then
+       (if $host.mem != null then $host.mem * ($l | rtrimstr("%") | tonumber) / 100 else null end)
+     else ($l | sizebytes) end) as $b
+  | if $host.mem != null and ($l == "" or ($b != null and $b > $host.mem)) then ($host.mem | human)
+    elif $l == "" then null
+    elif ($l | test("^[0-9]+%?$")) then (if $b != null then ($b | human) else null end)
     else $l end;
 def row($t):
   .state as $s | ($s.cpu.usage // null) as $u | ($prev.cpu[.name] // null) as $p
