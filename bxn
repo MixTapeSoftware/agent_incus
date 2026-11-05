@@ -327,11 +327,12 @@ def ipv4:
     | .value.addresses[]?
     | select(.family == "inet" and .scope == "global") | .address ]
   | if length == 0 then "-" else join(", ") end;
-# Bytes for a size as Incus writes one ("6GB", "4GiB", "2147483648"), else null.
+# Bytes for a size as Incus writes one ("6GB", "4GiB", "2147483648",
+# "2147483648 bytes"), else null.
 def sizebytes:
-  if test("^[0-9]+([kMGTPE]B|[KMGTPE]iB|B)?$") then
-    (sub("[A-Za-z]+$"; "") | tonumber) as $n | sub("^[0-9]+"; "") as $u
-    | if $u == "" or $u == "B" then $n
+  if test("^[0-9]+([kMGTPE]B|[KMGTPE]iB|B| ?bytes)?$") then
+    (sub("[ A-Za-z]+$"; "") | tonumber) as $n | sub("^[0-9]+ ?"; "") as $u
+    | if $u == "" or $u == "B" or $u == "bytes" then $n
       elif ($u | endswith("iB")) then $n * pow(1024; ("KMGTPE" | index($u[0:1])) + 1)
       else $n * pow(1000; ("kMGTPE" | index($u[0:1])) + 1) end
   else null end;

@@ -132,6 +132,9 @@ assert_eq "a limit above the host reads against the host" "412.3MiB / 16.0GiB" \
 sed 's/"limits.memory":"50%"/"limits.memory":"34359738368"/' "$stub/sample1.json" > "$stub/sample2.json"
 assert_eq "and so does one given in bytes" "180.0MiB / 16.0GiB" \
   "$(run_status | awk '$2 == "delta" {print $5, $6, $7}')"
+sed 's/"limits.memory":"50%"/"limits.memory":"34359738368bytes"/' "$stub/sample1.json" > "$stub/sample2.json"
+assert_eq "or in bytes that say so" "180.0MiB / 16.0GiB" \
+  "$(run_status | awk '$2 == "delta" {print $5, $6, $7}')"
 
 echo "busy CPU:"
 # alpha burns 0.6s of CPU between samples taken ~1s apart. On a 4-CPU host
