@@ -94,9 +94,10 @@ bxn -n my-project -r all             # Remove all proxies
 bxn -u my-project                     # Update packages in a container
 bxn -ua                               # Update all boxen containers
 bxn                                   # Live view of all instances (same as bxn status)
-bxn status                            # Live view of all instances; space starts/stops one, D deletes it (asks first)
+bxn status                            # Live view of all instances; space starts/stops one, S force-stops it, D deletes it (asks first)
 bxn status --once                     # Print the status table once
 bxn rm my-project                     # Delete a container
+bxn doctor                            # Check what would stop a create or start
 bxn cron install                      # Install 7pm daily update cron
 bxn cron install 3                    # Install 3am daily update cron
 bxn cron status                       # Show current cron schedule
@@ -121,7 +122,7 @@ In a terminal, `bxn status` is a live view that refreshes every second. On a ter
 | `Esc` | Back to the list from the details, otherwise quit |
 | `q` | Quit |
 
-Start, stop and delete run in the background, and the result appears below the table. When output is piped, or with `--once`, it prints the table once instead. `bxn` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `bxn -s status`.
+Start, stop and delete run in the background, and the result appears below the table. `S` force-stops the selected instance (`incus stop --force`) for when a stop hangs: it's the one action still allowed while that instance's graceful stop is pending, and it waits like the others while anything else is. When output is piped, or with `--once`, it prints the table once instead. `bxn` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `bxn -s status`.
 
 ## boxen.init Options
 
@@ -174,7 +175,7 @@ Every container is provisioned with the following packages before any optional p
 | Dev libraries | libssl-dev, libreadline-dev, libyaml-dev, libsqlite3-dev, libffi-dev, libncurses-dev, zlib1g-dev, and more |
 | Runtimes | python3, python3-dev, python3-pip, python3-venv, nodejs, npm |
 | Utilities | gpg, ca-certificates, psmisc, fontconfig, fzf, bat |
-| Tools | [mise](https://mise.jdx.dev/) (runtime version manager), [Oh My Zsh](https://ohmyz.sh/) (with zsh-autosuggestions), [GitHub CLI](https://cli.github.com/) |
+| Tools | [mise](https://mise.jdx.dev/) (runtime version manager), [Oh My Zsh](https://ohmyz.sh/) (with zsh-autosuggestions), [GitHub CLI](https://cli.github.com/) with [gh stack](https://github.com/github/gh-stack) (GitHub stacked PRs) |
 
 ### Coding Agents
 
@@ -202,8 +203,12 @@ Every container is labelled `user.boxen=1`, with `user.boxen.handle`,
 `user.boxen.agent` and `user.boxen.project`, so `incus list user.boxen=1` lists
 them. Commands that take a container accept the project alone, or
 `AGENT-PROJECT`, when that finds exactly one of yours: `bxn web`,
-`bxn -n claude-web 3000`, `bxn egress log codex-web`. With several, they list
-them and ask you to name one.
+`bxn -n claude-web 3000`, `bxn egress log codex-web`. Add the number for a
+numbered copy: `bxn web-1`, `bxn claude-web-1`. When the name finds a
+container and its numbered copies, they take the one without a number and
+name the others; `bxn rm` refuses instead, so it never deletes a container you
+didn't name. With any other mix, such as two agents' containers for one
+project, they list them and ask you to name one.
 
 | Agent | Selection | Command inside the instance |
 |---|---|---|
@@ -261,6 +266,7 @@ Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrid
 | [open-spdd](https://github.com/gszhangwei/open-spdd) | Spec-prompt-driven development framework |
 | [rtk](https://github.com/rtk-ai/rtk) | High-performance CLI proxy that reduces LLM token consumption by 60-90% |
 | [Tailscale](https://tailscale.com/) | Tailscale VPN client inside the container |
+| [VibeWise](https://github.com/nykooi1/vibe-wise) | Claude Code plugin from Anthropic's plugin directory: learn to build while Claude writes the code (`/vibe-wise:learn`). Opt-in (`--vibe-wise`); needs the Claude Code agent |
 | Tailscale + Supabase serve | Preset `tailscale serve` map for app + Supabase ports (443→3000, 4410→3010, 4431→3001, 5432→54321, 5433→54323, 5434→54324, 8443→8000); auto-selects Tailscale |
 
 Skip the TUI with `--no-tui` to use defaults, or pre-select plugins via CLI flags (`--1pass`, `--gh-token`, `--docker`).
@@ -270,6 +276,8 @@ Chadmux clones the `main` branch into `~/.config/tmux` and links `~/.tmux.conf` 
 Installation preserves an existing config directory or unrelated Git checkout in a sibling `tmux.backup.*` directory after the download succeeds. An existing legacy `~/.tmux.conf` is also preserved in a sibling `.tmux.conf.backup.*` directory before linking the new config. Only a checkout with the Chadmux upstream as its origin is updated in place.
 
 Matt Pocock Skills is opt-in: tick it in the menu or pass `--matt-pocock-skills`. It installs the full collection, from the repository's main branch, globally for the instance user. Codex and Grok discover the shared `~/.agents/skills` directory, and Claude Code receives its own discovery links, so the same collection is available in every project. Run `/setup-matt-pocock-skills` in your agent once per repo to configure the issue tracker, triage labels, and doc locations.
+
+VibeWise is a third-party plugin (by Noah Kim) that Anthropic's plugin directory lists. It does nothing until you run `/vibe-wise:learn`, which switches Claude into learning-first mode: you lead the design, and Claude explains and writes the agreed code. Its session hook only points Claude at a project's `.vibe-wise/` notes when they exist. Update it with `claude plugin update vibe-wise@anthropic-plugin-directory`.
 
 MixTape Skills is opt-in too (`--mixtape-skills`). It clones the repository's `main` branch into `~/.local/share/mixtape-skills` and links each skill into `~/.agents/skills` (Codex and Grok) and `~/.claude/skills` (Claude Code), so `/botfight` is available in every project. A skill of the same name that is already there and isn't from this checkout is left alone. To get newer skills, run `git -C ~/.local/share/mixtape-skills pull --ff-only`; new skills need a link of their own, or rebuild the container.
 
@@ -311,6 +319,7 @@ Optional extras:
 - `PLUGIN_PHASE=open|locked` — when it installs under an allowlist: `open`, before the container is locked, or `locked`, after, with the workspace. Plugins that prompt (they usually take a credential) default to `locked`, others to `open`
 - `PLUGIN_REQUIRES="other-id ..."` — auto-select these plugins whenever this one is selected (single level: a required plugin's own requirements aren't chased)
 - `PLUGIN_MIN_MEMORY="8GiB"` — the instance gets at least this much memory when the plugin is selected, unless `--memory` asks for more. The build is refused if the host can't back it with 2GiB to spare. The Supabase serve plugin sets 8GiB for the local Supabase stack
+- `plugin_proxy()` — for a tool that ignores `HTTP_PROXY`/`HTTPS_PROXY` and keeps proxy settings in its own file. Called when the container is locked behind the egress proxy with `PROXY_URL` and `PROXY_NO_PROXY` set, and with an empty `PROXY_URL` when a template launches without an allowlist, to remove them. Runs for every installed plugin, selected or not. Docker's plugin is the example
 
 **Overriding a built-in:** define a plugin in your user dir with the same `PLUGIN_ID` as a built-in. You'll see a `[!] Plugin 'foo' from ... overrides ...` warning at discovery time.
 
@@ -379,7 +388,7 @@ claude                                  #   ...then start the agent inside it
 bxn shell-project                      # Pane 2: the dev container (tests, git, servers)
 # prefix + "  (split), then:
 bxn -n shell-project 4000              # Pane 3 on the host: proxy the dev server to localhost:4000
-bxn status                             #   ...and check CPU, memory, and disk; space starts/stops
+bxn status                             #   ...and check CPU, memory, and disk; space starts/stops, S force-stops
 ```
 
 Leave tmux with prefix + `d`; containers keep running. Come back with `tmux attach -t project`, and stop everything at the end of the day with `bxn -ka`.
@@ -703,12 +712,23 @@ bxn egress refresh [my-project|--all]   # finish an interrupted change, review a
 - **The list** is the approved baseline (`~/.config/boxen/egress-approved-baseline.txt`, AI APIs, package managers, code hosts and registries; copied from [`egress/baseline.txt`](egress/baseline.txt) on first use), your additions for every container (`bxn egress allow --all`, kept in `~/.config/boxen/egress-baseline.txt`), and the container's own hosts. When an update changes the shipped baseline, nothing uses it until `bxn egress refresh` shows you the difference and you approve it.
 - **New containers** (`bxn -c`) are built on the allowlist (`--egress enforce`; `--egress off` for none). Plugins that take no credentials install first, with the internet open; then the container is locked, and only then do the workspace and the plugins that take credentials go in. A container from a template is locked before its first start, since a template may hold logins or startup services.
 - **Turning it on** for an open container stops it, locks its card, ends its old proxies, moves it to a fresh address so no old connection survives, and starts it again. Until that finishes it won't start on its own, and `bxn` won't start it; `bxn egress refresh` finishes an interrupted one.
-- **Proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, a narrow `NO_PROXY`, `NODE_USE_ENV_PROXY=1`) go into the Incus environment, `/etc/environment`, every systemd service, and apt. A tool that ignores them fails rather than getting around the proxy. Node's built-in `fetch` needs Node 22.21 or 24 or later for this.
+- **Proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, a narrow `NO_PROXY` that also covers Docker's networks, `npm_config_proxy`/`npm_config_https_proxy` for npm, pnpm, yarn and the install scripts they run, `NODE_USE_ENV_PROXY=1`, `ELECTRON_GET_USE_PROXY=1`) go into the Incus environment, `/etc/environment`, every systemd service, and apt. Tools that keep proxy settings in their own files get them from their plugin (`plugin_proxy`; Docker's client config, so builds and containers inside Docker use the proxy). Under `enforce`, a tool that ignores all of these fails with a DNS error rather than getting around the proxy; the note in the agents' instructions says how to point such a tool at the proxy. Node's built-in `fetch` needs Node 22.21 or 24 or later for this.
 - **Without DNS**: an allowlisted container can't look names up itself; the proxy does it.
-- **In the status view** (`bxn`), allowlisted containers show 🔒 (enforce) or 🔓 (report), and their details have **Network** and **Rules** tabs (h/l). Network lists what the container tried to reach, blocked first: `a` allows the selected host for that container, `A` for every container, each after a y/n naming the exact host and scope. Rules lists its hosts and where each comes from; `d` removes one of the container's own. `m` changes the mode.
+- **In the status view** (`bxn`), allowlisted containers show 🔒 (enforce) or 🔓 (report), and their details have **Network** and **Rules** tabs (h/l). Network lists what the container tried to reach, blocked first: `a` allows the selected host for that container, `A` for every container, each after a y/n naming the exact host and scope. Rules lists its hosts and where each comes from; `d` removes one of the container's own. `m` changes the mode. A row shows "allowing…" or "removing…" while its change runs, and both tabs update as soon as it finishes. A host logged as blocked that is now listed reads "allowed now", and one logged as allowed that has been removed reads "blocked now" ("unlisted now" under report).
 - **Separate egress containers** (`--egress-container <name>` on `bxn egress mode`, making `boxen-egress-<name>`) keep groups of containers, such as different clients' work, from reaching each other's proxies. Each egress container is one security boundary.
 
 What an allowlist doesn't stop: data sent to an allowed host (a gist, a package upload), and anything reachable through an allowed shared front end such as a CDN. Hosts in the baseline that accept uploads from anyone with an account are marked `upload:` in the file.
+
+## When a Create Fails: bxn doctor
+
+`bxn doctor` checks what would stop bxn creating or starting containers, and prints the fix for each problem it finds. It changes nothing, and exits 1 when something would block a create or start. It checks:
+
+- **Incus**: the server answers, and has the version, nftables firewall and per-container network rules that isolation needs.
+- **The lock** bxn commands share: one with no owner, or whose process ID now belongs to something else (after a reboot, say), makes every command wait 15 minutes and fail.
+- **boxenbr0**: a /16 that no route or other network overlaps (a VPN often does), the host's interface, IPv4 forwarding, the DHCP server, ufw rules, two containers on one address, and containers a failed create left unlabelled.
+- **Egress**: each egress container is running, starts at boot and answers; each allowlisted container has a listening proxy and no unfinished lockdown; proxies and network rule sets left for containers that are gone.
+
+The host checks (interface, forwarding, DHCP) run only when the Incus server is on the same machine. Checks that need root, such as the firewall rules themselves, aren't in it yet.
 
 ## Runtime Management
 

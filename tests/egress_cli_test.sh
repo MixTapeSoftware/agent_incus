@@ -73,8 +73,10 @@ assert_contains "it says the container restarted on a new address" "locked; it r
 assert_eq "the egress container exists" "yes" "$([[ -d "$FAKE_INCUS_STATE/instances/$E" ]] && echo yes || echo no)"
 assert_eq "box's proxy is on port 10000" "10000" "$(cfg box user.boxen.egress.port)"
 assert_eq "the proxy address is in box's environment" "http://10.201.0.10:10000" "$(cfg box environment.HTTPS_PROXY)"
-assert_eq "NO_PROXY keeps local traffic off the proxy" "localhost,127.0.0.1,::1" "$(cfg box environment.NO_PROXY)"
+assert_eq "NO_PROXY keeps local traffic and Docker's networks off the proxy" "localhost,127.0.0.1,::1,host.docker.internal,172.16.0.0/12" "$(cfg box environment.NO_PROXY)"
 assert_eq "Node's fetch uses the proxy" "1" "$(cfg box environment.NODE_USE_ENV_PROXY)"
+assert_eq "npm install scripts get it in npm's own variable" "http://10.201.0.10:10000" "$(cfg box environment.npm_config_https_proxy)"
+assert_eq "Electron's downloader uses it" "1" "$(cfg box environment.ELECTRON_GET_USE_PROXY)"
 stdin="$(cat "$FAKE_INCUS_STATE"/exec-stdin/* 2>/dev/null)"
 assert_contains "proxy settings for logins, apt and services are written" "/etc/apt/apt.conf.d/95boxen-proxy" "$stdin"
 assert_eq "box's card uses its own rules" "boxen-a-box" "$(cfg box devices.eth0.security.acls)"
@@ -250,6 +252,8 @@ assert_contains "with its proxy" "boxen-egress:10000" "$OUT"
 run ls box
 assert_contains "ls box shows where hosts come from" "api.anthropic.com" "$OUT"
 assert_contains "the baseline is a source" "baseline" "$OUT"
+run ls box --tsv --applied
+assert_contains "--applied lists what the running proxy enforces" "api.anthropic.com" "$OUT"
 mkdir -p "$FAKE_INCUS_STATE/ctl/$E/box"
 printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
   2026-10-30T10:00:00Z docs.rs 443 blocked "default rule policy used" 9 \
