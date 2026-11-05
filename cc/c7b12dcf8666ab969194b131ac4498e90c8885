@@ -1,0 +1,19 @@
+README.md
+  s_72cef02a544353::t_f4e5e88a9288c9 112
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ccc7b12dcf8666ab969194b131ac4498e90c8885",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
