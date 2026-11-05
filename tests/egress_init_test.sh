@@ -3,7 +3,7 @@
 # bxn -c under an allowlist (the default): a fresh build installs plugins
 # that take no credentials while open, locks, then copies the workspace and
 # installs the rest; a template launch is locked before its first start; and
-# --egress off, report and the refusals. Runs boxen.init end to end against
+# --egress off, report and the refusals. Runs boxen.create end to end against
 # the fake `incus`, with curl and git stubbed so nothing is downloaded.
 # Run: bash tests/egress_init_test.sh
 
@@ -77,7 +77,7 @@ fresh() {
 }
 docker_cfg() { jq -c "$2" "$FAKE_INCUS_STATE/instances/$1/root/home/$(whoami)/.docker/config.json" 2>/dev/null; }
 # The fixtures have exact names; naming itself is in names_test.sh.
-init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.init" --name "$n" "$@" --no-tui -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
+init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.create" --name "$n" "$@" --no-tui -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
 cfg() { cat "$FAKE_INCUS_STATE/instances/$1/config/$2" 2>/dev/null; }
 stdin_all() { cat "$FAKE_INCUS_STATE"/exec-stdin/* 2>/dev/null | tr -d '\0'; }
 
@@ -194,7 +194,7 @@ log() { :; }; warn() { echo "$1"; }; error() { echo "$1" >&2; exit 1; }
 source "$SCRIPT_DIR/boxen.net"
 source "$SCRIPT_DIR/boxen.egress"
 for name in revoke_build_sudo restore_tailscale_state cleanup_on_exit; do
-  eval "$(awk -v name="$name" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$SCRIPT_DIR/boxen.init")"
+  eval "$(awk -v name="$name" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$SCRIPT_DIR/boxen.create")"
 done
 CONTAINER_NAME=failed CREATED_INSTANCE=1 HOST_USER=dev BUILD_SUDO_GRANTED=0 TS_STATE_BACKUP=""
 trap cleanup_on_exit EXIT

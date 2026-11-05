@@ -60,7 +60,7 @@ fresh() {
   export BOXEN_CONFIG_DIR="$FAKE_INCUS_STATE/config"
   mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"
 }
-init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.init" --name "$n" "$@" --egress off --no-tui -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
+init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.create" --name "$n" "$@" --egress off --no-tui -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
 out() { sed -e $'s/\033\\[[0-9;]*m//g' "$SANDBOX/out"; }
 cfg() { cat "$FAKE_INCUS_STATE/instances/$1/config/$2" 2>/dev/null; }
 exists() { [[ -d "$FAKE_INCUS_STATE/instances/$1" ]] && echo yes || echo no; }

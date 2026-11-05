@@ -88,7 +88,7 @@ assert_eq "read_value stores the cleaned value" "op://V/Item name/f" "$got"
 # ===========================================================================
 echo "plugin prompts"
 # ===========================================================================
-# Each plugin's prompt runs the way boxen.init runs it, with the framework's
+# Each plugin's prompt runs the way boxen.create runs it, with the framework's
 # helpers stubbed and the pasted answer on stdin.
 run_prompt() {
   local plugin="$1" var="$2" input="$3"

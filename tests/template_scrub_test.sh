@@ -2,7 +2,7 @@
 # tests/template_scrub_test.sh
 # A template must not carry the Tailscale node identity of the container it
 # was built from. These tests run the real stash/restore functions from
-# boxen.init against the fake `incus`, around a real `publish`.
+# boxen.create against the fake `incus`, around a real `publish`.
 # Run: bash tests/template_scrub_test.sh
 
 set -euo pipefail
@@ -36,7 +36,7 @@ export PATH="$SANDBOX/bin:$PATH"
 export XDG_RUNTIME_DIR="$SANDBOX/run"
 
 extract_fn() {
-  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/boxen.init"
+  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/boxen.create"
 }
 log()  { echo "[+] $1"; }
 warn() { echo "[!] $1"; }
@@ -44,7 +44,7 @@ error() { echo "[ERROR] $1" >&2; exit 1; }
 READY_TIMEOUT=2
 eval "$(extract_fn stash_tailscale_state)"
 eval "$(extract_fn restore_tailscale_state)"
-declare -F stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in boxen.init"; exit 1; }
+declare -F stash_tailscale_state restore_tailscale_state >/dev/null || { echo "functions not found in boxen.create"; exit 1; }
 
 CONTAINER_NAME=box
 TS_STATE_BACKUP=""
@@ -193,7 +193,7 @@ assert_not_contains "no tailscaled: does not point at a deleted backup" "boxen-t
 # ===========================================================================
 echo "publish fails during a template build"
 # ===========================================================================
-# The real tail of boxen.init: the trap hand-over after the build, then
+# The real tail of boxen.create: the trap hand-over after the build, then
 # save_template. A failed publish must still put the state back.
 {
   echo 'set -euo pipefail'
@@ -209,12 +209,12 @@ echo "publish fails during a template build"
   echo 'CONTAINER_NAME=box; CREATED_INSTANCE=1; HOST_USER=dev; CONTAINER_WORKSPACE=/workspace'
   echo 'SAVE_TEMPLATE=1; READY_TIMEOUT=2; TS_STATE_BACKUP=""; BUILD_SUDO_GRANTED=0'
   echo 'revoke_build_sudo() { :; }'
-  grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/boxen.init"
-  awk '/^# Disable cleanup trap on success/ {c=1} /^# Done/ {exit} c' "$REPO_ROOT/boxen.init"
-  awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/boxen.init"
+  grep -E "^trap (cleanup_on_exit EXIT|'exit [0-9]+' (INT|TERM|HUP))\$" "$REPO_ROOT/boxen.create"
+  awk '/^# Disable cleanup trap on success/ {c=1} /^# Done/ {exit} c' "$REPO_ROOT/boxen.create"
+  awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/boxen.create"
 } > "$SANDBOX/template-build.sh"
 assert_contains "harness: found the trap hand-over" "trap template_cleanup_on_exit EXIT" "$(cat "$SANDBOX/template-build.sh")"
-assert_contains "harness: found the publish step" "save_template" "$(awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/boxen.init")"
+assert_contains "harness: found the publish step" "save_template" "$(awk '/^# Publish as local image/ {c=1} c' "$REPO_ROOT/boxen.create")"
 
 fresh_box
 FAKE_INCUS_FAIL_CALL='^publish box' bash "$SANDBOX/template-build.sh" > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?

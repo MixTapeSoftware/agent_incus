@@ -3,7 +3,7 @@
 # `bxn create <project> <github-url>`: the workspace is a clone of the
 # repository, made inside the container once the plugins are in. Nothing is
 # copied from the host, and GitHub Auth is selected for its token.
-# Runs boxen.init's dry run and its clone_repo against the fake `incus`, with
+# Runs boxen.create's dry run and its clone_repo against the fake `incus`, with
 # a stand-in for git.
 # Run: bash tests/repo_clone_test.sh
 
@@ -45,7 +45,7 @@ echo "SECRET=1" > "$HOST/.env"
 TOKEN="github_pat_FAKE123"
 # The dry run, from that directory, answering GitHub Auth's prompt.
 dry_run() {
-  (cd "$HOST" && printf '%s\n' "$TOKEN" | bash "$REPO_ROOT/boxen.init" --no-tui --dry-run "$@") > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?
+  (cd "$HOST" && printf '%s\n' "$TOKEN" | bash "$REPO_ROOT/boxen.create" --no-tui --dry-run "$@") > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?
   OUT="$(cat "$SANDBOX/out")"
 }
 
@@ -121,14 +121,14 @@ assert_contains "the project still needs a name" "Project name required" "$OUT"
 echo "the clone"
 # ===========================================================================
 extract_fn() {
-  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/boxen.init"
+  awk -v name="$1" '$0 ~ "^" name "\\(\\)" {c=1} c {print} c && /^}/ {exit}' "$REPO_ROOT/boxen.create"
 }
 log()   { echo "[+] $1"; }
 warn()  { echo "[!] $1"; }
 error() { echo "[ERROR] $1" >&2; exit 1; }
 for fn in clone_repo workspace_has_mise_config; do
   eval "$(extract_fn "$fn")"
-  declare -F "$fn" >/dev/null || { echo "$fn not found in boxen.init"; exit 1; }
+  declare -F "$fn" >/dev/null || { echo "$fn not found in boxen.create"; exit 1; }
 done
 
 # git, as the user runs it in the container: it says where and how it was
@@ -209,7 +209,7 @@ mkdir -p "$HOME" "$FAKE_INCUS_STATE/images/incus-init/base/root"
 URL=https://github.com/MixTapeSoftware/bxn
 build() {
   BWS="$SANDBOX/build-$1"; mkdir -p "$BWS"
-  (cd "$HOST" && printf '%s\n' "$TOKEN" | bash "$REPO_ROOT/boxen.init" "$1" "$URL" -w "$BWS" \
+  (cd "$HOST" && printf '%s\n' "$TOKEN" | bash "$REPO_ROOT/boxen.create" "$1" "$URL" -w "$BWS" \
     --from base --no-tui --egress off --insecure-network) > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?
   OUT="$(cat "$SANDBOX/out")"
 }
@@ -239,7 +239,7 @@ assert_contains "and the summary says the workspace is empty" "Workspace:   empt
 # A fresh build under an allowlist isn't run here; its order is read from the
 # script. GitHub Auth installs with the locked plugins there, and the clone
 # comes after both install calls and before the workspace's mise install.
-line_of() { grep -n -F -- "$1" "$REPO_ROOT/boxen.init" | tail -n 1 | cut -d: -f1; }
+line_of() { grep -n -F -- "$1" "$REPO_ROOT/boxen.create" | tail -n 1 | cut -d: -f1; }
 locked="$(line_of '_run_plugin_installs 0 locked')"
 installs="$(line_of '_run_plugin_installs "$FROM_BASE_IMAGE"')"
 clone="$(line_of '|| clone_repo')"
@@ -254,7 +254,7 @@ assert_eq "and before the workspace's mise install" "yes" \
 # ===========================================================================
 echo "the help"
 # ===========================================================================
-help="$(bash "$REPO_ROOT/boxen.init" --help 2>&1 || true)"
+help="$(bash "$REPO_ROOT/boxen.create" --help 2>&1 || true)"
 assert_contains "create takes a URL" "bxn create [OPTIONS] <project> [<github-url>]" "$help"
 assert_contains "and says what it does with it" "a clone of it, made inside the container" "$help"
 assert_contains "bxn's own help shows it" "bxn create web https://github.com/OWNER/REPO" "$(bash "$REPO_ROOT/bxn" --help 2>&1 || true)"

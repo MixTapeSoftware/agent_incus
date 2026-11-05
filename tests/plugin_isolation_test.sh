@@ -25,7 +25,7 @@ assert_eq() {
   fi
 }
 
-# Pull _reset_plugin_state out of boxen.init by sourcing the script with a
+# Pull _reset_plugin_state out of boxen.create by sourcing the script with a
 # guard that exits before any side effects. The script exits via `usage` when
 # called with -h, but only after defining the helper functions we need.
 extract_reset_helper() {
@@ -33,12 +33,12 @@ extract_reset_helper() {
     /^_reset_plugin_state\(\)/ {capture=1}
     capture {print}
     capture && /^}/ {exit}
-  ' "$REPO_ROOT/boxen.init"
+  ' "$REPO_ROOT/boxen.create"
 }
 
 helper_src="$(extract_reset_helper)"
 if [[ -z "$helper_src" ]]; then
-  echo "FAIL: _reset_plugin_state not found in boxen.init"
+  echo "FAIL: _reset_plugin_state not found in boxen.create"
   exit 1
 fi
 eval "$helper_src"
@@ -103,9 +103,9 @@ hook_src="$(awk '
   /^_run_plugin_hook\(\)/ {capture=1}
   capture {print}
   capture && /^}/ {exit}
-' "$REPO_ROOT/boxen.init")"
+' "$REPO_ROOT/boxen.create")"
 if [[ -z "$hook_src" ]]; then
-  echo "FAIL: _run_plugin_hook not found in boxen.init"
+  echo "FAIL: _run_plugin_hook not found in boxen.create"
   exit 1
 fi
 eval "$hook_src"
@@ -129,7 +129,7 @@ _run_plugin_hook fine
 assert_eq "hook: success not recorded"             "1" "${#FAILED_PLUGIN_NAMES[@]}"
 assert_eq "hook: script still alive after failure" "alive" "alive"
 
-eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
+eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.create")"
 assert_eq "hook: failed ID is recognized" "failed" "$(_plugin_failed boom && echo failed || echo ok)"
 PLUGIN_ID="same-label" PLUGIN_NAME="Boom"
 _run_plugin_hook fine

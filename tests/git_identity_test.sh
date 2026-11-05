@@ -4,7 +4,7 @@
 # being copied (its own config, an includeIf for its path), else the global
 # one; set in the container on every build with the values on stdin, never in
 # a command string; nothing for a template; a warning when the host has none.
-# Runs boxen.init's functions with a sandbox HOME and real git.
+# Runs boxen.create's functions with a sandbox HOME and real git.
 # Run: bash tests/git_identity_test.sh
 
 set -euo pipefail
@@ -39,7 +39,7 @@ git -C "$SANDBOX/mine" init -q
 git -C "$SANDBOX/mine" config user.name "Repo Person"
 git -C "$SANDBOX/mine" config user.email repo@example.com
 
-eval "$(awk '/^GIT_NAME="" GIT_EMAIL=""/ {c=1} c {print} c && /^write_git_identity\(\) \{/ {w=1} w && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
+eval "$(awk '/^GIT_NAME="" GIT_EMAIL=""/ {c=1} c {print} c && /^write_git_identity\(\) \{/ {w=1} w && /^}/ {exit}' "$REPO_ROOT/boxen.create")"
 log() { echo "[+] $1"; }
 warn() { echo "[!] $1"; }
 read_value() { :; }

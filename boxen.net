@@ -9,7 +9,7 @@
 # outside the DHCP pool, from a counter that only grows, so a later lockdown
 # can move an instance to an address no old connection knows.
 #
-# Sourced by boxen.init. Defines functions only; uses log, warn and error.
+# Sourced by boxen.create. Defines functions only; uses log, warn and error.
 
 BOXEN_NET="boxenbr0"
 BOXEN_NET_PROFILE="boxen-net"

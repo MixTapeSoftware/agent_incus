@@ -47,7 +47,7 @@ export BOXEN_LOCK_DIR="$SANDBOX/state/lock"
 export BOXEN_CONFIG_DIR="$SANDBOX/config"
 mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"
 
-build() { bash "$SANDBOX/repo/boxen.init" "$@" --from base --no-tui --egress off --insecure-network -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
+build() { bash "$SANDBOX/repo/boxen.create" "$@" --from base --no-tui --egress off --insecure-network -p "$SANDBOX/ws" >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
 built() { sed -n 's/^Container:   //p' "$SANDBOX/out" | head -1; grep -o 'Creating container: [^ ]*' "$SANDBOX/out" | cut -d' ' -f3; }
 cfg() { cat "$FAKE_INCUS_STATE/instances/$1/config/$2" 2>/dev/null; }
 exists() { [[ -d "$FAKE_INCUS_STATE/instances/$1" ]] && echo yes || echo no; }
@@ -249,7 +249,7 @@ assert_eq "and leaves the winner's container alone" "theirs" "$(cat "$FAKE_INCUS
 echo "the agent picker"
 if script -qec true /dev/null >/dev/null 2>&1; then
   pick() { { sleep 1.5; for k in "$@"; do printf '%b' "$k"; sleep 0.5; done; sleep 0.5; printf '\r'; sleep 1; } |
-    TERM=xterm script -qec "bash '$SANDBOX/repo/boxen.init' pick --from base --egress off --insecure-network --dry-run -p '$SANDBOX/ws'" /dev/null | sed $'s/\033\\[[0-9;?]*[A-Za-z]//g; s/\r//g'; }
+    TERM=xterm script -qec "bash '$SANDBOX/repo/boxen.create' pick --from base --egress off --insecure-network --dry-run -p '$SANDBOX/ws'" /dev/null | sed $'s/\033\\[[0-9;?]*[A-Za-z]//g; s/\r//g'; }
   out="$(pick)"
   assert_contains "it lists a shell and the agents" "Fake Agent" "$out"
   assert_contains "Enter on the first row is a shell" "Container:   chad-shell-pick" "$out"

@@ -1,6 +1,6 @@
 # boxen.macos.setup
 # macOS pre-flight: ensures Colima + Incus are installed and running.
-# Sourced by boxen.init — inherits colors, log/warn/error, and set -euo pipefail.
+# Sourced by boxen.create — inherits colors, log/warn/error, and set -euo pipefail.
 
 # ---------------------------------------------------------------------------
 # Skip on Linux
