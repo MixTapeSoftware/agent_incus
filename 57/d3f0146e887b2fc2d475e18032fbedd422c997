@@ -1,0 +1,25 @@
+tests/obsidian_plugin_test.sh
+  s_72cef02a544353::t_383e92940eb6b5 1-130
+README.md
+  s_72cef02a544353::t_1cfdf697348e84 263,282
+  s_72cef02a544353::t_1de1a1fc24683f 283
+plugins/50-obsidian.sh
+  s_72cef02a544353::t_383e92940eb6b5 38-39
+  s_72cef02a544353::t_3e394af4083cd5 1-37,40-41
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "57d3f0146e887b2fc2d475e18032fbedd422c997",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
