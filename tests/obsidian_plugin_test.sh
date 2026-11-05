@@ -132,9 +132,9 @@ assert_eq "a later run installs it" "0" "$rc"
 
 echo "the login hint"
 assert_eq "the plugin names its login" "ob login" "$PLUGIN_LOGIN_COMMAND"
-# boxen.init's own functions, over this plugin and one with no login.
+# boxen.create's own functions, over this plugin and one with no login.
 for fn in _reset_plugin_state _plugin_failed print_plugin_logins; do
-  eval "$(awk -v f="$fn" '$0 ~ "^" f "\\(\\)" {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
+  eval "$(awk -v f="$fn" '$0 ~ "^" f "\\(\\)" {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.create")"
 done
 # One with a login and no way to say it's installed, one with no login.
 printf 'PLUGIN_ID="bare"\nPLUGIN_NAME="Bare"\nPLUGIN_LOGIN_COMMAND="bare auth"\n' > "$SANDBOX/bare.sh"

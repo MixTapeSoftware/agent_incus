@@ -2,11 +2,11 @@
 # The boxen Incus profile: security hardening and default limits for
 # agent containers.
 #
-# Sourced by boxen.init. Defines functions only.
+# Sourced by boxen.create. Defines functions only.
 
 AGENT_PROFILE="boxen"
 # Every container's memory limit unless it gets its own (--memory, or a
-# plugin's PLUGIN_MIN_MEMORY); boxen.init compares against this.
+# plugin's PLUGIN_MIN_MEMORY); boxen.create compares against this.
 AGENT_PROFILE_MEMORY="6GB"
 
 # Always (re)applies the keys this profile owns so hosts converge on the
@@ -26,7 +26,7 @@ ensure_profile() {
     security.idmap.isolated=true \
     limits.memory="$AGENT_PROFILE_MEMORY" \
     limits.cpu=4
-  # Tagging is per-instance (boxen.init sets user.managed-by on each
+  # Tagging is per-instance (boxen.create sets user.managed-by on each
   # container), so the profile itself never carries it.
   incus profile unset "$AGENT_PROFILE" user.managed-by 2>/dev/null || true
 }

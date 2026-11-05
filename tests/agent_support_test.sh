@@ -41,7 +41,7 @@ assert_absent() {
   PASS=$((PASS+1))
 }
 export BOXEN_HANDLE=tester
-dry_run() { bash "$REPO_ROOT/boxen.init" audit --no-tui --vm --no-copy --dry-run "$@"; }
+dry_run() { bash "$REPO_ROOT/boxen.create" audit --no-tui --vm --no-copy --dry-run "$@"; }
 
 # One agent per container, built into its name.
 for pair in 'claude:Claude Code' 'codex:Codex' 'grok:Grok Build'; do
@@ -122,13 +122,13 @@ if out="$(dry_run --agent grokbot 2>&1)"; then echo 'FAIL: inherited built-in ag
 assert_contains 'override removes built-in agent alias' 'Unknown coding agent: grokbot' "$out"
 
 # Run the summary helper with multiple agents and an install failure.
-eval "$(awk '/^print_agent_launches\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
+eval "$(awk '/^print_agent_launches\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.create")"
 PLUGIN_COUNT=3
 _P_SELECTED=(1 1 1)
 _P_ID=(claude-code codex grok)
 _P_AGENT_COMMAND=(claude codex grok)
 _P_NAME=('Claude Code' Codex 'Grok Build')
-eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
+eval "$(awk '/^_plugin_failed\(\)/ {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.create")"
 FAILED_PLUGIN_IDS=(codex)
 FAILED_PLUGIN_NAMES=(Codex)
 CONTAINER_NAME=audit CONTAINER_WORKSPACE='/work tree'

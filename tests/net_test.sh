@@ -2,7 +2,7 @@
 # tests/net_test.sh
 # The isolated bridge (boxen.net): address arithmetic, the Incus preflight,
 # creating and converging the bridge, its rules and profile, handing out
-# addresses, and boxen.init launching new instances on it. Runs against the
+# addresses, and boxen.create launching new instances on it. Runs against the
 # fake `incus`.
 # Run: bash tests/net_test.sh
 
@@ -48,7 +48,7 @@ fresh() {
   unset FAKE_INCUS_FIREWALL FAKE_INCUS_EXTENSIONS FAKE_INCUS_FAIL_CALL FAKE_INCUS_IMAGE_TYPE
   rm -f "$SANDBOX/ufw.log"
 }
-# Runs a snippet with boxen.net sourced. error() exits 1, as in boxen.init.
+# Runs a snippet with boxen.net sourced. error() exits 1, as in boxen.create.
 net() {
   bash -c 'set -euo pipefail
     log()  { echo "[+] $1"; }
@@ -159,14 +159,14 @@ mkdir -p "$BOXEN_LOCK_DIR"; echo 999999 > "$BOXEN_LOCK_DIR/pid"
 assert_eq "a lock left by a dead process is taken over" "$BOXEN_LOCK_DIR" "$(net 'boxen_lock; echo "$BOXEN_LOCK_DIR"; boxen_unlock')"
 assert_eq "unlock removes it" "no" "$([[ -d "$BOXEN_LOCK_DIR" ]] && echo yes || echo no)"
 
-echo "boxen.init"
+echo "boxen.create"
 # A copy of the scripts with no plugins, launching from a template so nothing
 # is provisioned.
 mkdir -p "$SANDBOX/repo"
 cp "$REPO_ROOT"/boxen.* "$SANDBOX/repo/"
 cp -R "$REPO_ROOT/egress" "$SANDBOX/repo/egress"
 # The allowlist is tests/egress_init_test.sh's; these check the network alone.
-init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.init" --name "$n" "$@" --from base --no-tui --no-copy --egress off >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
+init() { local n="$1"; shift; bash "$SANDBOX/repo/boxen.create" --name "$n" "$@" --from base --no-tui --no-copy --egress off >"$SANDBOX/out" 2>&1 && RC=0 || RC=$?; }
 template() { mkdir -p "$FAKE_INCUS_STATE/images/incus-init/base/root"; }
 inst() { cat "$FAKE_INCUS_STATE/instances/$1/$2" 2>/dev/null; }
 
@@ -204,7 +204,7 @@ assert_eq "an old Incus stops the build" "1" "$RC"
 assert_eq "nothing is created on an old Incus" "no" "$([[ -d "$FAKE_INCUS_STATE/instances/old" ]] && echo yes || echo no)"
 
 fresh; template
-bash "$SANDBOX/repo/boxen.init" dry --from base --no-tui --no-copy --egress off --dry-run >"$SANDBOX/out" 2>&1 || true
+bash "$SANDBOX/repo/boxen.create" dry --from base --no-tui --no-copy --egress off --dry-run >"$SANDBOX/out" 2>&1 || true
 assert_contains "--dry-run names the network" "Network:     boxenbr0, isolated" "$(cat "$SANDBOX/out")"
 
 echo ""

@@ -37,15 +37,15 @@ done
 FILES=(
   "bxn"
   "boxen.shell"
-  "boxen.init"
+  "boxen.create"
   "boxen.network"
   "boxen.macos.setup"
   "bxn.new-plugin"
 )
 
 # Short aliases: alias_name:target_file
-ALIAS_NAMES=("bxni" "bxnn")
-ALIAS_TARGETS=("boxen.init" "boxen.network")
+ALIAS_NAMES=("bxnc" "bxnn")
+ALIAS_TARGETS=("boxen.create" "boxen.network")
 
 # Ensure ~/.local/bin exists
 mkdir -p ~/.local/bin
@@ -84,6 +84,15 @@ for file in "${FILES[@]}"; do
   # Create symlink
   ln -s "$SOURCE" "$TARGET"
   log "Linked: $file -> $TARGET"
+done
+
+# boxen.create was boxen.init, and bxnc was bxni: don't leave the old links
+# pointing at nothing.
+for old_link in "$HOME/.local/bin/boxen.init" "$HOME/.local/bin/bxni"; do
+  if [[ -L "$old_link" && ! -e "$old_link" ]]; then
+    rm "$old_link"
+    log "Removed the old link: $old_link"
+  fi
 done
 
 # Create short alias symlinks

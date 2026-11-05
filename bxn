@@ -1258,7 +1258,7 @@ case "$1" in
     ;;
   -c|create|-i|init)  # -i and init are the old spellings, kept for scripts
     shift
-    exec "$SCRIPT_DIR/boxen.init" "$@"
+    exec "$SCRIPT_DIR/boxen.create" "$@"
     ;;
   -n|net)
     shift

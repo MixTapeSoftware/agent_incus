@@ -6,7 +6,7 @@
 # container is labelled user.boxen=1 with its handle, agent and project, which
 # is how commands find it from the project alone (bxn web).
 #
-# Sourced by boxen.init and bxn, which define log and error.
+# Sourced by boxen.create and bxn, which define log and error.
 
 BOXEN_CONFIG_DIR="${BOXEN_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/boxen}"
 BOXEN_HANDLE_FILE="$BOXEN_CONFIG_DIR/handle"

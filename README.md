@@ -10,8 +10,8 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 - [Install](#install)
 - [Quick Start](#quick-start)
 - [Scripts](#scripts)
-- [boxen.init Options](#boxeninit-options)
-  - [What boxen.init does](#what-boxeninit-does)
+- [boxen.create Options](#boxencreate-options)
+  - [What boxen.create does](#what-boxencreate-does)
   - [Coding Agents](#coding-agents)
   - [Optional Plugins](#optional-plugins)
 - [The Development Workflow](#the-development-workflow)
@@ -30,7 +30,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
 ## Prerequisites
 
 - **Linux**: [Incus](https://linuxcontainers.org/incus/docs/main/installing/) installed and initialized (`incus admin init`)
-- **macOS**: [Homebrew](https://brew.sh/) installed — `boxen.init` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
+- **macOS**: [Homebrew](https://brew.sh/) installed — `boxen.create` will automatically prompt to install Colima and the Incus CLI, then bootstrap a Colima VM with the Incus runtime
 - `~/.local/bin` in your `PATH`
 - `jq` — only for `bxn status` (preinstalled on macOS 15+; `sudo apt install jq` on Ubuntu)
 
@@ -66,10 +66,10 @@ bxn my-project claude
 | Script | Alias | Purpose |
 |---|---|---|
 | `bxn` | — | Unified CLI (shell, init, network, update, status) |
-| `boxen.init` | `bxni` | Create and provision a container |
+| `boxen.create` | `bxnc` | Create and provision a container |
 | `boxen.shell` | — | Open a login shell (or run a command) in a container |
 | `boxen.network` | `bxnn` | Manage port proxy devices |
-| `boxen.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `boxen.init`) |
+| `boxen.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `boxen.create`) |
 | `bxn.new-plugin` | — | Scaffold a new plugin file from a template (also `bxn new-plugin`) |
 | `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin`; optionally install Chadmux on the host |
 | `chadmux.host` | — | Install Chadmux on the host (called by `install_shortcuts`) |
@@ -105,9 +105,9 @@ bxn cron status                       # Show current cron schedule
 bxn cron remove                       # Remove the update cron
 ```
 
-The individual scripts and aliases (`bxni`, `bxnn`) still work directly.
+The individual scripts and aliases (`bxnc`, `bxnn`) still work directly.
 
-`bxn status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `boxen.init` appear first under "Boxen instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the instance's own memory limit when it has one (every VM does, and the `boxen` profile gives containers one), else against the host's total memory, as it also is when the limit is more than the host has. Disk is shown against the root disk size when one is set.
+`bxn status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `boxen.create` appear first under "Boxen instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the instance's own memory limit when it has one (every VM does, and the `boxen` profile gives containers one), else against the host's total memory, as it also is when the limit is more than the host has. Disk is shown against the root disk size when one is set.
 
 ![bxn status live view in two panels: Boxen instances on the left with CPU and memory and a lock beside the allowlisted ones; on the right the selected container's Network tab, listing the hosts it tried to reach with the decision, hits and last time for each: one blocked, four allowed. Below, the count of running instances and the keys: j/k select, a allow here, A allow everywhere, m mode, h/l tabs, tab list, q quit](.github/images/boxen-status.png)
 
@@ -125,10 +125,10 @@ In a terminal, `bxn status` is a live view that refreshes every second. On a ter
 
 Start, stop and delete run in the background, and the result appears below the table. `S` force-stops the selected instance (`incus stop --force`) for when a stop hangs: it's the one action still allowed while that instance's graceful stop is pending, and it waits like the others while anything else is. When output is piped, or with `--once`, it prints the table once instead. `bxn` with no command opens the same live view; when it isn't attached to a terminal, or jq is missing, it prints help instead. Subcommand names win over container names, so a container named `status` (or `cron`) is opened with `bxn -s status`.
 
-## boxen.init Options
+## boxen.create Options
 
 ```
-Usage: boxen.init [OPTIONS] <project> [<github-url>]
+Usage: boxen.create [OPTIONS] <project> [<github-url>]
 
 Options:
   -p, --path PATH           Host directory to copy in (default: current directory)
@@ -156,7 +156,7 @@ Options:
   --dry-run                 Show what would be done without doing it
 ```
 
-### What boxen.init does
+### What boxen.create does
 
 1. Launches an Ubuntu 24.04 container (override with `--image`) with the `boxen` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits. It joins the `boxenbr0` bridge, isolated from other instances and the host (see [Network Isolation](#network-isolation))
 2. Installs build tools, dev libraries, Python, and Node.js
@@ -511,7 +511,7 @@ image-type message rather than a cryptic Incus error. The `--vm-*` resource
 options apply to a VM launched from a template too.
 
 > Requires a host that can run VMs (KVM / `/dev/kvm`). On macOS this is the
-> Colima VM that `boxen.init` bootstraps.
+> Colima VM that `boxen.create` bootstraps.
 
 
 ### Tailscale
@@ -762,7 +762,7 @@ cd /workspace
 mise use python@3.12 node@20
 ```
 
-Or add a `mise.toml` to your project — `boxen.init` runs `mise install` automatically if one exists.
+Or add a `mise.toml` to your project — `boxen.create` runs `mise install` automatically if one exists.
 
 ## Linux Gotchas
 

@@ -63,7 +63,7 @@ PRIMARY_GID="${USER_GIDS%%,*}"   # id -G lists the primary group first
 if [[ "$WITH_SUDO" == "1" ]]; then
   SUDO_GID=$(incus exec "$CONTAINER" -- getent group _sudo 2>/dev/null | cut -d: -f3 || true)
   if [[ -z "$SUDO_GID" ]]; then
-    echo "Error: _sudo group not found in container (was it built with a recent boxen.init?)" >&2
+    echo "Error: _sudo group not found in container (was it built with a recent boxen.create?)" >&2
     exit 1
   fi
   USER_GIDS+=",$SUDO_GID"
@@ -71,7 +71,7 @@ fi
 
 RUN_AS=(setpriv --reuid="$HOST_UID" --regid="$PRIMARY_GID" --groups="$USER_GIDS" --inh-caps=-all --)
 
-# boxen.init records where the workspace went (--workspace).
+# boxen.create records where the workspace went (--workspace).
 WORKSPACE=$(incus config get "$CONTAINER" user.boxen.workspace 2>/dev/null || true)
 WORKSPACE="${WORKSPACE:-/workspace}"
 
