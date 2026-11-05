@@ -1,0 +1,73 @@
+tests/docker_plugin_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 38
+boxen.prompt
+  s_72cef02a544353::t_a96dd616e45f5f 13
+tests/egress_init_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 6,80,197
+tests/git_identity_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 7,42
+boxen.profile
+  s_72cef02a544353::t_a96dd616e45f5f 5,9,29
+tests/net_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 5,51,162,169,207
+tests/repo_clone_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 6,48,124,131,212,242,257
+bxn
+  s_72cef02a544353::t_a96dd616e45f5f 1261
+tests/agent_support_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 44,125,131
+boxen.envscan
+  s_72cef02a544353::t_a96dd616e45f5f 5
+tests/template_scrub_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 5,39,47,196,212-214,217
+README.md
+  s_72cef02a544353::t_8a8a6e3e2d09c4 13-14
+  s_72cef02a544353::t_a96dd616e45f5f 33,72,110,128,131,159,514,765
+  s_72cef02a544353::t_ca032ac3371852 69,108
+tests/names_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 50,252
+tests/workspace_copy_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 4,37,43,126,134,139
+boxen.names
+  s_72cef02a544353::t_a96dd616e45f5f 9
+tests/obsidian_plugin_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 135,137
+boxen.shell
+  s_72cef02a544353::t_a96dd616e45f5f 66,74
+tests/plugin_isolation_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 28,36,41,106,108,132
+boxen.macos.setup
+  s_72cef02a544353::t_a96dd616e45f5f 3
+plugins/60-gh-auth.sh
+  s_72cef02a544353::t_a96dd616e45f5f 5
+boxen.create
+  s_72cef02a544353::t_a96dd616e45f5f 1-1951
+boxen.net
+  s_72cef02a544353::t_a96dd616e45f5f 12
+tests/prompt_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 91
+tests/init_cleanup_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 3,32,34,45,66
+tests/memory_test.sh
+  s_72cef02a544353::t_a96dd616e45f5f 63
+install_shortcuts
+  s_72cef02a544353::t_8a8a6e3e2d09c4 97
+  s_72cef02a544353::t_ca032ac3371852 47,89-96
+  s_72cef02a544353::t_a96dd616e45f5f 40,48
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "60cc68df40feca6e900e73ec215799e9255af427",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
