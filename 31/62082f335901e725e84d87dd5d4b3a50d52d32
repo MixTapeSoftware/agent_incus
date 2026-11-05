@@ -1,0 +1,23 @@
+AGENTS.md
+  s_72cef02a544353::t_361224db39c022 7-9
+tests/bash32_test.sh
+  s_72cef02a544353::t_f92da1cb060ef2 52,65,69
+tests/lib/bash32_scan.py
+  s_72cef02a544353::t_1a724037f82d1a 107
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "3162082f335901e725e84d87dd5d4b3a50d52d32",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-opus-5-5"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
