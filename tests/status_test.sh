@@ -191,10 +191,10 @@ if script -qec true /dev/null >/dev/null 2>&1; then
   out=$(
     {
       sleep 1.5
-      printf 'j';      sleep 0.3   # alpha -> gamma (stopped)
+      printf 'j';      sleep 0.3   # alpha -> gamma, stopped
       printf 'S';      sleep 0.3   # already stopped: nothing
-      printf 'j';      sleep 0.3   # gamma -> beta (running)
-      printf ' ';      sleep 0.1   # a stop that's still pending (the stub takes 0.3s)
+      printf 'j';      sleep 0.3   # gamma -> beta, running
+      printf ' ';      sleep 0.1   # a stop left pending: the stub takes 0.3s
       printf 'S';      sleep 0.1   # force stop beside it
       printf 'S';      sleep 1.5   # a second S waits for the first
       printf 'q';      sleep 1

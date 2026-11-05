@@ -4,6 +4,8 @@ Boxen provisions Incus containers and VMs for coding agents. The host-side
 scripts share container lifecycle, workspace, and plugin setup across agents.
 
 - Keep shell code compatible with Bash 3.2 for macOS; avoid associative arrays.
+  Keep comments and `case` out of `$(...)`: 3.2 scans it for the closing paren,
+  so an apostrophe in a comment breaks the whole script, on macOS only.
 - Coding agents are optional plugins. Declare `PLUGIN_AGENT_COMMAND` and keep
   shared provisioning independent of a particular agent.
 - Install system packages using host-side `incus exec` as root. Install agent
