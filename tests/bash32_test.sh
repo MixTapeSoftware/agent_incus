@@ -49,7 +49,7 @@ SH
 assert_eq "finds a case" "1" "$(found "$SANDBOX/case")"
 cat > "$SANDBOX/clean" <<'SH'
 # Outside it, this can't matter.
-x="$(echo "it's" 'a (string)'; echo $((1 + 2)))"
+x="$(echo "it's" 'a (string)'; echo $((1 + 2)); echo case)"
 cat <<TEXT
 Here-documents aren't code (at all).
 TEXT
@@ -62,10 +62,11 @@ assert_eq "leaves everything else alone" "0" "$(found "$SANDBOX/clean")"
 
 echo "the scripts"
 cd "$REPO_ROOT"
+# Sourced files have no #! line, so they're named as well as found by it.
 files=()
 while IFS= read -r f; do
   head -n 1 "$f" | grep -qE '^#!.*\b(ba)?sh\b' && files+=("$f")
-done < <(git ls-files | grep -vE '^(\.agents|\.claude|\.grok|docs)/|\.(md|txt|py)$')
+done < <(git ls-files | grep -vE '^(\.agents|\.claude|\.grok|docs)/|\.(md|txt|py)$|^plugins/.*\.sh$|^boxen\.')
 while IFS= read -r f; do files+=("$f"); done < <(git ls-files 'plugins/*.sh' 'boxen.*')
 assert_eq "there are scripts to check" "yes" "$([[ ${#files[@]} -ge 40 ]] && echo yes || echo no)"
 out="$(python3 "$SCAN" "${files[@]}")"

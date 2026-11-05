@@ -104,7 +104,7 @@ def scan(path):
         if s.startswith("<<<", i):
             i += 3
             continue
-        if "(" in stack and at_word_start and re.match(r"case\b", s[i:i + 5]):
+        if "(" in stack and at_word_start and re.match(r"case\s.*\sin(\s|$)", s[i:s.find("\n", i)]):
             out.append((line, "case in $(...)", s[i:s.find("\n", i)].strip()))
         at_word_start = c in " \t;|&("
         i += 1
