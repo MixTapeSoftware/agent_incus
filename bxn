@@ -61,6 +61,9 @@ Commands:
   -c, create <project> [args...] Create a container named HANDLE-AGENT-PROJECT,
                                  with one agent (or a shell); numbered -1, -2
                                  when the name is taken (bxn create -h)
+  -c, create <project> <github-url>
+                                 The same, with a clone of the repository as
+                                 its workspace, not a copy of this directory
   handle [<new>]                 Show or change your handle, the first part of
                                  every container name
   -n, net <container> [ports...] Manage port proxies
@@ -102,6 +105,9 @@ Examples:
   bxn -s your-container mix test            Run a command in your-container
   bxn -c your-container                     Create your-container
   bxn -c your-container --from base-dev     Create your-container from template
+  bxn create web https://github.com/OWNER/REPO
+                                            Create a container for web with that
+                                            repository cloned into its workspace
   bxn -n your-container 4000 3241           Proxy ports 4000 and 3241
   bxn -n your-container 4000:8080           Host 4000 -> container 8080
   bxn -n your-container -b 10.0.0.5 4000   Bind to a specific IP (e.g. Tailscale)

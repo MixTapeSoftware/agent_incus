@@ -28,8 +28,8 @@ error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 # usage [status]: help exits 0; a usage error passes 1.
 usage() {
   cat << EOF
-Usage: bxn create [OPTIONS] <project>
-       $(basename "$0") [OPTIONS] <project>   (the script directly)
+Usage: bxn create [OPTIONS] <project> [<github-url>]
+       $(basename "$0") [OPTIONS] <project> [<github-url>]   (the script directly)
 
 Create an Incus instance with a copy of a host directory as its workspace and
 at most one coding agent. It's named HANDLE-AGENT-PROJECT (chad-claude-web, or
@@ -37,6 +37,11 @@ chad-shell-web with no agent); another one for the same project and agent is
 numbered -1, -2, so parallel agents each get their own copy. The handle is
 asked for once (bxn handle changes it).
 Default image is Ubuntu 24.04. Shows a picker for the agent, then one for plugins.
+
+With a GitHub repository's URL (https://github.com/OWNER/REPO) the workspace is
+a clone of it, made inside the container, and nothing is copied from the host.
+The GitHub Auth plugin is selected, since its token is what clones a private
+repository; untick it in the picker for a public one.
 
 Options:
   -p, --path PATH           Host directory to copy in (default: current directory)
@@ -238,6 +243,11 @@ TS_STATE_BACKUP=""
 ACK_ENV=0
 IS_VM=0
 NO_COPY=0
+PATH_GIVEN=0
+# A repository to clone into the workspace (bxn create <project> <url>), as
+# https://github.com/OWNER/REPO, and whether the clone worked.
+REPO_URL=""
+REPO_CLONED=0
 VM_OPT_SET=0
 VM_DISK="20GiB"
 VM_MEMORY="4GiB"
@@ -1128,12 +1138,67 @@ TOKENS"
   echo "  Reuse with: bxn create --from $CONTAINER_NAME <new-name>"
 }
 
+# The repository `bxn create <project> <url>` clones. Only github.com, and
+# always by its HTTPS address: that's the way out under an allowlist, and what
+# the GitHub Auth plugin's token signs in to. The forms GitHub hands out are
+# all taken: the page's address, the HTTPS clone URL and the SSH one.
+set_repo_url() {
+  local u="$1" path=""
+  [[ -z "$REPO_URL" ]] || error "Two repositories given ($REPO_URL and another); a workspace holds one"
+  case "$u" in
+    https://github.com/*)     path="${u#https://github.com/}" ;;
+    https://www.github.com/*) path="${u#https://www.github.com/}" ;;
+    github.com/*)             path="${u#github.com/}" ;;
+    git@github.com:*)         path="${u#git@github.com:}" ;;
+    ssh://git@github.com/*)   path="${u#ssh://git@github.com/}" ;;
+  esac
+  path="${path%/}"
+  path="${path%.git}"
+  if [[ ! "$path" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ || "$path" == */. || "$path" == */.. ]]; then
+    # A URL that may carry a token (https://TOKEN@github.com/...) isn't echoed.
+    [[ "$u" != http*://*@* ]] ||
+      error "Leave credentials out of the repository URL; the GitHub Auth plugin takes the token"
+    error "Not a GitHub repository: $u (expected https://github.com/OWNER/REPO)"
+  fi
+  REPO_URL="https://github.com/$path"
+}
+
+# Clone it into the workspace, as the user, once the plugins are in: GitHub
+# Auth has set git's credential helper by then. A clone that fails (a typo, a
+# token without access) leaves a finished container with an empty workspace
+# and the command to try again, not a build thrown away at its last step.
+clone_repo() {
+  local url_q
+  printf -v url_q '%q' "$REPO_URL"
+  log "Cloning $REPO_URL into $CONTAINER_WORKSPACE..."
+  # No terminal prompt: without a token git would ask for a username and wait.
+  if incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+       "cd $WORKSPACE_Q && GIT_TERMINAL_PROMPT=0 git clone $url_q ." </dev/null; then
+    REPO_CLONED=1
+  else
+    warn "Could not clone $REPO_URL: $CONTAINER_NAME has an empty workspace. Once the cause is fixed: bxn $CONTAINER_NAME 'git clone $REPO_URL .'"
+  fi
+}
+
+# Whether the workspace has a mise config to install from: the host directory
+# that was copied in, or the clone inside the container.
+workspace_has_mise_config() {
+  if [[ -n "$REPO_URL" ]]; then
+    [[ "$REPO_CLONED" == "1" ]] || return 1
+    incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c \
+      "cd $WORKSPACE_Q && { test -f mise.toml || test -f .mise.toml || test -f .tool-versions; }" </dev/null
+    return
+  fi
+  [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] || return 1
+  [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]
+}
+
 # ---------------------------------------------------------------------------
 # Parse arguments
 # ---------------------------------------------------------------------------
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    -p|--path)       [[ $# -lt 2 ]] && error "$1 requires an argument"; WORKSPACE_PATH="$2"; shift 2 ;;
+    -p|--path)       [[ $# -lt 2 ]] && error "$1 requires an argument"; WORKSPACE_PATH="$2"; PATH_GIVEN=1; shift 2 ;;
     -w|--workspace)  [[ $# -lt 2 ]] && error "$1 requires an argument"; CONTAINER_WORKSPACE="$2"; shift 2 ;;
     -f|--from)       [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="incus-init/$2"; shift 2 ;;
     -i|--image)      [[ $# -lt 2 ]] && error "$1 requires an argument"; BASE_IMAGE="$2"; shift 2 ;;
@@ -1166,9 +1231,21 @@ while [[ $# -gt 0 ]]; do
         error "Unknown option: $1"
       fi
       ;;
+    # A project's name has no slash or colon in it; a repository's URL does.
+    */*|*:*)         set_repo_url "$1"; shift ;;
     *)               PROJECT="$1"; shift ;;
   esac
 done
+
+# A repository to clone is the workspace: nothing is copied from the host, and
+# GitHub Auth is selected, as its flag would. The picker still lets it go, for
+# a public repository.
+if [[ -n "$REPO_URL" ]]; then
+  [[ "$SAVE_TEMPLATE" != "1" ]] || error "A template's workspace is empty, so it can't take a repository ($REPO_URL)"
+  [[ "$PATH_GIVEN" != "1" ]] || error "--path copies a host directory and $REPO_URL would be cloned; a workspace holds one"
+  NO_COPY=1
+  selected_set gh-auth 1 || warn "No GitHub Auth plugin to select; $REPO_URL clones only if it's public"
+fi
 
 # ---------------------------------------------------------------------------
 # macOS pre-flight (noop on Linux)
@@ -1390,6 +1467,8 @@ if [[ "$DRY_RUN" == "1" ]]; then
   fi
   if [[ "$SAVE_TEMPLATE" == "1" ]]; then
     echo "Workspace:   empty (template base)"
+  elif [[ -n "$REPO_URL" ]]; then
+    echo "Workspace:   clone $REPO_URL into $CONTAINER_WORKSPACE"
   elif [[ "$NO_COPY" == "1" ]]; then
     echo "Workspace:   empty $CONTAINER_WORKSPACE (--no-copy)"
   else
@@ -1680,7 +1759,8 @@ fi  # end FROM_BASE_IMAGE == 0
 # ---------------------------------------------------------------------------
 # Install selected plugins. A fresh build under an allowlist installs the
 # ones that take no credentials, locks, then copies the workspace and
-# installs the rest.
+# installs the rest. A repository is cloned last of all: GitHub Auth is one
+# of the rest.
 # ---------------------------------------------------------------------------
 if [[ "$LOCKED_BUILD" == "1" && "$FROM_BASE_IMAGE" == "0" ]]; then
   _run_plugin_installs 0 open
@@ -1690,6 +1770,7 @@ if [[ "$LOCKED_BUILD" == "1" && "$FROM_BASE_IMAGE" == "0" ]]; then
 else
   _run_plugin_installs "$FROM_BASE_IMAGE"
 fi
+[[ -z "$REPO_URL" ]] || clone_repo
 
 # Revoke build-time sudo now that plugins are done
 log "Revoking build-time sudo..."
@@ -1697,8 +1778,8 @@ revoke_build_sudo || error "Could not revoke build-time sudo"
 
 # Run mise install if the workspace has a config. Skipped for template builds
 # and --no-copy: the workspace starts empty, so the host's mise config never
-# reached it.
-if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] && [[ -f "$WORKSPACE_PATH/mise.toml" || -f "$WORKSPACE_PATH/.mise.toml" || -f "$WORKSPACE_PATH/.tool-versions" ]]; then
+# reached it. A cloned repository's own config counts.
+if workspace_has_mise_config; then
   log "Trusting workspace mise config..."
   incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c "cd $WORKSPACE_Q && mise trust"
 
@@ -1820,6 +1901,10 @@ fi
 echo "Memory:      $MEMORY_SHOWN ($MEMORY_WHY)"
 if [[ "$SAVE_TEMPLATE" == "1" ]]; then
   echo "Workspace:   empty (template base)"
+elif [[ "$REPO_CLONED" == "1" ]]; then
+  echo "Workspace:   clone of $REPO_URL in $CONTAINER_WORKSPACE"
+elif [[ -n "$REPO_URL" ]]; then
+  echo "Workspace:   empty $CONTAINER_WORKSPACE ($REPO_URL didn't clone)"
 elif [[ "$NO_COPY" == "1" ]]; then
   echo "Workspace:   empty $CONTAINER_WORKSPACE (--no-copy)"
 else

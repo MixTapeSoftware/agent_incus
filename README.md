@@ -85,6 +85,7 @@ bxn -s my-project mix test            # Run a command in container
 bxn -s my-project "mix test | tail"   # One quoted string runs as a shell line
 bxn -c my-project                     # Create a new container
 bxn -c my-project --from base-dev     # Create from template
+bxn create my-project https://github.com/OWNER/REPO   # Create with that repository cloned in
 bxn -n my-project 4000 3241           # Proxy ports 4000 and 3241 to localhost
 bxn -n my-project 4000:8080           # Host 4000 -> container 8080
 bxn -n my-project -b 10.0.0.5 4000   # Proxy on a specific address (e.g. Tailscale IP for remote access)
@@ -127,7 +128,7 @@ Start, stop and delete run in the background, and the result appears below the t
 ## boxen.init Options
 
 ```
-Usage: boxen.init [OPTIONS] <project>
+Usage: boxen.init [OPTIONS] <project> [<github-url>]
 
 Options:
   -p, --path PATH           Host directory to copy in (default: current directory)
@@ -160,9 +161,21 @@ Options:
 1. Launches an Ubuntu 24.04 container (override with `--image`) with the `boxen` profile: no nesting, unprivileged, isolated idmap, 6GB / 4 CPU limits. It joins the `boxenbr0` bridge, isolated from other instances and the host (see [Network Isolation](#network-isolation))
 2. Installs build tools, dev libraries, Python, and Node.js
 3. Creates a user matching your host UID/GID (no sudo by default; use `bxn shell --with-sudo` for interactive sessions), with your git identity: the `user.name` and `user.email` git would use in the folder you're copying, so a repository's own identity or an `includeIf` for its path (a work email for `~/work`) carries over, else your global one. With none on the host it asks; a template carries no one's
-4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out))
+4. Copies your current directory into `/workspace`, `.git` and uncommitted work included, owned by your user. Nothing on the host is mounted (see [Getting work out](#getting-work-out)). Given a repository's URL, it clones that instead (see [Starting from a GitHub repository](#starting-from-a-github-repository))
 5. Installs [mise](https://mise.jdx.dev/) (runtime version manager) and [Oh My Zsh](https://ohmyz.sh/)
 6. Presents a picker for the coding agent, then one for optional plugins (see below)
+
+### Starting from a GitHub repository
+
+```bash
+bxn create my-project https://github.com/OWNER/REPO
+```
+
+The workspace is a clone of the repository, made inside the container, and nothing is copied from the host: the same as `--no-copy`, then `git clone`. The page's address, the HTTPS clone URL and the SSH one (`git@github.com:OWNER/REPO.git`) all work, and all clone over HTTPS, the only way out under the [egress allowlist](#egress-allowlist). Only github.com repositories are taken.
+
+The GitHub Auth plugin is selected for you, since its token is what clones a private repository (and pushes to any). It asks for the token as usual. For a public repository you only read, untick it in the picker. The clone runs last, after the plugins, and the repository's mise config is installed from like a copied one's.
+
+A clone that fails (a typo in the URL, a token without access to the repository) doesn't undo the build: the container is ready with an empty workspace, and the build says how to clone again once the cause is fixed. `--path` and `--template` can't be combined with a URL.
 
 ### Default Packages
 
