@@ -117,6 +117,7 @@ PLUGIN_DEFAULT=$DEFAULT_ON   # 0=off by default, 1=on
 # PLUGIN_RUN_ON_LAUNCH=1          # also re-run on template launch (for symlinks etc.)
 # PLUGIN_REQUIRES="other-id"      # auto-select these plugins when this one is selected
 # PLUGIN_MIN_MEMORY="8GiB"        # the instance gets at least this much memory
+# PLUGIN_LOGIN_COMMAND="$SLUG login"  # the build ends by saying how to run this: bxn <container> $SLUG login
 
 plugin_is_installed() {
   # Idempotency check. Return 0 if already installed, 1 otherwise.

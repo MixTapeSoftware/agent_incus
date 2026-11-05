@@ -346,6 +346,21 @@ print_agent_launches() {
   done
 }
 
+# The command that logs a tool in, for each installed plugin that names one
+# (PLUGIN_LOGIN_COMMAND). A login takes an account's password, so the build
+# leaves it to the user and says how: in the short form, from the host.
+print_plugin_logins() {
+  local i cmd
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    [[ "${_P_SELECTED[$i]}" == "1" ]] || continue
+    _plugin_failed "${_P_ID[$i]}" && continue
+    cmd="$( _reset_plugin_state; source "${_P_FILE[$i]}"; echo "${PLUGIN_LOGIN_COMMAND:-}" )"
+    [[ -n "$cmd" ]] || continue
+    printf 'Log in to %s:\n' "${_P_NAME[$i]}"
+    printf '  bxn %q %s\n' "$CONTAINER_NAME" "$cmd"
+  done
+}
+
 # Discover built-in plugins first, then user plugins. On PLUGIN_ID collision
 # the user plugin overrides (logged). Final order is sorted A-Z by PLUGIN_NAME
 # below — drives both TUI display and install order.
@@ -617,6 +632,7 @@ _reset_plugin_state() {
   PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
   PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
   PLUGIN_REQUIRES="" PLUGIN_AGENT_COMMAND="" PLUGIN_PHASE="" PLUGIN_EGRESS_ALLOW="" PLUGIN_MIN_MEMORY=""
+  PLUGIN_LOGIN_COMMAND=""
   unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch plugin_proxy 2>/dev/null || true
 }
 
@@ -1822,6 +1838,7 @@ echo "Shell in:"
 echo "  bxn $CONTAINER_NAME"
 echo ""
 print_agent_launches
+print_plugin_logins
 
 # ---------------------------------------------------------------------------
 # Publish as local image (optional)
