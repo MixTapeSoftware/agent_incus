@@ -133,3 +133,36 @@ names_resolve() {
   fi
   error "$arg is more than one container: $(printf '%s\n' "$found" | paste -sd ' ' -). Name the one you mean."
 }
+
+# The words bxn reads as commands, which win over container names: a project
+# called status is never opened by `bxn status`.
+names_is_command() {
+  case "$1" in
+    help|shell|create|init|net|egress|serve|env|handle|rm|delete|kill|kill-all|\
+    update|update-all|status|cron|doctor|new-plugin|notify-snippet) return 0 ;;
+  esac
+  return 1
+}
+
+# The shortest thing to type for the container NAME, HANDLE-AGENT-PROJECT or a
+# numbered copy of it: its project, or AGENT-PROJECT when the project alone
+# means something else (another agent's container for it, say), each with the
+# copy's number. names_resolve is asked, so it's only ever a name bxn opens as
+# this container. Prints nothing and fails when there is none.
+# Usage: names_short NAME HANDLE AGENT PROJECT
+names_short() {
+  local name="$1" base="$2-$3-$4" n cand got
+  [[ "$name" == "$base"* ]] || return 1
+  n="${name#"$base"}"
+  [[ -z "$n" || "$n" =~ ^-[0-9]+$ ]] || return 1
+  for cand in "$4$n" "$3-$4$n"; do
+    names_is_command "$cand" && continue
+    # In a subshell: names_resolve stops with an error on a name that means
+    # two containers.
+    got="$(names_resolve "$cand" 2>/dev/null)" || continue
+    [[ "$got" == "$name" ]] || continue
+    printf '%s\n' "$cand"
+    return 0
+  done
+  return 1
+}

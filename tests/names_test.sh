@@ -183,6 +183,51 @@ out="$(names 'names_resolve eo' 2>&1)" && rc=0 || rc=$?
 assert_eq "numbered copies with none unnumbered are refused" "1" "$rc"
 assert_contains "and listed" "chad-fakeagent-eo-1 chad-fakeagent-eo-2" "$out"
 
+echo "the short name a build ends with"
+# The lines under "Shell in:", without the full name's.
+shell_in() { sed -n '/^Shell in:$/,/^$/p' "$SANDBOX/out" | sed '1d;/^$/d'; }
+build hint
+assert_eq "the full name, then the project, which opens it" \
+  "  bxn chad-shell-hint"$'\n'"  bxn hint    (short for it)" "$(shell_in)"
+assert_eq "and bxn takes that name for it" "chad-shell-hint" "$(names 'names_resolve hint')"
+build hint --agent fakeagent
+assert_eq "another agent's container for the project: AGENT-PROJECT" \
+  "  bxn chad-fakeagent-hint"$'\n'"  bxn fakeagent-hint    (short for it)" "$(shell_in)"
+build hint
+assert_eq "a numbered copy: the project and its number" \
+  "  bxn chad-shell-hint-1"$'\n'"  bxn hint-1    (short for it)" "$(shell_in)"
+build hint --agent fakeagent
+assert_eq "a copy whose number another agent's copy has too: AGENT-PROJECT-N" \
+  "  bxn chad-fakeagent-hint-1"$'\n'"  bxn fakeagent-hint-1    (short for it)" "$(shell_in)"
+build hint --agent fakeagent
+assert_eq "a number no other copy has: the project and the number again" \
+  "  bxn chad-fakeagent-hint-2"$'\n'"  bxn hint-2    (short for it)" "$(shell_in)"
+build status
+assert_eq "a project named like a command: AGENT-PROJECT, as bxn status is the command" \
+  "  bxn chad-shell-status"$'\n'"  bxn shell-status    (short for it)" "$(shell_in)"
+build taken --name taken
+build taken
+assert_eq "a project that is another container's exact name: AGENT-PROJECT" \
+  "  bxn chad-shell-taken"$'\n'"  bxn shell-taken    (short for it)" "$(shell_in)"
+build anything --name exact-two
+assert_eq "a name given exactly has no short form" "  bxn exact-two" "$(shell_in)"
+# Every hint is a name bxn opens as that container.
+for c in chad-shell-hint chad-fakeagent-hint chad-shell-hint-1 chad-fakeagent-hint-1 chad-fakeagent-hint-2 chad-shell-status; do
+  agent="${c#chad-}"; agent="${agent%%-*}"
+  proj="${c#chad-$agent-}"; proj="${proj%-[0-9]}"
+  short="$(names "names_short $c chad $agent $proj")"
+  assert_eq "$short opens $c" "$c" "$(names "names_resolve $short" 2>/dev/null)"
+done
+assert_eq "no short name for a container that isn't HANDLE-AGENT-PROJECT" "none" \
+  "$(names 'names_short exact-two chad shell anything || echo none')"
+# The words the dispatcher in bxn takes as commands are the ones names_short avoids.
+words="$(sed -n '/^case "\$1" in$/,/^esac$/p' "$SANDBOX/repo/bxn" | grep -E '^  [a-z|-]+\)' | sed 's/).*//' | tr '|' '\n' | tr -d ' ' | grep -v '^-' | sort -u)"
+assert_eq "bxn has commands to check" "yes" "$([[ "$(printf '%s\n' "$words" | grep -c .)" -ge 15 ]] && echo yes || echo no)"
+missed=""
+for w in $words; do names "names_is_command $w" || missed+=" $w"; done
+assert_eq "every bxn command is known as one" "" "$missed"
+assert_eq "a project's name isn't a command" "no" "$(names 'names_is_command web && echo yes || echo no')"
+
 echo "a race for a name"
 # Another bxn creates chad-shell-race after this one chose the name.
 mkdir -p "$SANDBOX/racebin"
