@@ -360,6 +360,7 @@ print_agent_launches() {
 # (PLUGIN_LOGIN_COMMAND) and whose tool is installed: a template's tools
 # count, whatever this launch picked. A login takes an account's password, so
 # the build leaves it to the user and says how: in the short form, from the host.
+# A plugin that can't say whether it's installed is taken at this launch's word.
 print_plugin_logins() {
   local i cmd
   for ((i=0; i<PLUGIN_COUNT; i++)); do
@@ -368,8 +369,6 @@ print_plugin_logins() {
       _reset_plugin_state
       source "${_P_FILE[$i]}"
       [[ -n "$PLUGIN_LOGIN_COMMAND" ]] || exit 0
-      # A plugin that can't say whether it's installed is taken at this
-      # launch's word.
       if declare -F plugin_is_installed >/dev/null; then
         plugin_is_installed </dev/null >/dev/null 2>&1 || exit 0
       else
