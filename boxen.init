@@ -610,7 +610,23 @@ _reset_plugin_state() {
   PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
   PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
   PLUGIN_REQUIRES="" PLUGIN_AGENT_COMMAND="" PLUGIN_PHASE="" PLUGIN_EGRESS_ALLOW=""
-  unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch 2>/dev/null || true
+  unset -f plugin_prompt plugin_is_installed plugin_install plugin_on_launch plugin_proxy 2>/dev/null || true
+}
+
+# Proxy settings a tool keeps in its own files, not the environment. Every
+# plugin that declares plugin_proxy and whose tool is installed gets PROXY_URL
+# (empty: remove the settings) and PROXY_NO_PROXY. Installed, not selected:
+# a template's tools count, whatever this launch picked.
+# Usage: _run_plugin_proxy_hooks <url|"">
+_run_plugin_proxy_hooks() {
+  local url="$1" i
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    _reset_plugin_state
+    source "${_P_FILE[$i]}"
+    declare -F plugin_proxy >/dev/null || continue
+    declare -F plugin_is_installed >/dev/null && plugin_is_installed || continue
+    PROXY_URL="$url" PROXY_NO_PROXY="$EGRESS_NO_PROXY" _run_plugin_hook plugin_proxy
+  done
 }
 
 _run_plugin_prompts() {
@@ -807,17 +823,31 @@ _host_git_config() {
   printf '%s' "$v"
 }
 
+# An email as git means it. Git takes "<foo@example.com>" as foo@example.com
+# when it writes a commit, so a config with the brackets works on the host;
+# copied as is, they'd reach every tool in the container that reads
+# user.email. Strips surrounding spaces and one pair of angle brackets.
+_git_email_clean() {
+  local e="$1"
+  e="${e#"${e%%[![:space:]]*}"}"; e="${e%"${e##*[![:space:]]}"}"
+  if [[ "$e" == "<"*">" ]]; then
+    e="${e#<}"; e="${e%>}"
+    e="${e#"${e%%[![:space:]]*}"}"; e="${e%"${e##*[![:space:]]}"}"
+  fi
+  printf '%s' "$e"
+}
+
 capture_git_identity() {
   local name email
   command -v git >/dev/null 2>&1 || return 0
   name="$(_host_git_config user.name)"
-  email="$(_host_git_config user.email)"
+  email="$(_git_email_clean "$(_host_git_config user.email)")"
   # One line each: they go to the container as lines on stdin.
   [[ "$name$email" != *$'\n'* ]] || { name=""; email=""; }
   if [[ -n "$name" && -n "$email" ]]; then
     GIT_NAME="$name" GIT_EMAIL="$email"
     if [[ "$SAVE_TEMPLATE" != "1" && "$NO_COPY" != "1" ]] &&
-       [[ "$(git -C / config --global --includes --get user.email 2>/dev/null)" != "$email" ||
+       [[ "$(_git_email_clean "$(git -C / config --global --includes --get user.email 2>/dev/null)")" != "$email" ||
           "$(git -C / config --global --includes --get user.name 2>/dev/null)" != "$name" ]]; then
       GIT_ID_SOURCE="$WORKSPACE_PATH's git config"
     else
@@ -834,6 +864,7 @@ prompt_git_identity() {
   log "Git has no user.name or user.email on this host. Commits in $CONTAINER_NAME use these:"
   read_value GIT_NAME "Git user.name: "
   read_value GIT_EMAIL "Git user.email: "
+  GIT_EMAIL="$(_git_email_clean "$GIT_EMAIL")"
   if [[ -n "$GIT_NAME" && -n "$GIT_EMAIL" ]]; then GIT_ID_SOURCE="what you entered"
   else GIT_NAME="" GIT_EMAIL=""; fi
 }
@@ -880,21 +911,14 @@ lock_build() {
 
 # Settings a locked container needs, then the build is done:
 # - github.com over HTTPS, since SSH (port 22) can't get out;
-# - Docker's client proxy settings, for builds and containers inside Docker;
+# - the proxy settings of tools that keep their own (plugin_proxy);
 # - the login banner and the coding agents' note.
 finish_locked_build() {
-  local url
-  url="$(egress_proxy_url "$CONTAINER_NAME")"
-  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c 'sh -s' <<GITCFG || warn "Could not set git and Docker proxy settings"
+  incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -s /bin/sh -c 'sh -s' <<'GITCFG' || warn "Could not point github remotes at HTTPS"
 git config --global url."https://github.com/".insteadOf "git@github.com:"
 git config --global --add url."https://github.com/".insteadOf "ssh://git@github.com/"
-if command -v docker >/dev/null 2>&1; then
-  mkdir -p "\$HOME/.docker"
-  f="\$HOME/.docker/config.json"
-  [ -s "\$f" ] || echo '{}' > "\$f"
-  jq --arg u "$url" --arg n "$EGRESS_NO_PROXY" '.proxies.default = {httpProxy: \$u, httpsProxy: \$u, noProxy: \$n}' "\$f" > "\$f.new" && mv "\$f.new" "\$f"
-fi
 GITCFG
+  _run_plugin_proxy_hooks "$(egress_proxy_url "$CONTAINER_NAME")"
   egress_write_notices "$CONTAINER_NAME" "$HOST_USER"
   egress_commit "$CONTAINER_NAME"
   incus config set "$CONTAINER_NAME" user.boxen.egress.build=done
@@ -1288,16 +1312,32 @@ fi
 # ---------------------------------------------------------------------------
 # Create container
 # ---------------------------------------------------------------------------
+# The tags go on at creation, so an instance whose first start fails is
+# still one bxn knows: status, rm, update-all and short names find it.
+# boxen.shell starts sessions in user.boxen.workspace; commands find a
+# container from its project by the handle and project (boxen.names).
+TAG_ARGS=(-c user.managed-by=boxen -c user.boxen=1 -c "user.boxen.agent=$AGENT_TOKEN"
+  -c "user.boxen.workspace=$CONTAINER_WORKSPACE")
+if [[ -n "$HANDLE" ]]; then
+  TAG_ARGS+=(-c "user.boxen.handle=$HANDLE" -c "user.boxen.project=$PROJECT")
+fi
+if [[ "$INSECURE_NETWORK" == "1" ]]; then
+  TAG_ARGS+=(-c user.boxen.net=open)
+else
+  TAG_ARGS+=(-c user.boxen.net=isolated)
+fi
+
 create_instance() {
   if [[ "$IS_VM" == "1" ]]; then
     # Naming any profile replaces the implicit default, so name it too.
     incus init "$BASE_IMAGE" "$CONTAINER_NAME" --vm \
-      ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} \
+      ${NET_ARGS[@]+-p default "${NET_ARGS[@]}"} "${TAG_ARGS[@]}" \
       -c limits.memory="$VM_MEMORY" \
       -c limits.cpu="$VM_CPUS" \
       -d root,size="$VM_DISK"
   else
-    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" ${NET_ARGS[@]+"${NET_ARGS[@]}"}
+    incus init "$BASE_IMAGE" "$CONTAINER_NAME" -p default -p "$AGENT_PROFILE" \
+      ${NET_ARGS[@]+"${NET_ARGS[@]}"} "${TAG_ARGS[@]}"
   fi
 }
 log "Creating container: $CONTAINER_NAME ($(basename "$BASE_IMAGE"))"
@@ -1317,18 +1357,6 @@ unset _create_tries
 CREATED_INSTANCE=1
 # Under an allowlist it stays stopped, so bxn decides when it first runs.
 [[ "$LOCKED_BUILD" == "1" ]] || incus start "$CONTAINER_NAME"
-incus config set "$CONTAINER_NAME" user.managed-by=boxen user.boxen=1 "user.boxen.agent=$AGENT_TOKEN"
-# Commands find a container from its project by these (boxen.names).
-if [[ -n "$HANDLE" ]]; then
-  incus config set "$CONTAINER_NAME" "user.boxen.handle=$HANDLE" "user.boxen.project=$PROJECT"
-fi
-if [[ "$INSECURE_NETWORK" == "1" ]]; then
-  incus config set "$CONTAINER_NAME" user.boxen.net=open
-else
-  incus config set "$CONTAINER_NAME" user.boxen.net=isolated
-fi
-# boxen.shell starts sessions here.
-incus config set "$CONTAINER_NAME" user.boxen.workspace="$CONTAINER_WORKSPACE"
 
 if [[ "$LOCKED_BUILD" == "1" ]]; then
   # Kept from starting on its own until the build finishes; the original
@@ -1355,9 +1383,10 @@ if [[ "$LOCKED_BUILD" == "1" ]]; then
   [[ "$FROM_BASE_IMAGE" == "1" ]] && egress_write_proxy_env "$CONTAINER_NAME"
 elif [[ "$FROM_BASE_IMAGE" == "1" ]]; then
   # A template built under an allowlist carries proxy settings for a proxy
-  # this container doesn't have.
+  # this container doesn't have, in the environment and in tools' own files.
   wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
   egress_clear_proxy_env "$CONTAINER_NAME"
+  _run_plugin_proxy_hooks ""
 fi
 
 wait_for_container "$CONTAINER_NAME" "$READY_TIMEOUT"
@@ -1453,6 +1482,17 @@ incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'MISECFG'
     ' "$cfg" > "$cfg.new" && mv "$cfg.new" "$cfg"
   fi
 MISECFG
+
+# GitHub's stacked PRs (gh stack), for every user: an extension lives in the
+# user's home, so a template built by someone else doesn't carry it. It needs
+# no login. Missing it shouldn't fail a build: the next one adds it.
+log "Installing gh stack (GitHub stacked PRs)..."
+incus exec "$CONTAINER_NAME" -- su - "$HOST_USER" -c 'bash -s' <<'GHSTACK' ||
+  set -e
+  if gh extension list 2>/dev/null | grep -q 'github/gh-stack'; then exit 0; fi
+  gh extension install github/gh-stack >/dev/null
+GHSTACK
+  warn "Could not install gh stack. Install it later: bxn -s $CONTAINER_NAME gh extension install github/gh-stack"
 
 # ---------------------------------------------------------------------------
 # Copy the workspace in. A fresh build under an allowlist copies it after the

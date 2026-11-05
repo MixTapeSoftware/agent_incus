@@ -24,6 +24,8 @@ api.anthropic.com
 claude.ai
 claude.com
 platform.claude.com
+# Claude Code's documentation.
+code.claude.com
 console.anthropic.com
 downloads.claude.ai
 statsig.anthropic.com
@@ -41,6 +43,8 @@ chatgpt.com
 cdn.openaimerge.com
 x.ai
 api.x.ai
+# xAI's documentation, Grok Build's included.
+docs.x.ai
 cursor.com
 # Cursor's API and update servers.
 *.cursor.sh
@@ -196,10 +200,20 @@ fastly.com
 vercel.com
 # upload: hosted databases and storage.
 supabase.com
+api.supabase.com
 mcp.supabase.com
+# Supabase's CDN (CLI and binary downloads).
+d2glxqk2uabbnd.cloudfront.net
 clerk.com
 figma.com
+# upload: Linear's file attachments.
+uploads.linear.app
 app.daytona.io
+# upload: Let's Encrypt's ACME endpoints, production and staging. Anyone can
+# open an account and order certificates for names it picks, and validation
+# looks those names up, so this is an outbound channel, not a status check.
+acme-v02.api.letsencrypt.org
+acme-staging-v02.api.letsencrypt.org
 
 # --- Operating system packages ----------------------------------------------
 archive.ubuntu.com

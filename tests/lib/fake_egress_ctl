@@ -37,6 +37,11 @@ case "$1" in
   stop) echo none > "$d/$2/current" ;;
   remove) rm -rf "${d:?}/$2" ;;
   status)
+    # No agent: every agent with a proxy here, as the real one lists them.
+    if [[ $# -eq 1 ]]; then
+      for a in "$d"/*/; do [[ -f "$a/port" ]] && "$0" "$d" status "$(basename "$a")"; done
+      exit 0
+    fi
     c="$(cur "$2")"
     if [[ "$c" == none ]]; then printf '%s\t%s\tnone\t-\t-\tno\t\n' "$2" "$(cat "$d/$2/port")"
     else printf '%s\t%s\t%s\t%s\t%s\tyes\t%s\n' "$2" "$(cat "$d/$2/port")" "$c" "$(cat "$d/$2/gens/$c/policy")" "$(cat "$d/$2/gens/$c/mode")" "$c"; fi
