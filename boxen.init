@@ -1932,6 +1932,12 @@ echo "========================================"
 echo ""
 echo "Shell in:"
 echo "  bxn $CONTAINER_NAME"
+# The project alone, when that opens this container (boxen.names): not when
+# another agent's container shares the project, or the name wasn't generated.
+if [[ -n "$HANDLE" ]] && _short="$(names_short "$CONTAINER_NAME" "$HANDLE" "$AGENT_TOKEN" "$PROJECT")"; then
+  echo "  bxn $_short    (short for it)"
+fi
+unset _short
 echo ""
 print_agent_launches
 print_plugin_logins

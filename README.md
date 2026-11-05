@@ -221,7 +221,13 @@ numbered copy: `bxn web-1`, `bxn claude-web-1`. When the name finds a
 container and its numbered copies, they take the one without a number and
 name the others; `bxn rm` refuses instead, so it never deletes a container you
 didn't name. With any other mix, such as two agents' containers for one
-project, they list them and ask you to name one.
+project, they list them and ask you to name one. A build ends with the short
+name that opens the new container, under its full one: `bxn web`, or
+`bxn claude-web` when another agent has a container for the project, or
+`bxn web-1` for a numbered copy. It's the one that works when the build
+finishes; a container added later for the same project can make it mean both.
+A container built with `--name`, and a template, have only the name they were
+given.
 
 | Agent | Selection | Command inside the instance |
 |---|---|---|
