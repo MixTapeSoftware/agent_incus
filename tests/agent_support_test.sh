@@ -11,6 +11,8 @@ cat > "$fixture/bin/incus" <<'INCUS'
 #!/bin/bash
 case "$1" in
   info) exit 1 ;;
+  # A 64GiB host, so the VM dry runs don't depend on the runner's memory.
+  query) [[ "$2" == /1.0/resources ]] && printf '{"memory": {"total": 68719476736}}\n' ;;
   list) printf 'RUNNING\n' ;;
   exec)
     case "$*" in
