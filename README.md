@@ -109,7 +109,7 @@ The individual scripts and aliases (`bxni`, `bxnn`) still work directly.
 
 `bxn status` lists every instance with its state, type, CPU, memory, disk, and IPv4 addresses. Instances created by `boxen.init` appear first under "Boxen instances", and everything else follows under "Other Incus instances". Running instances are marked `●`, frozen `◐`, and stopped `○`, and the type column reads `CT` for a container or `VM` for a virtual machine. CPU is a share of the whole host, so an instance keeping one core busy on an 8-CPU host reads 12.5%. Memory is shown against the instance's own memory limit when it has one (every VM does, and the `boxen` profile gives containers one), else against the host's total memory, as it also is when the limit is more than the host has. Disk is shown against the root disk size when one is set.
 
-![bxn status live view grouping Boxen instances, with one row highlighted and state, type, CPU, memory, disk, and IPv4 columns](.github/images/boxen-status.png)
+![bxn status live view in two panels: Boxen instances on the left with CPU and memory, a lock beside the allowlisted ones and one row highlighted; on the right that container's Info tab, with its state, type, CPU, memory against its 6GB limit, disk, IPv4, image, profiles, egress mode and proxy](.github/images/boxen-status.png)
 
 In a terminal, `bxn status` is a live view that refreshes every second. On a terminal at least 100 columns wide it has two panels: the instances on the left, with name, CPU, and memory, and the highlighted instance's details on the right. The details add the image, profiles, and when the instance was created and last started. A narrower terminal shows the table, and `Enter` opens the details full screen.
 
