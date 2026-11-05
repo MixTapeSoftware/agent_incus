@@ -1,0 +1,28 @@
+boxen.init
+  s_72cef02a544353::t_f6fcde2993d00f 349-363,635,1841
+bxn.new-plugin
+  s_72cef02a544353::t_28dd85dd8ff437 120
+tests/obsidian_plugin_test.sh
+  s_72cef02a544353::t_2134c9329b4eff 5-7,52,80-81,102,111-112,133-153
+  s_72cef02a544353::t_240918385dc245 154
+README.md
+  s_72cef02a544353::t_28dd85dd8ff437 285,320
+plugins/50-obsidian.sh
+  s_72cef02a544353::t_f6fcde2993d00f 11-12,27,33-36,40
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ebc990f5e86566d54f24e6ed41cb397c1a5e81ca",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
