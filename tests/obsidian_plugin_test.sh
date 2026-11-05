@@ -2,8 +2,9 @@
 # tests/obsidian_plugin_test.sh
 # The Obsidian Headless plugin: opt-in, installed as the instance user with a
 # Node 22 from mise (the system's is 18, which ob can't run on), started
-# through a launcher that pins that Node, never logged in at build, and given
-# Obsidian's hosts under an allowlist. Runs the plugin's commands with
+# through a launcher that pins that Node, never logged in at build (the build
+# says how to, afterwards), and given Obsidian's hosts under an allowlist. Runs
+# the plugin's commands with
 # stand-ins for mise, npm and node.
 # Run: bash tests/obsidian_plugin_test.sh
 
@@ -48,6 +49,7 @@ EOF
 cat > "$NODE22/node" <<'EOF'
 #!/bin/bash
 echo "node22 $*" >> "$HOME/calls.log"
+[[ "$1" == --disable-warning=* ]] && shift
 [[ -f "$1" ]] || { echo "Cannot find module '$1'" >&2; exit 1; }
 [[ -f "$HOME/.broken" ]] && exit 1
 exit 0
@@ -75,6 +77,8 @@ calls() { cat "$H/calls.log" 2>/dev/null || true; }
 CONTAINER_NAME=box HOST_USER=dev
 source "$REPO_ROOT/plugins/50-obsidian.sh"
 CLI="$H/.local/share/obsidian-headless/lib/node_modules/obsidian-headless/cli.js"
+# Node's warning about its proxy support lands on ob's "Email: " prompt.
+QUIET="--disable-warning=UNDICI-EHPA"
 
 echo "the plugin"
 assert_eq "it's off unless asked for" "0" "$PLUGIN_DEFAULT"
@@ -95,7 +99,7 @@ assert_eq "asking mise to install that Node if it's missing" \
   "mise exec --yes node@22 -- npm install --global --prefix $H/.local/share/obsidian-headless obsidian-headless" \
   "$(calls | grep '^mise .* npm ')"
 assert_eq "ob is on the user's PATH" "yes" "$([[ -x "$H/.local/bin/ob" ]] && echo yes || echo no)"
-assert_eq "it was run once to check it starts" "node22 $CLI --version" "$(calls | grep '^node22 ')"
+assert_eq "it was run once to check it starts" "node22 $QUIET $CLI --version" "$(calls | grep '^node22 ')"
 assert_eq "and never logged in" "" "$(calls | grep -i 'login' || true)"
 plugin_is_installed && after=yes || after=no
 assert_eq "installed afterwards" "yes" "$after"
@@ -104,7 +108,8 @@ echo "the launcher"
 : > "$H/calls.log"
 (cd "$SANDBOX" && as_user "$H/.local/bin/ob" sync --path "my vault" --continuous) && rc=0 || rc=$?
 assert_eq "ob runs" "0" "$rc"
-assert_eq "on Node 22, with its arguments as given" "node22 $CLI sync --path my vault --continuous" "$(calls | grep '^node22 ')"
+assert_eq "on Node 22, without the proxy warning, with its arguments as given" \
+  "node22 $QUIET $CLI sync --path my vault --continuous" "$(calls | grep '^node22 ')"
 assert_eq "not on the system's Node 18" "" "$(calls | grep '^node18 ' || true)"
 
 echo "a failed install"
@@ -124,6 +129,37 @@ assert_eq "and isn't taken for installed either" "no" "$after"
 rm -f "$H/.broken"
 plugin_install > "$SANDBOX/out" 2>&1 && rc=0 || rc=$?
 assert_eq "a later run installs it" "0" "$rc"
+
+echo "the login hint"
+assert_eq "the plugin names its login" "ob login" "$PLUGIN_LOGIN_COMMAND"
+# boxen.init's own functions, over this plugin and one with no login.
+for fn in _reset_plugin_state _plugin_failed print_plugin_logins; do
+  eval "$(awk -v f="$fn" '$0 ~ "^" f "\\(\\)" {capture=1} capture {print} capture && /^}/ {exit}' "$REPO_ROOT/boxen.init")"
+done
+# One with a login and no way to say it's installed, one with no login.
+printf 'PLUGIN_ID="bare"\nPLUGIN_NAME="Bare"\nPLUGIN_LOGIN_COMMAND="bare auth"\n' > "$SANDBOX/bare.sh"
+printf 'PLUGIN_ID="plain"\nPLUGIN_NAME="Plain"\n' > "$SANDBOX/plain.sh"
+PLUGIN_COUNT=3
+_P_ID=(obsidian bare plain)
+_P_NAME=("Obsidian Headless" Bare Plain)
+_P_FILE=("$REPO_ROOT/plugins/50-obsidian.sh" "$SANDBOX/bare.sh" "$SANDBOX/plain.sh")
+_P_SELECTED=(1 0 1)
+FAILED_PLUGIN_IDS=()
+CONTAINER_NAME=box
+OB_HINT="Log in to Obsidian Headless:"$'\n'"  bxn box ob login"
+assert_eq "the build says how to log in, in the short form" "$OB_HINT" "$(print_plugin_logins)"
+# A launch from a template picks nothing the template already holds.
+_P_SELECTED=(0 0 1)
+assert_eq "also when ob came with the template and wasn't picked" "$OB_HINT" "$(print_plugin_logins)"
+_P_SELECTED=(1 1 1)
+assert_eq "a plugin that can't say it's installed is hinted when picked" \
+  "$OB_HINT"$'\n'"Log in to Bare:"$'\n'"  bxn box bare auth" "$(print_plugin_logins)"
+_P_SELECTED=(1 0 1)
+FAILED_PLUGIN_IDS=(obsidian)
+assert_eq "not when the install failed" "" "$(print_plugin_logins)"
+FAILED_PLUGIN_IDS=()
+rm -f "$H/.local/bin/ob"
+assert_eq "and not when ob isn't in the container" "" "$(print_plugin_logins)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
