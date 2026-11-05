@@ -173,7 +173,7 @@ bxn create my-project https://github.com/OWNER/REPO
 
 The workspace is a clone of the repository, made inside the container, and nothing is copied from the host: the same as `--no-copy`, then `git clone`. The page's address, the HTTPS clone URL and the SSH one (`git@github.com:OWNER/REPO.git`) all work, and all clone over HTTPS, the only way out under the [egress allowlist](#egress-allowlist). Only github.com repositories are taken.
 
-The GitHub Auth plugin is selected for you, since its token is what clones a private repository (and pushes to any). It asks for the token as usual. For a public repository you only read, untick it in the picker. The clone runs last, after the plugins, and the repository's mise config is installed from like a copied one's.
+The GitHub Auth plugin is selected for you, since its token is what clones a private repository (and pushes to any). It asks for the token as usual. For a public repository you only read, untick it in the picker; with `--no-tui` there is no picker, so the token is always asked for. The clone runs last, after the plugins, and the repository's mise config is installed from like a copied one's.
 
 A clone that fails (a typo in the URL, a token without access to the repository) doesn't undo the build: the container is ready with an empty workspace, and the build says how to clone again once the cause is fixed. `--path` and `--template` can't be combined with a URL.
 

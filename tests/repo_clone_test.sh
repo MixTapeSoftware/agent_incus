@@ -89,15 +89,21 @@ assert_contains "and GitHub Auth is left alone" "[ ] GitHub Auth" "$OUT"
 echo "what isn't taken"
 # ===========================================================================
 for url in https://github.com/MixTapeSoftware/bxn/tree/main https://github.com/MixTapeSoftware \
-           https://gitlab.com/a/b http://github.com/a/b https://github.com/a/.. 'https://github.com/a/b;id'; do
+           https://gitlab.com/a/b http://github.com/a/b https://github.com/a/.. 'https://github.com/a/b;id' ./some/dir; do
   dry_run notes "$url"
   assert_eq "$url: refused" "1" "$RC"
-  assert_contains "$url: as not a GitHub repository" "Not a GitHub repository: $url" "$OUT"
+  assert_contains "$url: as not a GitHub repository URL" \
+    "Not a GitHub repository URL. Expected https://github.com/OWNER/REPO" "$OUT"
 done
-dry_run notes "https://$TOKEN@github.com/a/b"
-assert_eq "a URL with a token in it: refused" "1" "$RC"
-assert_contains "and told where the token goes" "Leave credentials out of the repository URL" "$OUT"
-assert_not_contains "without repeating the token" "$TOKEN" "$OUT"
+# A refused URL is never repeated: it can hold a token, wherever it's put.
+for url in "https://$TOKEN@github.com/a/b" "https://user:$TOKEN@github.com/a/b" \
+           "https://github.com/a/b?token=$TOKEN" "https://github.com/a/b#$TOKEN" \
+           "ssh://git:$TOKEN@github.com/a/b" "$TOKEN@github.com:a/b"; do
+  dry_run notes "$url"
+  assert_eq "a token in the URL (${url//$TOKEN/TOKEN}): refused" "1" "$RC"
+  assert_contains "and told where the token goes" "the GitHub Auth plugin takes the token" "$OUT"
+  assert_not_contains "without repeating the token" "$TOKEN" "$OUT"
+done
 
 dry_run notes https://github.com/a/b https://github.com/a/c
 assert_contains "two repositories: refused" "Two repositories given" "$OUT"
@@ -183,16 +189,66 @@ NO_COPY=1
 workspace_has_mise_config && has=yes || has=no
 assert_eq "--no-copy: it doesn't" "no" "$has"
 
-# No test runs a whole build, so the order is read from the script: the clone
-# comes after every plugin install (GitHub Auth among them) and before the
-# workspace's mise install.
+# ===========================================================================
+echo "a whole build"
+# ===========================================================================
+# From a template with the allowlist off, so nothing is provisioned. git is
+# the real one but for `clone`, which makes a repository with no mise config.
+REAL_GIT="$(PATH="${PATH#$GITBIN:}" command -v git)"
+cat > "$GITBIN/git" <<GIT
+#!/bin/sh
+[ "\$1" = clone ] || exec "$REAL_GIT" "\$@"
+echo "\$PWD :: user=\$USER prompt=\${GIT_TERMINAL_PROMPT:-unset} :: git \$*" >> "$SANDBOX/git.log"
+[ -f "$SANDBOX/git-fail" ] && { echo "fatal: repository not found" >&2; exit 128; }
+mkdir .git && echo cloned > README
+GIT
+printf '#!/bin/sh\nexit 0\n' > "$SANDBOX/bin/curl"
+chmod +x "$SANDBOX/bin/curl"
+export HOME="$SANDBOX/home" BOXEN_LOCK_DIR="$SANDBOX/state/lock" BOXEN_CONFIG_DIR="$SANDBOX/config"
+mkdir -p "$HOME" "$FAKE_INCUS_STATE/images/incus-init/base/root"
+URL=https://github.com/MixTapeSoftware/bxn
+build() {
+  BWS="$SANDBOX/build-$1"; mkdir -p "$BWS"
+  (cd "$HOST" && printf '%s\n' "$TOKEN" | bash "$REPO_ROOT/boxen.init" "$1" "$URL" -w "$BWS" \
+    --from base --no-tui --egress off --insecure-network) > "$SANDBOX/out" 2>&1 && RC=0 || RC=$?
+  OUT="$(cat "$SANDBOX/out")"
+}
+exec_line() { grep -n -- "$1" "$FAKE_INCUS_STATE/exec.log" | tail -n 1 | cut -d: -f1; }
+
+rm -f "$SANDBOX/git-fail"
+build one
+assert_eq "it builds" "0" "$RC"
+assert_eq "the repository is cloned into the workspace, as the user" \
+  "$BWS :: user=$(whoami) prompt=0 :: git clone $URL ." "$(tail -n 1 "$SANDBOX/git.log")"
+assert_eq "and is there" "cloned" "$(cat "$BWS/README" 2>/dev/null)"
+auth="$(exec_line 'gh auth setup-git')"
+clone="$(exec_line 'git clone')"
+assert_eq "after GitHub Auth set git's credential helper" "yes" \
+  "$([[ -n "$auth" && -n "$clone" && "$auth" -lt "$clone" ]] && echo yes || echo no)"
+assert_contains "the summary says so" "Workspace:   clone of $URL in $BWS" "$OUT"
+assert_not_contains "nothing was copied from the host" "Copying" "$OUT"
+assert_not_contains "the token isn't shown" "$TOKEN" "$OUT"
+
+touch "$SANDBOX/git-fail"
+build two
+assert_eq "a clone that fails still ends with a container" "0 yes" \
+  "$RC $([[ -d "$FAKE_INCUS_STATE/instances/tester-shell-two" ]] && echo yes || echo no)"
+assert_contains "the build says how to clone again" "bxn tester-shell-two 'git clone $URL .'" "$OUT"
+assert_contains "and the summary says the workspace is empty" "Workspace:   empty $BWS ($URL didn't clone)" "$OUT"
+
+# A fresh build under an allowlist isn't run here; its order is read from the
+# script. GitHub Auth installs with the locked plugins there, and the clone
+# comes after both install calls and before the workspace's mise install.
 line_of() { grep -n -F -- "$1" "$REPO_ROOT/boxen.init" | tail -n 1 | cut -d: -f1; }
+locked="$(line_of '_run_plugin_installs 0 locked')"
 installs="$(line_of '_run_plugin_installs "$FROM_BASE_IMAGE"')"
 clone="$(line_of '|| clone_repo')"
 mise="$(line_of 'if workspace_has_mise_config; then')"
-assert_eq "the build clones after the plugins are installed" "yes" \
+assert_eq "the clone comes after the locked plugins' install" "yes" \
+  "$([[ -n "$locked" && -n "$clone" && "$locked" -lt "$clone" ]] && echo yes || echo no)"
+assert_eq "and after the install of a build without a lock" "yes" \
   "$([[ -n "$installs" && -n "$clone" && "$installs" -lt "$clone" ]] && echo yes || echo no)"
-assert_eq "and before it installs from the workspace's mise config" "yes" \
+assert_eq "and before the workspace's mise install" "yes" \
   "$([[ -n "$clone" && -n "$mise" && "$clone" -lt "$mise" ]] && echo yes || echo no)"
 
 # ===========================================================================

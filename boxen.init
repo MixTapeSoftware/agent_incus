@@ -1155,10 +1155,9 @@ set_repo_url() {
   path="${path%/}"
   path="${path%.git}"
   if [[ ! "$path" =~ ^[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9._-]+$ || "$path" == */. || "$path" == */.. ]]; then
-    # A URL that may carry a token (https://TOKEN@github.com/...) isn't echoed.
-    [[ "$u" != http*://*@* ]] ||
-      error "Leave credentials out of the repository URL; the GitHub Auth plugin takes the token"
-    error "Not a GitHub repository: $u (expected https://github.com/OWNER/REPO)"
+    # Not repeated back: a URL can carry a token (https://TOKEN@github.com/...,
+    # ?token=...), and this goes to the terminal and to logs.
+    error "Not a GitHub repository URL. Expected https://github.com/OWNER/REPO, with no credentials in it: the GitHub Auth plugin takes the token"
   fi
   REPO_URL="https://github.com/$path"
 }
