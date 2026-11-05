@@ -1,0 +1,70 @@
+tests/egress_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 128,194-197,201
+tests/egress_tui_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 57-59,61-73,101-103,106,149-183
+  s_72cef02a544353::t_e3001f723ee6b7 184
+boxen.egress
+  s_72cef02a544353::t_f8adf897a989d2 182-184,186-190,292-295,298,300-306,380-384,395-399,403-406,411-413,651-664
+tests/git_identity_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 77-89
+tests/lib/fake_egress_ctl
+  s_72cef02a544353::t_f8adf897a989d2 40-44
+tests/names_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 79-95,148-184
+  s_72cef02a544353::t_cc40bc48c5a36e 185
+plugins/45-vibe-wise.sh
+  s_72cef02a544353::t_f8adf897a989d2 1-27
+bxn.doctor
+  s_72cef02a544353::t_f8adf897a989d2 1-398
+plugins/10-docker.sh
+  s_72cef02a544353::t_f8adf897a989d2 132-153
+tests/lib/fake_incus
+  s_72cef02a544353::t_f8adf897a989d2 36-37,131,133,136-139,152-153,155-157,408-410,499-500,541-543
+  s_72cef02a544353::t_414c33494e7cc1 544-545
+tests/vibe_wise_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 1-76
+boxen.names
+  s_72cef02a544353::t_f8adf897a989d2 65-70,77,80-112,114-117,119-134
+bxn.new-plugin
+  s_72cef02a544353::t_f8adf897a989d2 147-154
+egress/baseline.txt
+  s_72cef02a544353::t_f8adf897a989d2 27-28,46-47,203,205-206,209-210,212-216
+README.md
+  s_72cef02a544353::t_f8adf897a989d2 97,100,125,178,206-211,269,280-281,322,391,715,717,722-731
+  s_72cef02a544353::t_d60b433336075d 732
+tests/egress_init_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 15,44-45,71-75,78,106-108,124-127,137-138
+boxen.init
+  s_72cef02a544353::t_f8adf897a989d2 620-636,833-846,851,857,874,1023,1026,1030,1426-1440,1445,1453,1500,1503,1600-1609
+  s_72cef02a544353::t_c3001f0f587773 1454
+  s_72cef02a544353::t_e3531705e96a89 58
+  s_72cef02a544353::t_0610ff664a23ed 1610
+bxn.egress
+  s_72cef02a544353::t_f8adf897a989d2 255-265
+tests/egress_cli_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 76,78-79,255-256
+tests/status_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 42,163-187
+  s_72cef02a544353::t_ed448fb8c4f65c 188
+tests/doctor_test.sh
+  s_72cef02a544353::t_f8adf897a989d2 1-212
+bxn
+  s_72cef02a544353::t_f8adf897a989d2 32-33,35-36,40,81,85-86,116,635-644,647-661,663-664,689-697,714-720,729,762-766,768,792-793,801,806-807,853-854,864-866,868-875,894-898,906,912,914,1089-1104,1269-1271,1324-1326
+  s_72cef02a544353::t_137850633cc52c 1327
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "bd2bb7cae91d35dae7fb35fc8722087f7d009e6e",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
