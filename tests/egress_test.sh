@@ -114,6 +114,28 @@ assert_eq "the policy id is 16 hex digits" "yes" "$([[ "$id1" =~ ^[0-9a-f]{16}$ 
   { FAIL=$((FAIL+1)); echo "  FAIL a host changes the id"; }
 
 assert_eq "off ignores the hosts" "$(eg 'echo a.example | egress_policy_id off')" "$(eg 'echo b.example | egress_policy_id off')"
+incus launch img old-egress >/dev/null
+assert_eq "an egress container with no proxy version keeps its ids" "$id1" "$(eg 'egress_hosts box | egress_policy_id enforce old-egress')"
+incus config set old-egress user.boxen.egress.version=0123456789abcdef
+id2="$(eg 'egress_hosts box | egress_policy_id enforce old-egress')"
+[[ "$id1" != "$id2" ]] && { PASS=$((PASS+1)); echo "  ok  the installed proxy version changes the id"; } ||
+  { FAIL=$((FAIL+1)); echo "  FAIL the installed proxy version changes the id"; }
+incus config set old-egress user.boxen.egress.version=fedcba9876543210
+[[ "$id2" != "$(eg 'egress_hosts box | egress_policy_id enforce old-egress')" ]] && { PASS=$((PASS+1)); echo "  ok  and so does a newer one"; } ||
+  { FAIL=$((FAIL+1)); echo "  FAIL and so does a newer one"; }
+
+echo "the proxy version"
+v="$(eg 'egress_proxy_version')"
+assert_eq "it's 16 hex digits" "yes" "$([[ "$v" =~ ^[0-9a-f]{16}$ ]] && echo yes || echo no)"
+for f in build-smokescreen.sh boxen-smokescreen/main.go boxen-proxy-run boxen-egress-ctl; do
+  rm -rf "$SANDBOX/repo2"; mkdir -p "$SANDBOX/repo2"; cp -R "$REPO_ROOT/egress" "$SANDBOX/repo2/egress"
+  echo "# changed" >> "$SANDBOX/repo2/egress/$f"
+  [[ "$v" != "$(eg "SCRIPT_DIR='$SANDBOX/repo2'; egress_proxy_version")" ]] && { PASS=$((PASS+1)); echo "  ok  a change to $f changes it"; } ||
+    { FAIL=$((FAIL+1)); echo "  FAIL a change to $f changes it"; }
+done
+rm -rf "$SANDBOX/repo2"; mkdir -p "$SANDBOX/repo2"; cp -R "$REPO_ROOT/egress" "$SANDBOX/repo2/egress"
+echo "// test" >> "$SANDBOX/repo2/egress/boxen-smokescreen/main_test.go"
+assert_eq "the Go tests aren't part of it" "$v" "$(eg "SCRIPT_DIR='$SANDBOX/repo2'; egress_proxy_version")"
 
 echo "the egress container"
 fresh
@@ -130,7 +152,11 @@ assert_eq "it starts on its own" "true" "$(cfg $e boot.autostart)"
 assert_eq "before the agents" "100" "$(cfg $e boot.autostart.priority)"
 assert_eq "it's set up" "1" "$(cfg $e user.boxen.egress.ready)"
 assert_contains "the ctl is set up with one resolver and the deny ranges" "setup 1.1.1.1 0.0.0.0/8,10.0.0.0/8," "$(ctl_calls $e)"
-assert_contains "smokescreen is built in it" "sh /root/build-smokescreen.sh" "$(cat "$FAKE_INCUS_STATE/exec.log")"
+stage=/root/boxen-egress-payload
+assert_contains "smokescreen is built in it, from bxn's main.go" "sh $stage/build-smokescreen.sh $stage/main.go" "$(cat "$FAKE_INCUS_STATE/exec.log")"
+assert_eq "bxn's main.go went in" "yes" "$(cmp -s "$REPO_ROOT/egress/boxen-smokescreen/main.go" "$FAKE_INCUS_STATE/instances/$e/root$stage/main.go" && echo yes || echo no)"
+assert_contains "the scripts go in place after the build" "sh -c set -e; install -d -m 755" "$(grep -A1 "build-smokescreen.sh" "$FAKE_INCUS_STATE/exec.log" | tail -1)"
+assert_eq "it records the proxy version" "$(eg 'egress_proxy_version')" "$(cfg $e user.boxen.egress.version)"
 acl="$(cat "$FAKE_INCUS_STATE/acls/$e")"
 assert_contains "out: private ranges rejected, the bridge included" "destination: 0.0.0.0/8,10.0.0.0/8," "$acl"
 assert_contains "out: the web" "destination_port: 80,443" "$acl"
@@ -189,6 +215,32 @@ assert_eq "and leaves the active state as it was" "$active" "$(cfg box user.boxe
 incus config set box user.boxen.egress=bogus
 assert_contains "an unknown mode is refused" "unknown egress mode" "$(eg 'egress_apply box' 2>&1 || true)"
 incus config set box user.boxen.egress=enforce
+
+echo "updating the proxy"
+assert_eq "a current egress container isn't out of date" "no" "$(eg 'egress_outdated boxen-egress && echo yes || echo no')"
+assert_eq "or rebuilt" "" "$(eg 'egress_update boxen-egress' 2>&1)"
+apply >/dev/null
+incus config set $e user.boxen.egress.version=0123456789abcdef
+# As left by an older bxn: the policy applied with the old build.
+assert_eq "applied under the old build" "widened" "$(apply)"
+assert_eq "it's out of date" "yes" "$(eg 'egress_outdated boxen-egress && echo yes || echo no')"
+active="$(cfg box user.boxen.egress.active)"
+current="$(cat "$FAKE_INCUS_STATE/ctl/$e/box/current")"
+FAKE_INCUS_FAIL_EXEC='build-smokescreen' eg 'egress_ensure boxen-egress; echo carried on' > "$SANDBOX/update-failure.out" 2>&1
+assert_contains "a failed update says how to retry" "Could not update the proxy in boxen-egress; its proxies keep serving as before. Retry: bxn egress refresh --all" "$(cat "$SANDBOX/update-failure.out")"
+assert_contains "and egress_ensure carries on" "carried on" "$(cat "$SANDBOX/update-failure.out")"
+assert_eq "a failed update keeps the old version" "0123456789abcdef" "$(cfg $e user.boxen.egress.version)"
+assert_eq "and the agent's generation" "$current" "$(cat "$FAKE_INCUS_STATE/ctl/$e/box/current")"
+assert_eq "and nothing new to apply" "unchanged" "$(apply)"
+n="$(ctl_calls $e | grep -c '^setup' || true)"
+eg 'egress_ensure boxen-egress' > "$SANDBOX/update.out" 2>&1
+assert_contains "an update rebuilds smokescreen" "Updating the proxy in boxen-egress" "$(cat "$SANDBOX/update.out")"
+assert_contains "and names the next step" "bxn egress refresh --all" "$(cat "$SANDBOX/update.out")"
+assert_eq "it sets up the shared units again" "$((n + 1))" "$(ctl_calls $e | grep -c '^setup')"
+assert_eq "it records the new version" "$(eg 'egress_proxy_version')" "$(cfg $e user.boxen.egress.version)"
+assert_eq "the agent's next apply widens: open connections keep running" "widened" "$(apply)"
+assert_contains "through a new generation" "widen box $(cat "$FAKE_INCUS_STATE/ctl/$e/box/current")" "$(ctl_calls $e | tail -1)"
+assert_eq "and then nothing changes" "unchanged" "$(apply)"
 
 echo "forgetting an agent"
 # Its own rule set, as egress_nic_restrict leaves it.

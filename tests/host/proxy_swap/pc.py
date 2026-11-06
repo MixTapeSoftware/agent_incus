@@ -1,11 +1,32 @@
 #!/usr/bin/env python3
-"""Test client for the proxy prototype: CONNECT through the proxy to an echo server."""
-import os, socket, sys, time
+"""Test client for the proxy prototype: CONNECT through the proxy to an echo server.
+Each tunnel starts with a ClientHello for its host, as a TLS client's does."""
+import os, socket, ssl, sys, time
 
 PROXY = ("127.0.0.1", int(os.environ.get("PROXY_PORT", "4750")))
 ECHO_PORT = 4760
 
-def tunnel(host, timeout=5):
+def client_hello(name):
+    """The first TLS record a client sends for name."""
+    out = ssl.MemoryBIO()
+    tls = ssl.create_default_context().wrap_bio(ssl.MemoryBIO(), out, server_hostname=name)
+    try:
+        tls.do_handshake()
+    except ssl.SSLWantReadError:
+        pass
+    return out.read()
+
+def echoed(s, sent):
+    """True when the echo server sends back what was sent, before the tunnel closes."""
+    got = b""
+    while len(got) < len(sent):
+        d = s.recv(65536)
+        if not d:
+            return False
+        got += d
+    return got == sent
+
+def tunnel(host, timeout=5, hello=True):
     s = socket.create_connection(PROXY, timeout=timeout)
     s.sendall(f"CONNECT {host}:{ECHO_PORT} HTTP/1.1\r\nHost: {host}:{ECHO_PORT}\r\n\r\n".encode())
     buf = b""
@@ -14,7 +35,29 @@ def tunnel(host, timeout=5):
         if not d:
             raise ConnectionError("closed during CONNECT")
         buf += d
-    return s, int(buf.split(b" ", 2)[1])
+    code = int(buf.split(b" ", 2)[1])
+    # The proxy's TLS name check passes a tunnel on only after a ClientHello
+    # for its host; the echo server sends it back.
+    if code == 200 and hello:
+        h = client_hello(host)
+        s.sendall(h)
+        if not echoed(s, h):
+            raise ConnectionError("closed after the ClientHello")
+    return s, code
+
+def first(host, name):
+    """A tunnel for host whose first bytes name another host, or aren't TLS
+    (name "-"): ok when they come back, closed when the proxy ends it."""
+    try:
+        s, code = tunnel(host, hello=False)
+        if code != 200:
+            s.close(); return f"denied{code}"
+        sent = client_hello(name) if name != "-" else b"ping SENTINEL-tls-7f3a\n"
+        s.sendall(sent)
+        r = echoed(s, sent); s.close()
+        return "ok" if r else "closed"
+    except OSError:
+        return "closed"
 
 def once(host):
     t = time.time()
@@ -60,3 +103,4 @@ if __name__ == "__main__":
     if cmd == "once": print(once(sys.argv[2])[0])
     elif cmd == "stream": stream(sys.argv[2], float(sys.argv[3]), sys.argv[4])
     elif cmd == "hammer": hammer(sys.argv[2], float(sys.argv[3]))
+    elif cmd == "first": print(first(sys.argv[2], sys.argv[3]))

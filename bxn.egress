@@ -47,7 +47,8 @@ Usage: bxn egress <command> [args...]
                                        public web traffic, logging what enforce
                                        would block. off: no allowlist.
   refresh [<container>|--all]          Finish an interrupted change, apply a
-                                       baseline update after you review it
+                                       baseline update after you review it,
+                                       move to a newer proxy build
 
 Hosts are hostnames for ports 80 and 443: lowercase, punycode, a wildcard only
 as a leading "*.". Allowing a host keeps open connections; anything that
@@ -290,10 +291,11 @@ status_line() {
   port="$(incus config get "$c" user.boxen.egress.port 2>/dev/null)"
   [[ -n "$(egress_transition "$c")" ]] && notes+="change interrupted: bxn egress refresh $c; "
   egress_build_abandoned "$c" && notes+="build abandoned ($(incus config get "$c" user.boxen.egress.build)): rebuild or delete it; "
+  egress_outdated "$egress" && notes+="$egress runs an older proxy build: bxn egress refresh --all; "
   if [[ "${active%%:*}" != "$mode" ]]; then
     notes+="wants $mode: bxn egress refresh $c; "
-  elif [[ "${active#*:}" != "$(egress_hosts "$c" | egress_policy_id "$mode")" ]]; then
-    notes+="hosts changed since applied: bxn egress refresh $c; "
+  elif [[ "${active#*:}" != "$(egress_hosts "$c" | egress_policy_id "$mode" "$egress")" ]]; then
+    notes+="hosts or proxy changed since applied: bxn egress refresh $c; "
   fi
   if [[ "$mode" != off ]] && ! egress_nic_is_restricted "$c"; then notes+="card not locked; "; fi
   if egress_running "$egress"; then
@@ -354,7 +356,7 @@ cmd_log() {
 }
 
 cmd_refresh() {
-  local target="${1:-}" cs c failed=""
+  local target="${1:-}" cs c egress failed="" updated=""
   egress_ensure_approved
   if ! cmp -s <(egress_read_hosts "$EGRESS_SHIPPED") <(egress_read_hosts "$EGRESS_APPROVED"); then
     echo "The shipped egress baseline differs from the one you approved:"
@@ -375,7 +377,8 @@ cmd_refresh() {
   esac
   boxen_lock
   for c in $cs; do
-    [[ -n "$(incus config get "$c" user.boxen.egress.container 2>/dev/null)" ]] || { warn "$c has no allowlist"; continue; }
+    egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
+    [[ -n "$egress" ]] || { warn "$c has no allowlist"; continue; }
     if egress_build_abandoned "$c"; then
       if egress_running "$c" && ! incus stop "$c" --force >/dev/null 2>&1; then
         warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)), and it couldn't be stopped. Stop it: incus stop --force $c"
@@ -383,6 +386,12 @@ cmd_refresh() {
       fi
       warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)); it's stopped. Rebuild it, or delete it: bxn rm $c"
       continue
+    fi
+    # A newer proxy build goes in first, once per egress container, so the
+    # converge below moves the container to it.
+    if ! grep -qxF -- "$egress" <<< "$updated" && egress_running "$egress"; then
+      updated+="$egress"$'\n'
+      egress_update "$egress" || failed="$failed $egress"
     fi
     converge_one "$c" || failed="$failed $c"
   done

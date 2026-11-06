@@ -276,6 +276,35 @@ run refresh --yes
 assert_contains "--yes approves it" "Approved the new baseline" "$OUT"
 assert_contains "and box's proxy allows it" "new-tool.example" "$(gen_file box hosts)"
 
+echo "a newer proxy build"
+run ls
+assert_not_contains "a current egress container has no note" "older proxy build" "$OUT"
+old="$(cfg $E user.boxen.egress.version)"
+echo "# a newer build" >> "$SANDBOX/repo/egress/boxen-proxy-run"
+run ls
+assert_contains "ls says when the egress container is out of date" "boxen-egress runs an older proxy build: bxn egress refresh --all" "$(grep '^abox ' <<< "$OUT")"
+assert_not_contains "and only that: its proxies still match" "since applied" "$OUT"
+FAKE_INCUS_FAIL_EXEC='build-smokescreen' run refresh --all
+assert_eq "a failed update fails the refresh" "1" "$RC"
+assert_contains "it says the proxies keep serving, and how to retry" "its proxies keep serving as before. Retry: bxn egress refresh --all" "$OUT"
+assert_eq "the old version stays recorded" "$old" "$(cfg $E user.boxen.egress.version)"
+gen="$(gen_of abox)"
+run refresh abox
+assert_eq "refresh updates it" "0" "$RC"
+assert_contains "rebuilding smokescreen" "Updating the proxy in boxen-egress" "$OUT"
+assert_contains "and moves the container to it, keeping open connections" "abox: allowed; open connections keep running" "$OUT"
+assert_eq "through a new generation" "$((gen + 1))" "$(gen_of abox)"
+assert_contains "the new scripts go in" "# a newer build" "$(cat "$FAKE_INCUS_STATE/instances/$E/root/root/boxen-egress-payload/boxen-proxy-run" 2>/dev/null)"
+run ls
+assert_not_contains "the egress container is current" "older proxy build" "$OUT"
+assert_contains "the others wait for their refresh" "hosts or proxy changed since applied: bxn egress refresh zbox" "$(grep '^zbox ' <<< "$OUT")"
+run refresh --all
+assert_eq "refresh --all moves the rest" "0" "$RC"
+assert_contains "widening each" "zbox: allowed; open connections keep running" "$OUT"
+assert_not_contains "without rebuilding again" "Updating the proxy" "$OUT"
+run ls
+assert_not_contains "and then nothing is left to apply" "since applied" "$OUT"
+
 echo "refusals"
 incus launch img legacy -p default >/dev/null
 incus config set legacy user.managed-by=boxen

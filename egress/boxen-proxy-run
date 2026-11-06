@@ -1,6 +1,7 @@
 #!/bin/bash
 # egress/boxen-proxy-run
-# Starts one smokescreen generation for an agent, inside an egress container.
+# Starts one smokescreen generation for an agent, inside an egress container
+# (bxn's build of it: egress/boxen-smokescreen).
 # smokescreen with no allowlist allows everything, so this refuses unless the
 # generation's config and allowlist exist and the allowlist's default policy
 # matches the generation's mode. It execs smokescreen, so smokescreen's parent
@@ -24,6 +25,9 @@ case "$mode" in
   off) [[ "$action" == "open" ]] ;;
   *) false ;;
 esac || refuse "default action '$action' doesn't match mode '$mode'"
+# The TLS name check (egress/boxen-smokescreen) follows the mode: enforce
+# closes a tunnel used for another name, report logs it, off skips the check.
+export BOXEN_TLS_NAME_CHECK="$mode"
 
 args=(--config-file "$cfg" --egress-acl-file "$acl")
 if [[ -n "${BOXEN_PROBE_PORT:-}" ]]; then

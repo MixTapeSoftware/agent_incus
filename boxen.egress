@@ -91,15 +91,34 @@ egress_sha256() {
   else shasum -a 256 | cut -d' ' -f1; fi
 }
 
-# The policy identity: a hash of every input that shapes the proxy.
-# Usage: egress_policy_id <mode> < hosts
+# The policy identity: a hash of every input that shapes the proxy,
+# including the proxy build installed in the agent's egress container, so a
+# new build makes a new generation.
+# Usage: egress_policy_id <mode> <egress> < hosts
 # Off allows every public host, so its hosts aren't part of it: changing the
 # list while off makes no new generation.
 egress_policy_id() {
+  local v=""
+  [[ -z "${2:-}" ]] || v="$(egress_installed_version "$2")"
   { echo "boxen-egress-policy v1"; echo "mode $1"; echo "resolver $(egress_resolver)"
     echo "deny $(egress_deny_ranges)"
+    # An egress container set up before builds had versions keeps its ids.
+    [[ -z "$v" ]] || echo "proxy $v"
     if [[ "$1" == off ]]; then cat >/dev/null; else cat; fi; } | egress_sha256 | cut -c1-16
 }
+
+# The proxy payload egress_ensure installs in an egress container. Its
+# version is a hash of these files, so an update to bxn that changes any of
+# them is noticed: egress_update rebuilds and records it on the container.
+EGRESS_PAYLOAD="build-smokescreen.sh boxen-smokescreen/main.go boxen-proxy-run boxen-egress-ctl"
+egress_proxy_version() {
+  local f
+  for f in $EGRESS_PAYLOAD; do echo "== $f"; cat "$SCRIPT_DIR/egress/$f"; done | egress_sha256 | cut -c1-16
+}
+egress_installed_version() { incus config get "$1" user.boxen.egress.version 2>/dev/null; }
+egress_is_ready() { [[ "$(incus config get "$1" user.boxen.egress.ready 2>/dev/null)" == "1" ]]; }
+# True when an egress container that's set up runs an older proxy build.
+egress_outdated() { egress_is_ready "$1" && [[ "$(egress_installed_version "$1")" != "$(egress_proxy_version)" ]]; }
 
 # smokescreen takes one resolver: the first of BOXEN_RESOLVERS.
 egress_resolver() { echo "${BOXEN_RESOLVERS%%,*}"; }
@@ -189,23 +208,61 @@ egress_ensure() {
       -c user.boxen.net=isolated -c boot.autostart=true -c boot.autostart.priority=100 >/dev/null ||
       error "Could not create $egress"
   fi
-  [[ "$(incus config get "$egress" user.boxen.egress.ready 2>/dev/null)" == "1" ]] && { egress_start "$egress"; return 0; }
+  # One that's set up only needs a newer proxy build, when there is one. A
+  # failed update leaves it serving as before, so the caller carries on.
+  if egress_is_ready "$egress"; then
+    egress_start "$egress"
+    egress_update "$egress" || true
+    return 0
+  fi
   egress_sync_acl "$egress"
   egress_start "$egress"
   log "Setting up $egress (builds smokescreen; takes a minute or two)..."
   incus exec "$egress" -- sh -c 'export DEBIAN_FRONTEND=noninteractive
     apt-get update -qq && apt-get install -y -qq --no-install-recommends ca-certificates curl git jq >/dev/null' </dev/null ||
     error "Could not install packages in $egress"
-  incus file push "$SCRIPT_DIR/egress/build-smokescreen.sh" "$egress/root/build-smokescreen.sh" >/dev/null &&
-    incus exec "$egress" -- sh /root/build-smokescreen.sh </dev/null ||
-    error "Could not build smokescreen in $egress"
-  incus exec "$egress" -- rm -f /root/build-smokescreen.sh </dev/null
-  incus file push --mode 0755 "$SCRIPT_DIR/egress/boxen-proxy-run" "$egress$BOXEN_EGRESS_LIB/boxen-proxy-run" >/dev/null &&
-    incus file push --mode 0755 "$SCRIPT_DIR/egress/boxen-egress-ctl" "$egress$BOXEN_EGRESS_CTL" >/dev/null ||
-    error "Could not install the proxy scripts in $egress"
+  egress_install_payload "$egress" || error "Could not build smokescreen and install the proxy scripts in $egress"
   egress_ctl "$egress" setup "$(egress_resolver)" "$(egress_deny_ranges)" </dev/null ||
     error "Could not set up the proxies in $egress"
-  incus config set "$egress" user.boxen.egress.ready=1
+  incus config set "$egress" user.boxen.egress.ready=1 "user.boxen.egress.version=$(egress_proxy_version)"
+}
+
+# Builds smokescreen and installs the proxy scripts, from a staging
+# directory. The build replaces the binary only once it has worked, and the
+# scripts follow with a rename each, so a failure leaves the running proxies
+# and what the next generation starts from as they were.
+egress_install_payload() {
+  local egress="$1" stage=/root/boxen-egress-payload
+  incus exec "$egress" -- rm -rf "$stage" </dev/null &&
+    incus file push -p "$SCRIPT_DIR/egress/build-smokescreen.sh" "$egress$stage/build-smokescreen.sh" >/dev/null &&
+    incus file push -p "$SCRIPT_DIR/egress/boxen-smokescreen/main.go" "$egress$stage/main.go" >/dev/null &&
+    incus file push -p --mode 0755 "$SCRIPT_DIR/egress/boxen-proxy-run" "$egress$stage/boxen-proxy-run" >/dev/null &&
+    incus file push -p --mode 0755 "$SCRIPT_DIR/egress/boxen-egress-ctl" "$egress$stage/boxen-egress-ctl" >/dev/null &&
+    incus exec "$egress" -- sh "$stage/build-smokescreen.sh" "$stage/main.go" </dev/null &&
+    incus exec "$egress" -- sh -c 'set -e; install -d -m 755 "$2"
+      mv -f "$1/boxen-proxy-run" "$2/boxen-proxy-run"; mv -f "$1/boxen-egress-ctl" "$3"; rm -rf "$1"' \
+      sh "$stage" "$BOXEN_EGRESS_LIB" "$BOXEN_EGRESS_CTL" </dev/null
+}
+
+# Moves an egress container that's set up to this bxn's proxy build: the
+# binary, the scripts, the shared units, then the version. Running
+# generations keep the binary they started with; each agent's policy id
+# includes the version, so its next converge starts a new generation, which
+# widens when nothing else changed. Run under boxen_lock.
+# Returns 1 with a warning when it fails; the proxies keep serving.
+egress_update() {
+  local egress="$1" want
+  want="$(egress_proxy_version)"
+  egress_outdated "$egress" || return 0
+  log "Updating the proxy in $egress (builds smokescreen; takes a minute or two)..."
+  if ! egress_install_payload "$egress" ||
+     ! egress_ctl "$egress" setup "$(egress_resolver)" "$(egress_deny_ranges)" </dev/null; then
+    warn "Could not update the proxy in $egress; its proxies keep serving as before. Retry: bxn egress refresh --all"
+    return 1
+  fi
+  incus config set "$egress" "user.boxen.egress.version=$want" >/dev/null ||
+    { warn "Could not record the proxy version on $egress. Retry: bxn egress refresh --all"; return 1; }
+  log "Updated the proxy in $egress. Containers move to it when refreshed: bxn egress refresh --all"
 }
 
 # Starts the egress container if it's stopped, and waits for it.
@@ -259,7 +316,7 @@ egress_apply() {
   mode="${mode:-enforce}"
   [[ "$(mode_rank "$mode")" -ge 0 ]] || error "$agent has an unknown egress mode: $mode"
   hosts="$(egress_hosts "$agent")"
-  id="$(printf '%s\n' "$hosts" | egress_policy_id "$mode")"
+  id="$(printf '%s\n' "$hosts" | egress_policy_id "$mode" "$egress")"
   cur="$(egress_ctl "$egress" status "$agent" </dev/null)" || error "Could not read $agent's proxy in $egress"
   if [[ "$(cut -f4 <<< "$cur")" == "$id" && "$(cut -f6 <<< "$cur")" == "yes" ]]; then
     incus config set "$agent" "user.boxen.egress.active=$mode:$id" >/dev/null
@@ -526,7 +583,7 @@ egress_recover() {
   if egress_running "$agent" && egress_nic_is_restricted "$agent" && [[ "$(egress_ip "$agent")" == "$ip" ]]; then
     st="$(egress_ctl "$egress" status "$agent" </dev/null 2>/dev/null)" || st=""
     if [[ "$(cut -f5 <<< "$st")" == "$mode" && "$(cut -f6 <<< "$st")" == "yes" &&
-          "$(cut -f4 <<< "$st")" == "$(egress_hosts "$agent" | egress_policy_id "$mode")" ]]; then
+          "$(cut -f4 <<< "$st")" == "$(egress_hosts "$agent" | egress_policy_id "$mode" "$egress")" ]]; then
       log "$agent is locked and its proxy is verified; finishing"
       egress_commit "$agent"
       return 0
@@ -619,7 +676,7 @@ egress_prepare_unstarted() {
   incus config set "$agent" "user.boxen.egress=$mode" >/dev/null
   egress_nic_restrict "$agent"
   egress_apply "$agent" >/dev/null || error "Could not start $agent's proxy"
-  incus config set "$agent" "user.boxen.egress.active=$mode:$(egress_hosts "$agent" | egress_policy_id "$mode")" >/dev/null
+  incus config set "$agent" "user.boxen.egress.active=$mode:$(egress_hosts "$agent" | egress_policy_id "$mode" "$egress")" >/dev/null
 }
 
 # What the user and the agent see in a locked container: a login banner and a

@@ -308,6 +308,8 @@ check_egress() {
       continue
     fi
     answered+="$e"$'\n'
+    egress_outdated "$e" &&
+      note "$e runs an older build of bxn's proxy, without its newest checks" "bxn egress refresh --all"
     [[ -z "$ctl" ]] || ctl_all+="$(awk -v e="$e" 'NF {print e "\t" $0}' <<< "$ctl")"$'\n'
     # Proxies for containers that are gone: deleted with incus delete, not bxn rm.
     while IFS=$'\t' read -r agent port _ _ _ listening _; do

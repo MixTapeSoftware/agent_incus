@@ -180,6 +180,15 @@ doctor
 assert_contains "no autostart is a warning" "doesn't start when the host boots" "$OUT"
 incus config set boxen-egress boot.autostart=true
 
+assert_not_contains "an egress container bxn just set up is current" "older build" "$OUT"
+version="$(cfg boxen-egress user.boxen.egress.version)"
+incus config set boxen-egress user.boxen.egress.version=0123456789abcdef
+doctor
+assert_eq "an older proxy build is only a warning" "0" "$RC"
+assert_contains "it's named" "boxen-egress runs an older build of bxn's proxy" "$OUT"
+assert_contains "with the fix" "fix: bxn egress refresh --all" "$OUT"
+incus config set boxen-egress "user.boxen.egress.version=$version"
+
 incus launch img gone -p default -p boxen-net -d "eth0,ipv4.address=10.201.0.91" >/dev/null
 incus config set gone user.managed-by=boxen user.boxen.net=isolated
 bash "$REPO_ROOT/bxn" egress mode gone enforce >/dev/null 2>&1
