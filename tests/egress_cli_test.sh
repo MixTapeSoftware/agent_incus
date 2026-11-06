@@ -326,6 +326,10 @@ run upload-limit box 10.0.0.1 5G
 assert_contains "and so is an address" "Not a hostname bxn accepts: 10.0.0.1" "$OUT"
 run upload-limit box github.com 0
 assert_eq "and a zero limit" "1" "$RC"
+run upload-limit box github.com 1000000T
+assert_eq "and one too large for the proxy" "1" "$RC"
+assert_contains "the same way" "Not a size: 1000000T" "$OUT"
+assert_eq "which isn't saved" "" "$(cfg box user.boxen.egress.upload-limits)"
 assert_eq "none of them changed the proxy" "$gen" "$(gen_of box)"
 printf 'github.com 3 G\n' > "$BOXEN_CONFIG_DIR/egress-upload-limits.txt"
 run upload-limit box

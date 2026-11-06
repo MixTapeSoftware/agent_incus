@@ -505,7 +505,11 @@ cmd_upload_limit() {
     key="$(egress_host "$key")" || error "Not a hostname bxn accepts: $2"
   fi
   val="$(printf '%s' "$val" | tr 'A-Z' 'a-z')"
-  [[ "$val" == clear || "$val" == off || ( "$val" =~ ^[0-9]+[kmgt]?$ && ! "$val" =~ ^0+[kmgt]?$ ) ]] ||
+  # The same check the limits get when read, so a size too large for the
+  # proxy isn't saved, where it would stop every change to this container.
+  [[ "$val" == clear || "$val" == off ||
+     ( "$val" =~ ^[0-9]+[kmgt]?$ && ! "$val" =~ ^0+[kmgt]?$ ) &&
+     -n "$(printf '%s %s\n' "$key" "$val" | egress_read_upload_limits - 2>/dev/null)" ]] ||
     error "Not a size: $3 (such as 500M or 5G, or off, or clear)"
   list="$(egress_own_upload_limits "$c" | awk -v k="$key" '$1 != k')"
   [[ "$val" == clear ]] || list="$(printf '%s\n' "$list" "$key $val")"
