@@ -345,6 +345,19 @@ assert_contains "box's proxy gets it" "upload-cap on" "$(gen_file box upload)"
 assert_eq "stored on the container" "on" "$(cfg box user.boxen.egress.upload-cap)"
 run upload-cap box maybe
 assert_eq "on or off only" "1" "$RC"
+w="$FAKE_INCUS_STATE/instances/$E/config/user.boxen.egress.upload-watch"
+mv "$w" "$w.saved"
+gen="$(gen_of box)"
+run upload-cap box off
+assert_eq "an egress container without the upload watch takes no cap" "1" "$RC"
+assert_contains "saying why and what to run" "boxen-egress runs an older proxy build, without the upload watch, so no limit or cap applies to box yet. Update it first: bxn egress refresh --all" "$OUT"
+assert_eq "the cap stays as it was" "on" "$(cfg box user.boxen.egress.upload-cap)"
+run upload-limit box github.com 5G
+assert_eq "nor a limit" "1" "$RC"
+assert_eq "so its proxy is as it was" "$gen" "$(gen_of box)"
+run upload-limit box
+assert_contains "the list says nothing is counted" "Upload watch: not running. boxen-egress runs an older proxy build, so nothing below is counted or cut (bxn egress refresh --all)." "$OUT"
+mv "$w.saved" "$w"
 incus launch img plainbox -p default >/dev/null
 run upload-cap plainbox on
 assert_contains "a container with no allowlist has no cap" "plainbox has no allowlist (set one with: bxn egress mode plainbox enforce)" "$OUT"

@@ -468,10 +468,22 @@ need_allowlist() {
     error "$1 has no allowlist (set one with: bxn egress mode $1 enforce)"
 }
 
+# Limits and the cap reach a proxy only once its egress container runs a
+# build with the upload watch; one set up earlier gets it at its update.
+need_upload_watch() {
+  local egress
+  egress="$(incus config get "$1" user.boxen.egress.container 2>/dev/null)"
+  egress_watches_uploads "$egress" ||
+    error "$egress runs an older proxy build, without the upload watch, so no limit or cap applies to $1 yet. Update it first: bxn egress refresh --all"
+}
+
 cap_line() {
-  local c="$1" mode
+  local c="$1" mode egress
   mode="$(incus config get "$c" user.boxen.egress 2>/dev/null)"; mode="${mode:-enforce}"
-  if [[ "$(incus config get "$c" user.boxen.egress.upload-cap 2>/dev/null)" != on ]]; then
+  egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
+  if ! egress_watches_uploads "$egress"; then
+    echo "Upload watch: not running. $egress runs an older proxy build, so nothing below is counted or cut (bxn egress refresh --all)."
+  elif [[ "$(incus config get "$c" user.boxen.egress.upload-cap 2>/dev/null)" != on ]]; then
     echo "Upload cap: off. Going over a limit is logged, not cut (bxn egress upload-cap $c on)."
   elif [[ "$mode" == enforce ]]; then
     echo "Upload cap: on. An upload that would go over a limit is cut."
@@ -501,6 +513,7 @@ cmd_upload_limit() {
     return 0
   fi
   [[ $# -eq 3 ]] || usage 1
+  need_upload_watch "$c"
   if [[ "$key" != default ]]; then
     key="$(egress_host "$key")" || error "Not a hostname bxn accepts: $2"
   fi
@@ -525,6 +538,7 @@ cmd_upload_cap() {
   [[ $# -eq 2 ]] || usage 1
   case "$v" in on | off) ;; *) usage 1 ;; esac
   need_allowlist "$c"
+  need_upload_watch "$c"
   boxen_lock
   incus config set "$c" "user.boxen.egress.upload-cap=$v" >/dev/null || { boxen_unlock; error "Could not save $c's upload cap"; }
   converge_uploads "$c" || { boxen_unlock; return 1; }
