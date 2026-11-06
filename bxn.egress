@@ -38,10 +38,15 @@ Usage: bxn egress <command> [args...]
                                        name, its hosts and where each comes from
   log <container> [--since TIME] [--raw]
                                        What it tried to reach (default: last hour)
-  allow <container> <host>...          Let it reach these hosts too
+  allow <container> <host>...          Let it reach these hosts too, or put
+                                       back ones removed for it
   allow --all <host>...                Add to your baseline, for every container
-  rm <container> <host>...             Take hosts off its own list
+  rm <container> <host>...             Take hosts off its list, wherever they
+                                       come from (for it only)
   rm --all <host>...                   Take hosts off your baseline additions
+  baseline <container> off|on          off: leave the baseline and your
+                                       additions out of its list, keeping its
+                                       plugin hosts and its own
   mode <container> enforce|report|off [--egress-container NAME]
                                        enforce: only listed hosts. report: all
                                        public web traffic, logging what enforce
@@ -152,45 +157,95 @@ cmd_mode() {
   boxen_unlock
 }
 
+# Stores a list of hosts, one per line, as a container's comma-separated
+# config value.
+# Usage: set_hosts <container> allow|deny <hosts>
+set_hosts() {
+  incus config set "$1" "user.boxen.egress.$2=$(printf '%s\n' "$3" | sed '/^$/d' | LC_ALL=C sort -u | tr '\n' ',' | sed 's/,$//')" >/dev/null
+}
+
+# The first wildcard entry in a host list that matches <host>, or a failure.
+# For a wildcard, one that matches all it does: *.example.com for *.a.example.com.
+# Usage: covering_wildcard <hosts> <host>
+covering_wildcard() {
+  local hosts="$1" d="${2#\*.}"
+  while [[ "$d" == *.* ]]; do
+    d="${d#*.}"
+    if grep -qxF -- "*.$d" <<< "$hosts"; then echo "*.$d"; return 0; fi
+  done
+  return 1
+}
+
+# Adding takes a host off the container's removed list when it's there, and
+# onto its own list otherwise. Removing takes it off its own list and, when the
+# baseline, your additions or its plugins still allow it, puts it on its
+# removed list (user.boxen.egress.deny).
 # Usage: edit_hosts add|rm <container> <host>...
 edit_hosts() {
-  local op="$1" c="$2" h list="" out=() keep
+  local op="$1" c="$2" h list deny out=() hosts had="" restored="" w
   shift 2
   [[ $# -gt 0 ]] || usage 1
   for h in "$@"; do
     out+=("$(egress_host "$h")") || error "Not a hostname bxn accepts: $h"
   done
   list="$(egress_split "$(incus config get "$c" user.boxen.egress.allow 2>/dev/null)")"
+  deny="$(egress_split "$(incus config get "$c" user.boxen.egress.deny 2>/dev/null)")"
   if [[ "$op" == add ]]; then
-    list="$(printf '%s\n' "$list" "${out[@]}" | sed '/^$/d' | LC_ALL=C sort -u)"
-  else
     for h in "${out[@]}"; do
-      grep -qxF -- "$h" <<< "$list" || warn "$h isn't on $c's own list"
-      list="$(grep -vxF -- "$h" <<< "$list" || true)"
+      grep -qxF -- "$h" <<< "$deny" || continue
+      deny="$(grep -vxF -- "$h" <<< "$deny" || true)"
+      restored+="$h"$'\n'
     done
-  fi
-  keep="$(printf '%s\n' "$list" | sed '/^$/d' | tr '\n' ',' | sed 's/,$//')"
-  incus config set "$c" "user.boxen.egress.allow=$keep" >/dev/null
-  if [[ "$op" == rm ]]; then
+    set_hosts "$c" deny "$deny"
+    hosts="$(egress_hosts "$c")"
     for h in "${out[@]}"; do
-      if egress_hosts "$c" | grep -qxF -- "$h"; then
-        warn "$h is still allowed for $c by $(host_source "$c" "$h")"
+      if grep -qxF -- "$h" <<< "$restored" && grep -qxF -- "$h" <<< "$hosts"; then
+        log "$h: restored for $c, from $(host_source "$c" "$h")"
+      else
+        list+=$'\n'"$h"
       fi
     done
+    set_hosts "$c" allow "$list"
+    return 0
   fi
+  for h in "${out[@]}"; do
+    grep -qxF -- "$h" <<< "$list" && had+="$h"$'\n'
+    list="$(grep -vxF -- "$h" <<< "$list" || true)"
+  done
+  set_hosts "$c" allow "$list"
+  hosts="$(egress_hosts "$c")"
+  for h in "${out[@]}"; do
+    if grep -qxF -- "$h" <<< "$hosts"; then
+      log "$h comes from $(host_source "$c" "$h"); removed for $c only. Restore it: bxn egress allow $c $h"
+      deny+=$'\n'"$h"
+    elif ! grep -qxF -- "$h" <<< "$had"; then
+      warn "$h isn't on $c's list"
+    fi
+  done
+  set_hosts "$c" deny "$deny"
+  hosts="$(egress_hosts "$c")"
+  for h in "${out[@]}"; do
+    if w="$(covering_wildcard "$hosts" "$h")"; then
+      warn "$h is still reachable from $c through $w ($(host_source "$c" "$w")). To block it, remove that entry: bxn egress rm $c '$w'"
+    fi
+  done
 }
 
-# Each host a container may reach, a tab, and where it comes from.
+# Each host a container may reach, a tab, and where it comes from: the same
+# hosts as egress_hosts.
 hosts_with_sources() {
   local c="$1"
   egress_ensure_approved
   {
-    egress_read_hosts "$EGRESS_APPROVED" | sed 's/$/	baseline/'
-    egress_read_hosts "$EGRESS_USER_HOSTS" | sed 's/$/	your additions/'
+    if egress_baseline_on "$c"; then
+      egress_read_hosts "$EGRESS_APPROVED" | sed 's/$/	baseline/'
+      egress_read_hosts "$EGRESS_USER_HOSTS" | sed 's/$/	your additions/'
+    fi
     egress_split "$(incus config get "$c" user.boxen.egress.plugin-allow 2>/dev/null)" | sed 's/$/	plugins/'
     egress_split "$(incus config get "$c" user.boxen.egress.allow 2>/dev/null)" | sed "s/\$/\t$c/"
   } | awk -F'\t' '!($1 in s) { order[++n] = $1; s[$1] = $2; next } { s[$1] = s[$1] ", " $2 }
-                   END { for (i = 1; i <= n; i++) print order[i] "\t" s[order[i]] }' | LC_ALL=C sort
+                   END { for (i = 1; i <= n; i++) print order[i] "\t" s[order[i]] }' |
+    egress_drop "$(incus config get "$c" user.boxen.egress.deny 2>/dev/null)" | LC_ALL=C sort
 }
 
 host_source() {
@@ -212,6 +267,20 @@ cmd_allow_rm() {
   boxen_lock
   attach "$c" ""
   edit_hosts "$op" "$c" "$@"
+  converge_one "$c" || { boxen_unlock; return 1; }
+  boxen_unlock
+}
+
+# off leaves the baseline and your additions out of a container's list, so it
+# has only its plugin hosts and its own; on puts them back.
+cmd_baseline() {
+  local c="${1:-}" v="${2:-}"
+  [[ $# -eq 2 ]] || usage 1
+  need_container "$c"
+  [[ "$v" == on || "$v" == off ]] || usage 1
+  boxen_lock
+  attach "$c" ""
+  incus config set "$c" "user.boxen.egress.baseline=$v" >/dev/null
   converge_one "$c" || { boxen_unlock; return 1; }
   boxen_unlock
 }
@@ -271,9 +340,20 @@ cmd_ls() {
     egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
     [[ -n "$egress" ]] || { echo "$c: no allowlist (set one with: bxn egress mode $c enforce)"; return 0; }
     status_line "$c"
+    if egress_baseline_on "$c"; then
+      echo "Baseline: on"
+    else
+      echo "Baseline: off; only its plugin hosts and its own (turn it on: bxn egress baseline $c on)"
+    fi
     echo ""
     printf '%-50s  %s\n' HOST FROM
     hosts_with_sources "$c" | awk -F'\t' '{ printf "%-50s  %s\n", $1, $2 }'
+    h="$(egress_split "$(incus config get "$c" user.boxen.egress.deny 2>/dev/null)")"
+    if [[ -n "$h" ]]; then
+      echo ""
+      echo "Removed for $c (restore one: bxn egress allow $c <host>):"
+      sed 's/^/  /' <<< "$h"
+    fi
     return 0
   fi
   printf '%-28s %-8s %-18s %-22s %s\n' CONTAINER MODE ACTIVE PROXY NOTES
@@ -296,6 +376,7 @@ status_line() {
     notes+="hosts changed since applied: bxn egress refresh $c; "
   fi
   if [[ "$mode" != off ]] && ! egress_nic_is_restricted "$c"; then notes+="card not locked; "; fi
+  egress_baseline_on "$c" || notes+="baseline off; "
   if egress_running "$egress"; then
     st="$(egress_ctl "$egress" status "$c" </dev/null 2>/dev/null)" || st=""
     [[ "$(cut -f6 <<< "$st")" == "yes" ]] || notes+="no proxy listening; "
@@ -409,6 +490,7 @@ case "$cmd" in
   allow) cmd_allow_rm add "$@" ;;
   rm) cmd_allow_rm rm "$@" ;;
   mode) cmd_mode "$@" ;;
+  baseline) cmd_baseline "$@" ;;
   refresh) cmd_refresh "$@" ;;
   *) usage 1 ;;
 esac

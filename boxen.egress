@@ -73,17 +73,35 @@ egress_ensure_approved() {
 }
 
 # Every host an agent may reach, sorted: the approved baseline, the user's
-# additions, the plugins' additions recorded on the agent, and the agent's own.
+# additions, the plugins' additions recorded on the agent, and the agent's own,
+# less the entries removed for the agent (user.boxen.egress.deny). With
+# user.boxen.egress.baseline=off, the baseline and the user's additions are
+# left out.
 # Usage: egress_hosts <agent>
 egress_hosts() {
   local agent="$1"
   egress_ensure_approved
   {
-    egress_read_hosts "$EGRESS_APPROVED"
-    egress_read_hosts "$EGRESS_USER_HOSTS"
+    if egress_baseline_on "$agent"; then
+      egress_read_hosts "$EGRESS_APPROVED"
+      egress_read_hosts "$EGRESS_USER_HOSTS"
+    fi
     egress_split "$(incus config get "$agent" user.boxen.egress.plugin-allow 2>/dev/null)"
     egress_split "$(incus config get "$agent" user.boxen.egress.allow 2>/dev/null)"
-  } | LC_ALL=C sort -u
+  } | LC_ALL=C sort -u | egress_drop "$(incus config get "$agent" user.boxen.egress.deny 2>/dev/null)"
+}
+
+# Whether the agent's list includes the baseline and the user's additions.
+egress_baseline_on() {
+  [[ "$(incus config get "$1" user.boxen.egress.baseline 2>/dev/null)" != off ]]
+}
+
+# Lines whose first tab-separated field isn't an entry of a comma-separated
+# list, matched exactly: a removed wildcard entry removes only that entry.
+# Usage: egress_drop <list> < lines
+egress_drop() {
+  awk -F'\t' -v drop="$1" 'BEGIN { n = split(drop, a, ","); for (i = 1; i <= n; i++) d[a[i]] = 1 }
+                           !($1 in d)'
 }
 
 egress_sha256() {
