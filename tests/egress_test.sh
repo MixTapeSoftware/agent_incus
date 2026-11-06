@@ -114,6 +114,9 @@ assert_eq "the policy id is 16 hex digits" "yes" "$([[ "$id1" =~ ^[0-9a-f]{16}$ 
   { FAIL=$((FAIL+1)); echo "  FAIL a host changes the id"; }
 
 assert_eq "off ignores the hosts" "$(eg 'echo a.example | egress_policy_id off')" "$(eg 'echo b.example | egress_policy_id off')"
+[[ "$(eg 'echo upload-limit default 1 | egress_policy_id off')" != "$(eg 'echo upload-limit default 2 | egress_policy_id off')" ]] &&
+  { PASS=$((PASS+1)); echo "  ok  but not the upload limits, which apply in every mode"; } ||
+  { FAIL=$((FAIL+1)); echo "  FAIL but not the upload limits, which apply in every mode"; }
 incus launch img old-egress >/dev/null
 assert_eq "an egress container with no proxy version keeps its ids" "$id1" "$(eg 'egress_hosts box | egress_policy_id enforce old-egress')"
 incus config set old-egress user.boxen.egress.version=0123456789abcdef
@@ -124,10 +127,47 @@ incus config set old-egress user.boxen.egress.version=fedcba9876543210
 [[ "$id2" != "$(eg 'egress_hosts box | egress_policy_id enforce old-egress')" ]] && { PASS=$((PASS+1)); echo "  ok  and so does a newer one"; } ||
   { FAIL=$((FAIL+1)); echo "  FAIL and so does a newer one"; }
 
+echo "upload limits"
+shipped="$(eg 'egress_read_upload_limits "$SCRIPT_DIR/egress/upload-limits.txt"')"
+assert_contains "the shipped default is 250M" "default	262144000" "$shipped"
+assert_contains "an agent's API gets 2G" "api.anthropic.com	2147483648" "$shipped"
+assert_eq "the shipped file turns nothing off" "" "$(grep '	off$' <<< "$shipped" || true)"
+assert_eq "and has no duplicates" "" "$(cut -f1 <<< "$shipped" | sort | uniq -d)"
+assert_eq "every shipped host is in the baseline" "" "$(cut -f1 <<< "$shipped" | grep -vx default | grep -vxF -f <(eg 'egress_read_hosts "$SCRIPT_DIR/egress/baseline.txt"') || true)"
+printf 'Big.Example. 1k\r\n*.example.com 3M # why\nx.example 7\ny.example OFF\n\n# c\nz.example 1t\n' > "$SANDBOX/limits.txt"
+assert_eq "sizes are read as bytes, hosts as bxn stores them" "big.example	1024
+*.example.com	3145728
+x.example	7
+y.example	off
+z.example	1099511627776" "$(eg "egress_read_upload_limits '$SANDBOX/limits.txt'")"
+for bad in "a.example" "a.example 1G 2" "a.example 1.5G" "a.example 0" "a.example 2P" "10.0.0.1 1G" "a.example -1"; do
+  printf 'ok.example 1G\n%s\n' "$bad" > "$SANDBOX/limits.txt"
+  assert_contains "refused with its line: $bad" "line 2: want a hostname or default" "$(eg "egress_read_upload_limits '$SANDBOX/limits.txt'" 2>&1 || true)"
+done
+assert_eq "a missing file has none" "" "$(eg "egress_read_upload_limits '$SANDBOX/nothing.txt'")"
+printf 'default 1G\napi.anthropic.com 3G\n' > "$BOXEN_CONFIG_DIR/egress-upload-limits.txt"
+incus config set box "user.boxen.egress.upload-limits=api.anthropic.com 4G,docs.rs off"
+limits="$(eg 'egress_upload_limits box')"
+assert_contains "the user's default wins over the shipped one" "default	1073741824	your file" "$limits"
+assert_contains "the container's own wins over both" "api.anthropic.com	4294967296	box" "$limits"
+assert_contains "the container's own can turn one off" "docs.rs	off	box" "$limits"
+assert_contains "the rest are shipped" "github.com	2147483648	shipped" "$limits"
+spec="$(eg 'egress_upload_spec box')"
+assert_eq "the spec starts with the cap, off by default" "upload-cap off" "$(head -1 <<< "$spec")"
+assert_contains "then each limit" "upload-limit api.anthropic.com 4294967296" "$spec"
+incus config set box user.boxen.egress.upload-cap=on
+assert_eq "the cap can be on" "upload-cap on" "$(eg 'egress_upload_spec box' | head -1)"
+incus config set box user.boxen.egress.upload-cap=
+assert_eq "an egress container from before the watch gets the hosts alone" "$(eg 'egress_hosts box')" "$(eg 'egress_spec box old-egress')"
+incus config set old-egress user.boxen.egress.upload-watch=1
+assert_contains "one whose ctl reads limits gets them too" "upload-limit default 1073741824" "$(eg 'egress_spec box old-egress')"
+incus config set box user.boxen.egress.upload-limits=
+rm "$BOXEN_CONFIG_DIR/egress-upload-limits.txt"
+
 echo "the proxy version"
 v="$(eg 'egress_proxy_version')"
 assert_eq "it's 16 hex digits" "yes" "$([[ "$v" =~ ^[0-9a-f]{16}$ ]] && echo yes || echo no)"
-for f in build-smokescreen.sh boxen-smokescreen/main.go boxen-proxy-run boxen-egress-ctl; do
+for f in build-smokescreen.sh boxen-smokescreen/main.go boxen-smokescreen/uploads.go boxen-proxy-run boxen-egress-ctl; do
   rm -rf "$SANDBOX/repo2"; mkdir -p "$SANDBOX/repo2"; cp -R "$REPO_ROOT/egress" "$SANDBOX/repo2/egress"
   echo "# changed" >> "$SANDBOX/repo2/egress/$f"
   [[ "$v" != "$(eg "SCRIPT_DIR='$SANDBOX/repo2'; egress_proxy_version")" ]] && { PASS=$((PASS+1)); echo "  ok  a change to $f changes it"; } ||
@@ -135,6 +175,7 @@ for f in build-smokescreen.sh boxen-smokescreen/main.go boxen-proxy-run boxen-eg
 done
 rm -rf "$SANDBOX/repo2"; mkdir -p "$SANDBOX/repo2"; cp -R "$REPO_ROOT/egress" "$SANDBOX/repo2/egress"
 echo "// test" >> "$SANDBOX/repo2/egress/boxen-smokescreen/main_test.go"
+echo "// test" >> "$SANDBOX/repo2/egress/boxen-smokescreen/uploads_test.go"
 assert_eq "the Go tests aren't part of it" "$v" "$(eg "SCRIPT_DIR='$SANDBOX/repo2'; egress_proxy_version")"
 
 echo "the egress container"
@@ -153,8 +194,10 @@ assert_eq "before the agents" "100" "$(cfg $e boot.autostart.priority)"
 assert_eq "it's set up" "1" "$(cfg $e user.boxen.egress.ready)"
 assert_contains "the ctl is set up with one resolver and the deny ranges" "setup 1.1.1.1 0.0.0.0/8,10.0.0.0/8," "$(ctl_calls $e)"
 stage=/root/boxen-egress-payload
-assert_contains "smokescreen is built in it, from bxn's main.go" "sh $stage/build-smokescreen.sh $stage/main.go" "$(cat "$FAKE_INCUS_STATE/exec.log")"
+assert_contains "smokescreen is built in it, from bxn's Go files" "sh $stage/build-smokescreen.sh $stage/main.go $stage/uploads.go" "$(cat "$FAKE_INCUS_STATE/exec.log")"
 assert_eq "bxn's main.go went in" "yes" "$(cmp -s "$REPO_ROOT/egress/boxen-smokescreen/main.go" "$FAKE_INCUS_STATE/instances/$e/root$stage/main.go" && echo yes || echo no)"
+assert_eq "and uploads.go" "yes" "$(cmp -s "$REPO_ROOT/egress/boxen-smokescreen/uploads.go" "$FAKE_INCUS_STATE/instances/$e/root$stage/uploads.go" && echo yes || echo no)"
+assert_eq "it records that its ctl reads upload limits" "1" "$(cfg $e user.boxen.egress.upload-watch)"
 assert_contains "the scripts go in place after the build" "sh -c set -e; install -d -m 755" "$(grep -A1 "build-smokescreen.sh" "$FAKE_INCUS_STATE/exec.log" | tail -1)"
 assert_eq "it records the proxy version" "$(eg 'egress_proxy_version')" "$(cfg $e user.boxen.egress.version)"
 acl="$(cat "$FAKE_INCUS_STATE/acls/$e")"
@@ -215,6 +258,17 @@ assert_eq "and leaves the active state as it was" "$active" "$(cfg box user.boxe
 incus config set box user.boxen.egress=bogus
 assert_contains "an unknown mode is refused" "unknown egress mode" "$(eg 'egress_apply box' 2>&1 || true)"
 incus config set box user.boxen.egress=enforce
+
+apply >/dev/null
+assert_contains "a policy carries the upload limits" "upload-limit default 262144000" "$(cat "$FAKE_INCUS_STATE/ctl/$e/box/gens/$(cat "$FAKE_INCUS_STATE/ctl/$e/box/current")/upload")"
+incus config set box "user.boxen.egress.upload-limits=default 1M"
+assert_eq "a lower limit widens: limits only warn while the cap is off" "widened" "$(apply)"
+incus config set box user.boxen.egress.upload-cap=on
+assert_eq "turning the cap on widens too: open connections keep the old settings" "widened" "$(apply)"
+assert_contains "the new generation has the cap" "upload-cap on" "$(cat "$FAKE_INCUS_STATE/ctl/$e/box/gens/$(cat "$FAKE_INCUS_STATE/ctl/$e/box/current")/upload")"
+assert_eq "and then nothing changes" "unchanged" "$(apply)"
+incus config set box user.boxen.egress.upload-cap= "user.boxen.egress.upload-limits="
+apply >/dev/null
 
 echo "updating the proxy"
 assert_eq "a current egress container isn't out of date" "no" "$(eg 'egress_outdated boxen-egress && echo yes || echo no')"

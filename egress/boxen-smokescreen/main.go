@@ -13,6 +13,9 @@
 // BOXEN_TLS_NAME_CHECK, set by boxen-proxy-run, chooses what happens:
 // enforce (the default) closes such a tunnel, report logs it and lets it
 // through, off skips the check.
+//
+// The same hook counts what each tunnel sends, for the upload watch in
+// uploads.go, in every mode.
 package main
 
 import (
@@ -61,6 +64,10 @@ func main() {
 	if mode != "enforce" && mode != "report" && mode != "off" {
 		logrus.Fatalf("BOXEN_TLS_NAME_CHECK must be enforce, report or off, not %q", mode)
 	}
+	watch, err := uploadWatchFromEnv(mode == "enforce")
+	if err != nil {
+		logrus.Fatalf("Could not read the upload limits: %v", err)
+	}
 	conf, err := cmd.NewConfiguration(nil, nil)
 	if err != nil {
 		logrus.Fatalf("Could not create configuration: %v", err)
@@ -72,16 +79,18 @@ func main() {
 	conf.Log.Formatter = &logrus.JSONFormatter{}
 	log.SetOutput(&smokescreen.Log2LogrusWriter{Entry: conf.Log.WithField("stdlog", "1")})
 	log.SetFlags(0)
-	if mode != "off" {
-		conf.ProxyDialTimeout = nameCheckDialer(mode == "enforce", conf.Log)
+	if watch != nil {
+		watch.log = conf.Log
 	}
+	conf.ProxyDialTimeout = tunnelDialer(mode, watch, conf.Log)
 	smokescreen.StartWithConfig(conf, nil)
 }
 
-// nameCheckDialer dials as smokescreen does without the hook, and wraps the
-// connection of each CONNECT tunnel in a checkedConn. Plain HTTP requests go
+// tunnelDialer dials as smokescreen does without the hook, and wraps the
+// connection of each CONNECT tunnel: in a countedConn when there is an upload
+// watch, then in a checkedConn unless the mode is off. Plain HTTP requests go
 // through smokescreen whole, so it already sees their host; they're untouched.
-func nameCheckDialer(enforce bool, logger *logrus.Logger) func(context.Context, string, string, time.Duration) (net.Conn, error) {
+func tunnelDialer(mode string, watch *uploadWatch, logger *logrus.Logger) func(context.Context, string, string, time.Duration) (net.Conn, error) {
 	return func(ctx context.Context, network, address string, timeout time.Duration) (net.Conn, error) {
 		pctx, _ := ctx.Value(goproxy.ProxyContextKey).(*goproxy.ProxyCtx)
 		conn, err := net.DialTimeout(network, address, timeout)
@@ -94,7 +103,14 @@ func nameCheckDialer(enforce bool, logger *logrus.Logger) func(context.Context, 
 			conn.Close()
 			return nil, err
 		}
-		return &checkedConn{Conn: conn, host: dest.Host, port: dest.Port, enforce: enforce, log: logger}, nil
+		if watch != nil {
+			host := strings.ToLower(strings.TrimSuffix(dest.Host, "."))
+			conn = &countedConn{Conn: conn, host: host, port: dest.Port, watch: watch}
+		}
+		if mode == "off" {
+			return conn, nil
+		}
+		return &checkedConn{Conn: conn, host: dest.Host, port: dest.Port, enforce: mode == "enforce", log: logger}, nil
 	}
 }
 

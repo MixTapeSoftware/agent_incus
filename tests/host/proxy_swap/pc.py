@@ -89,6 +89,24 @@ def stream(host, secs, status):
         time.sleep(0.2)
     open(status, "w").write(f"done {n}\n")
 
+def upload(host, n):
+    """Sends n bytes through a tunnel for host, in 64K pieces the echo server
+    sends back: ok when all of them come back, closed when the proxy ends it."""
+    try:
+        s, code = tunnel(host)
+        if code != 200:
+            s.close(); return f"denied{code}"
+        while n > 0:
+            piece = b"u" * min(n, 65536)
+            s.sendall(piece)
+            if not echoed(s, piece):
+                s.close(); return "closed"
+            n -= len(piece)
+        s.close()
+        return "ok"
+    except OSError:
+        return "closed"
+
 def hammer(host, secs):
     counts, worst, end = {}, 0.0, time.time() + secs
     while time.time() < end:
@@ -104,3 +122,4 @@ if __name__ == "__main__":
     elif cmd == "stream": stream(sys.argv[2], float(sys.argv[3]), sys.argv[4])
     elif cmd == "hammer": hammer(sys.argv[2], float(sys.argv[3]))
     elif cmd == "first": print(first(sys.argv[2], sys.argv[3]))
+    elif cmd == "upload": print(upload(sys.argv[2], int(sys.argv[3])))

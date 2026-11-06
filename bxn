@@ -672,7 +672,8 @@ status_frame_panels() {
 # private address stays blocked whatever is listed. A leading "*." matches
 # subdomains only, as in the proxy. A connection the TLS name check caught
 # (name-mismatch: used for another name than the allowed host it asked for)
-# comes before everything else.
+# and a host sent more than its upload limit in an hour (large-upload, or
+# upload-cut when the cap cut it) come before everything else.
 # Usage: status_tab_rows <name> network|rules [<mode>]
 status_tab_rows() {
   if [[ "$2" == network ]]; then
@@ -690,7 +691,7 @@ status_tab_rows() {
                              if ((d == "blocked" || d == "would-block") && !(k in other) && covered(f[1])) d = "allowed now"
                              else if (d == "allowed" && !covered(f[1])) d = (mode == "report") ? "unlisted now" : "blocked now"
                            }
-                           r = (d == "name-mismatch") ? 0 : (d ~ /^blocked/) ? 1 : (d ~ /^(would-block|unlisted)/) ? 2 : 3
+                           r = (d == "name-mismatch" || d == "large-upload" || d == "upload-cut") ? 0 : (d ~ /^blocked/) ? 1 : (d ~ /^(would-block|unlisted)/) ? 2 : 3
                            h = f[1]; if (length(h) > 60) h = substr(h, 1, 57) "..."
                            # The same columns as "%-12s %5d", with room for name-mismatch.
                            c = (length(d) < 13) ? d " " : d

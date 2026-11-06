@@ -7,7 +7,7 @@
 # State under <dir> (fake_incus passes $FAKE_INCUS_STATE/ctl/<container>):
 #   calls.log               one line per call
 #   <agent>/port            from add
-#   <agent>/gens/<n>/{mode,policy,hosts}
+#   <agent>/gens/<n>/{mode,policy,hosts,upload}   upload: gen's upload-* lines
 #   <agent>/current         generation number, or none
 # Knob: FAKE_EGRESS_CTL_FAIL, a regex; a call whose arguments match exits 1.
 set -uo pipefail
@@ -24,8 +24,14 @@ case "$1" in
   gen)
     n=$(( $(ls "$d/$2/gens" | sort -n | tail -1 || echo 0) + 1 ))
     mkdir -p "$d/$2/gens/$n"
-    echo "$3" > "$d/$2/gens/$n/mode"; echo "$4" > "$d/$2/gens/$n/policy"; cat > "$d/$2/gens/$n/hosts"
-    # As the real one: every line must be a hostname.
+    echo "$3" > "$d/$2/gens/$n/mode"; echo "$4" > "$d/$2/gens/$n/policy"; cat > "$d/$2/gens/$n/in"
+    grep -E '^upload-(cap|limit) ' "$d/$2/gens/$n/in" > "$d/$2/gens/$n/upload" || true
+    grep -vE '^upload-(cap|limit) ' "$d/$2/gens/$n/in" > "$d/$2/gens/$n/hosts" || true
+    # As the real one: upload lines in their form, every other a hostname.
+    while IFS= read -r u; do
+      [[ "$u" =~ ^upload-cap\ (on|off)$ || "$u" =~ ^upload-limit\ (default|[^\ ]+)\ (off|[1-9][0-9]*)$ ]] ||
+        { echo "boxen-egress-ctl: bad upload line: $u" >&2; rm -rf "${d:?}/$2/gens/$n"; exit 1; }
+    done < "$d/$2/gens/$n/upload"
     while IFS= read -r h; do
       [[ -z "$h" || ( ${#h} -le 253 && "$h" =~ ^(\*\.)?([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]([a-z0-9-]{0,61}[a-z0-9])?$ ) ]] ||
         { echo "boxen-egress-ctl: bad hostname: $h" >&2; rm -rf "${d:?}/$2/gens/$n"; exit 1; }
@@ -49,5 +55,7 @@ case "$1" in
   hosts) c="$(cur "$2")"; [[ "$c" == none ]] || cat "$d/$2/gens/$c/hosts" ;;
   # Decision records a test wrote to <agent>/log, as the real ctl prints them.
   log) cat "$d/$2/log" 2>/dev/null || true ;;
+  # Per-host totals a test wrote to <agent>/uploads.
+  uploads) cat "$d/$2/uploads" 2>/dev/null || true ;;
   *) echo "fake_egress_ctl: unsupported: $*" >&2; exit 1 ;;
 esac

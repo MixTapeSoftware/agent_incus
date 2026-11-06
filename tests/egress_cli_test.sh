@@ -285,6 +285,89 @@ assert_contains "--raw keeps every row" "name-mismatch	TLS name was other.exampl
 run ls
 assert_contains "ls warns on box's line" "WARNING: 3 connection(s) used another name in the last hour: bxn egress log box" "$(grep '^box ' <<< "$OUT")"
 
+echo "upload limits"
+assert_contains "box's proxy gets the cap, off by default" "upload-cap off" "$(gen_file box upload)"
+assert_contains "and the shipped default, in bytes" "upload-limit default 262144000" "$(gen_file box upload)"
+assert_contains "and the shipped limit for an agent's API" "upload-limit api.anthropic.com 2147483648" "$(gen_file box upload)"
+assert_eq "which aren't hosts" "" "$(grep '^upload-' <<< "$(gen_file box hosts)" || true)"
+run upload-limit box
+assert_contains "upload-limit lists them" "default                                                250M  shipped" "$OUT"
+assert_contains "with the cap's state" "Upload cap: off. Going over a limit is logged, not cut (bxn egress upload-cap box on)." "$OUT"
+gen="$(gen_of box)"
+run upload-limit box GitHub.com. 5G
+assert_eq "a container's own limit is set" "0" "$RC"
+assert_contains "for new connections; open ones keep running" "box: applied to new connections; open ones keep the old limits until they close" "$OUT"
+assert_eq "through a new generation" "$((gen + 1))" "$(gen_of box)"
+assert_contains "which has it" "upload-limit github.com 5368709120" "$(gen_file box upload)"
+assert_eq "stored on the container" "github.com 5g" "$(cfg box user.boxen.egress.upload-limits)"
+printf '# mine\ngithub.com 3G\ndefault 1G\n*.example.com off\n' > "$BOXEN_CONFIG_DIR/egress-upload-limits.txt"
+run upload-limit box
+assert_contains "the container's own wins over yours" "github.com                                               5G  box" "$OUT"
+assert_contains "yours wins over the shipped file" "default                                                  1G  your file" "$OUT"
+assert_contains "off is listed as off" "*.example.com                                           off  your file" "$OUT"
+run ls
+assert_contains "ls notes limits that changed since applied" "hosts, limits or proxy changed since applied: bxn egress refresh box" "$(grep '^box ' <<< "$OUT")"
+run refresh box
+assert_contains "refresh applies them" "upload-limit default 1073741824" "$(gen_file box upload)"
+assert_contains "off goes through as off" "upload-limit *.example.com off" "$(gen_file box upload)"
+run upload-limit box github.com clear
+assert_eq "clear removes the container's own" "" "$(cfg box user.boxen.egress.upload-limits)"
+assert_contains "so yours applies again" "upload-limit github.com 3221225472" "$(gen_file box upload)"
+gen="$(gen_of box)"
+run upload-limit box github.com lots
+assert_eq "a size bxn doesn't take is refused" "1" "$RC"
+assert_contains "saying what it takes" "Not a size: lots (such as 500M or 5G, or off, or clear)" "$OUT"
+run upload-limit box 10.0.0.1 5G
+assert_contains "and so is an address" "Not a hostname bxn accepts: 10.0.0.1" "$OUT"
+run upload-limit box github.com 0
+assert_eq "and a zero limit" "1" "$RC"
+assert_eq "none of them changed the proxy" "$gen" "$(gen_of box)"
+printf 'github.com 3 G\n' > "$BOXEN_CONFIG_DIR/egress-upload-limits.txt"
+run upload-limit box
+assert_contains "a bad line in your file is named" "egress-upload-limits.txt line 1: want a hostname or default, then a size" "$OUT"
+run refresh box
+assert_eq "and stops the change" "1" "$RC"
+assert_eq "leaving the proxy as it was" "$gen" "$(gen_of box)"
+rm "$BOXEN_CONFIG_DIR/egress-upload-limits.txt"
+run upload-cap box on
+assert_eq "the cap goes on" "0" "$RC"
+assert_contains "it says what that means" "Upload cap: on. An upload that would go over a limit is cut." "$OUT"
+assert_contains "box's proxy gets it" "upload-cap on" "$(gen_file box upload)"
+assert_eq "stored on the container" "on" "$(cfg box user.boxen.egress.upload-cap)"
+run upload-cap box maybe
+assert_eq "on or off only" "1" "$RC"
+incus launch img plainbox -p default >/dev/null
+run upload-cap plainbox on
+assert_contains "a container with no allowlist has no cap" "plainbox has no allowlist (set one with: bxn egress mode plainbox enforce)" "$OUT"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+  2026-10-30T10:09:00Z uploads.example 443 large-upload "312.4M sent in an hour; limit 250M; let through" 9 \
+  2026-10-30T10:30:00Z dump.example 443 upload-cut "249.9M sent in an hour; limit 250M; cut" 9 > "$FAKE_INCUS_STATE/ctl/$E/box/log"
+run log box
+assert_eq "a large upload puts WARNINGS at the very top" "WARNINGS" "$(head -1 <<< "$OUT")"
+assert_contains "explained for a developer" "More was sent to these hosts within an hour than their upload limit." "$OUT"
+assert_contains "with how to raise the limit" "bxn egress upload-limit box <host> <size>" "$OUT"
+assert_contains "and why a cut upload failed" "The upload cap is on, so the cut uploads failed partway" "$OUT"
+assert_contains "with how much, the limit and that it was let through" "uploads.example                               1  2026-10-30T10:09:00Z  312.4M sent in an hour; limit 250M; let through" "$OUT"
+assert_contains "or cut" "dump.example                                  1  2026-10-30T10:30:00Z  249.9M sent in an hour; limit 250M; cut" "$OUT"
+assert_not_contains "no name-mismatch text without one" "Legitimate tools don't do this" "$OUT"
+assert_not_contains "and the table doesn't repeat them" "upload" "$(sed -n '/^HOST /,$p' <<< "$OUT" | sed '$d')"
+run ls
+assert_contains "ls warns on box's line" "WARNING: large uploads to 2 host(s), 1 cut in the last hour: bxn egress log box" "$(grep '^box ' <<< "$OUT")"
+printf '%s\t%s\t%s\n' dump.example 999999999 3 api.anthropic.com 52428800 40 > "$FAKE_INCUS_STATE/ctl/$E/box/uploads"
+run log box --uploads
+assert_contains "--uploads asks the ctl for the totals" "uploads box -1h" "$(tail -1 "$FAKE_INCUS_STATE/ctl/$E/calls.log")"
+assert_contains "and shows them, with the limit each host has" "dump.example                                           953.7M        3     250M" "$OUT"
+assert_contains "a host's own limit" "api.anthropic.com                                         50M       40       2G" "$OUT"
+assert_contains "and how to change one" "Change a host's limit: bxn egress upload-limit box <host> <size>" "$OUT"
+run log box --uploads --since -1d --raw
+assert_contains "--since goes to the ctl" "uploads box -1d" "$(tail -1 "$FAKE_INCUS_STATE/ctl/$E/calls.log")"
+assert_eq "--raw is the ctl's TSV" "HOST	BYTES	TUNNELS
+dump.example	999999999	3
+api.anthropic.com	52428800	40" "$OUT"
+run upload-cap box off
+assert_contains "the cap goes off again" "upload-cap off" "$(gen_file box upload)"
+: > "$FAKE_INCUS_STATE/ctl/$E/box/log"
+
 echo "a baseline update"
 echo "new-tool.example" >> "$SANDBOX/repo/egress/baseline.txt"
 run refresh
@@ -318,7 +401,7 @@ assert_eq "through a new generation" "$((gen + 1))" "$(gen_of abox)"
 assert_contains "the new scripts go in" "# a newer build" "$(cat "$FAKE_INCUS_STATE/instances/$E/root/root/boxen-egress-payload/boxen-proxy-run" 2>/dev/null)"
 run ls
 assert_not_contains "the egress container is current" "older proxy build" "$OUT"
-assert_contains "the others wait for their refresh" "hosts or proxy changed since applied: bxn egress refresh zbox" "$(grep '^zbox ' <<< "$OUT")"
+assert_contains "the others wait for their refresh" "hosts, limits or proxy changed since applied: bxn egress refresh zbox" "$(grep '^zbox ' <<< "$OUT")"
 run refresh --all
 assert_eq "refresh --all moves the rest" "0" "$RC"
 assert_contains "widening each" "zbox: allowed; open connections keep running" "$OUT"

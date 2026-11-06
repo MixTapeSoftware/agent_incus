@@ -36,8 +36,10 @@ Usage: bxn egress <command> [args...]
 
   ls [<container>]                     Each container's mode and proxy; with a
                                        name, its hosts and where each comes from
-  log <container> [--since TIME] [--raw]
-                                       What it tried to reach (default: last hour)
+  log <container> [--since TIME] [--raw] [--uploads]
+                                       What it tried to reach (default: last
+                                       hour), large uploads first; --uploads:
+                                       bytes sent to each host instead
   allow <container> <host>...          Let it reach these hosts too
   allow --all <host>...                Add to your baseline, for every container
   rm <container> <host>...             Take hosts off its own list
@@ -49,11 +51,19 @@ Usage: bxn egress <command> [args...]
   refresh [<container>|--all]          Finish an interrupted change, apply a
                                        baseline update after you review it,
                                        move to a newer proxy build
+  upload-limit <container> [<host>|default <size>|off|clear]
+                                       How much it may send a host in an hour
+                                       before bxn warns: list the limits, or
+                                       set one for this container (500M, 5G)
+  upload-cap <container> on|off        on: under enforce, cut an upload that
+                                       goes past its limit. off (the default):
+                                       only warn
 
 Hosts are hostnames for ports 80 and 443: lowercase, punycode, a wildcard only
 as a leading "*.". Allowing a host keeps open connections; anything that
 narrows access ends the container's open connections through its proxy, and
-turning the allowlist on for an open container restarts it.
+turning the allowlist on for an open container restarts it. Upload limits
+are an alarm for bulk uploads, not a guard against leaks (NETWORKING.md).
   --yes     answer yes to --all and baseline prompts
   --force   allow even when six older proxies are still draining (ends the
             oldest one's connections)
@@ -133,6 +143,17 @@ converge_one() {
   local c="$1" r
   r="$(egress_converge "$c" "$FORCE")" || { warn "$c: the change didn't go through"; return 1; }
   say_result "$c" "$r"
+}
+
+# For an upload limit or the cap, which only new connections get.
+converge_uploads() {
+  local c="$1" r
+  r="$(egress_converge "$c" "$FORCE")" || { warn "$c: the change didn't go through"; return 1; }
+  if [[ "$r" == widened ]]; then
+    log "$c: applied to new connections; open ones keep the old limits until they close"
+  else
+    say_result "$c" "$r"
+  fi
 }
 
 cmd_mode() {
@@ -294,15 +315,21 @@ status_line() {
   egress_outdated "$egress" && notes+="$egress runs an older proxy build: bxn egress refresh --all; "
   if [[ "${active%%:*}" != "$mode" ]]; then
     notes+="wants $mode: bxn egress refresh $c; "
-  elif [[ "${active#*:}" != "$(egress_hosts "$c" | egress_policy_id "$mode" "$egress")" ]]; then
-    notes+="hosts or proxy changed since applied: bxn egress refresh $c; "
+  elif [[ "${active#*:}" != "$(egress_spec "$c" "$egress" | egress_policy_id "$mode" "$egress")" ]]; then
+    notes+="hosts, limits or proxy changed since applied: bxn egress refresh $c; "
   fi
   if [[ "$mode" != off ]] && ! egress_nic_is_restricted "$c"; then notes+="card not locked; "; fi
   if egress_running "$egress"; then
-    # First, since it's the one to look into.
-    n="$(egress_ctl "$egress" log "$c" -1h </dev/null 2>/dev/null | awk -F'\t' '$4 == "name-mismatch"' | wc -l | tr -d ' ')"
+    # First, since they're the ones to look into.
+    local rows w=""
+    rows="$(egress_ctl "$egress" log "$c" -1h </dev/null 2>/dev/null)" || rows=""
+    n="$(awk -F'\t' '$4 == "name-mismatch"' <<< "$rows" | wc -l | tr -d ' ')"
     [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) &&
-      notes="WARNING: $n connection(s) used another name in the last hour: bxn egress log $c; $notes"
+      w+="WARNING: $n connection(s) used another name in the last hour: bxn egress log $c; "
+    n="$(awk -F'\t' '$4 == "large-upload" || $4 == "upload-cut" { h[$2] = 1; if ($4 == "upload-cut") k[$2] = 1 }
+                    END { for (x in h) n++; for (x in k) m++; if (n) print n " host(s)" (m ? ", " m " cut" : "") }' <<< "$rows")"
+    [[ -z "$n" ]] || w+="WARNING: large uploads to $n in the last hour: bxn egress log $c; "
+    notes="$w$notes"
     st="$(egress_ctl "$egress" status "$c" </dev/null 2>/dev/null)" || st=""
     [[ "$(cut -f6 <<< "$st")" == "yes" ]] || notes+="no proxy listening; "
     local draining
@@ -328,12 +355,13 @@ ufw_note() {
 }
 
 cmd_log() {
-  local c="${1:-}" since="-1h" raw=0 egress
+  local c="${1:-}" since="-1h" raw=0 uploads=0 egress
   shift || true
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --since) [[ $# -ge 2 ]] || usage 1; since="$2"; shift 2 ;;
       --raw) raw=1; shift ;;
+      --uploads) uploads=1; shift ;;
       *) usage 1 ;;
     esac
   done
@@ -341,6 +369,10 @@ cmd_log() {
   egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
   [[ -n "$egress" ]] || error "$c has no allowlist"
   egress_running "$egress" || error "$egress is stopped"
+  if [[ "$uploads" == 1 ]]; then
+    log_uploads "$c" "$egress" "$since" "$raw"
+    return
+  fi
   if [[ "$raw" == 1 ]]; then
     printf 'TIME\tHOST\tPORT\tDECISION\tREASON\tGEN\n'
     egress_ctl "$egress" log "$c" "$since" </dev/null
@@ -349,10 +381,12 @@ cmd_log() {
   local rows
   rows="$(egress_ctl "$egress" log "$c" "$since" </dev/null)" || error "Could not read $c's log in $egress"
   # Connections used for a different name than the one they were allowed
-  # for come first, above everything else.
-  if awk -F'\t' '$4 == "name-mismatch" { found = 1 } END { exit !found }' <<< "$rows"; then
+  # for, and large uploads, come first, above everything else.
+  if awk -F'\t' '$4 == "name-mismatch" || $4 == "large-upload" || $4 == "upload-cut" { found = 1 } END { exit !found }' <<< "$rows"; then
     echo "WARNINGS"
     echo ""
+  fi
+  if awk -F'\t' '$4 == "name-mismatch" { found = 1 } END { exit !found }' <<< "$rows"; then
     echo "  A connection opened for an allowed host was then used for a different"
     echo "  name. Legitimate tools don't do this: something in $c may be using an"
     echo "  allowed host to reach one that isn't allowed. Look into what runs there."
@@ -364,9 +398,29 @@ cmd_log() {
         { printf "  %-40s %-6s %6s  %-20s  %s\n", $2, $3, $1, $5, $4 }'
     echo ""
   fi
+  if awk -F'\t' '$4 == "large-upload" || $4 == "upload-cut" { found = 1 } END { exit !found }' <<< "$rows"; then
+    echo "  More was sent to these hosts within an hour than their upload limit."
+    echo "  A push, an image or a model upload can do that; so can copying a whole"
+    echo "  repository or database out of $c. If you know what it was and it was"
+    echo "  legitimate, raise that host's limit for $c:"
+    echo "      bxn egress upload-limit $c <host> <size>     (such as 5G)"
+    if awk -F'\t' '$4 == "upload-cut" { found = 1 } END { exit !found }' <<< "$rows"; then
+      echo "  The upload cap is on, so the cut uploads failed partway; the tool that"
+      echo "  sent them may only have said the connection closed."
+    fi
+    echo "  Totals per host: bxn egress log $c --uploads"
+    echo ""
+    # One row per host and outcome: how often, the last time, and what it was.
+    awk -F'\t' '$4 == "large-upload" || $4 == "upload-cut" { k = $2 "\t" $4; n[k]++; last[k] = $1; what[k] = $5 }
+      END { for (k in n) { split(k, f, "\t"); print n[k] "\t" f[1] "\t" last[k] "\t" what[k] } }' <<< "$rows" |
+      sort -t$'\t' -k1,1nr |
+      awk -F'\t' 'BEGIN { printf "  %-40s %6s  %-20s  %s\n", "HOST", "TIMES", "LAST", "WHAT HAPPENED" }
+        { printf "  %-40s %6s  %-20s  %s\n", $2, $1, $3, $4 }'
+    echo ""
+  fi
   # One row per host, port and decision: hits and the last attempt. Blocked
   # first, so what to allow is at the top.
-  awk -F'\t' '$4 != "name-mismatch" && NF { k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = $1 }
+  awk -F'\t' '$4 != "name-mismatch" && $4 != "large-upload" && $4 != "upload-cut" && NF { k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = $1 }
     END { for (k in n) { split(k, f, "\t"); r = (f[3] == "blocked") ? 0 : (f[3] == "would-block") ? 1 : 2
                          print r "\t" k "\t" n[k] "\t" last[k] } }' <<< "$rows" |
     sort -t$'\t' -k1,1n -k5,5nr |
@@ -374,6 +428,102 @@ cmd_log() {
       { printf "%-50s %-6s %-12s %6s  %s\n", $2, $3, $4, $5, $6 }'
   echo ""
   echo "Allow a host: bxn egress allow $c <host>"
+}
+
+# Bytes sent to each host, largest first, from the proxy's record of each
+# tunnel that closed (one still open isn't counted yet), with the limit that
+# applies to the host now.
+log_uploads() {
+  local c="$1" egress="$2" since="$3" raw="$4" rows limits
+  rows="$(egress_ctl "$egress" uploads "$c" "$since" </dev/null)" || error "Could not read $c's uploads in $egress"
+  if [[ "$raw" == 1 ]]; then
+    printf 'HOST\tBYTES\tTUNNELS\n'
+    printf '%s\n' "$rows" | sed '/^$/d'
+    return
+  fi
+  limits="$(egress_upload_limits "$c")" || exit 1
+  echo "Sent to each host through $c's proxy since $since, from connections that"
+  echo "have closed. A limit applies to any hour; these totals cover the whole time."
+  echo ""
+  printf '%s\n' "$rows" | awk -F'\t' "$EGRESS_AWK_SIZE"'
+    FILENAME == ARGV[1] { if ($1 != "") lim[$1] = $2; next }
+    function limit(h,   d) {
+      if (h in lim) return lim[h]
+      for (d = h; index(d, ".") > 0; ) { d = substr(d, index(d, ".") + 1); if (("*." d) in lim) return lim["*." d] }
+      return ("default" in lim) ? lim["default"] : "off"
+    }
+    BEGIN { printf "%-50s %10s %8s %8s\n", "HOST", "SENT", "TUNNELS", "LIMIT" }
+    NF { gsub(/[[:cntrl:]]/, "?", $1); printf "%-50s %10s %8s %8s\n", $1, size($2), $3, size(limit($1)) }' \
+    <(printf '%s\n' "$limits") -
+  echo ""
+  echo "Change a host's limit: bxn egress upload-limit $c <host> <size>"
+}
+
+# Usage: need_allowlist <container>
+need_allowlist() {
+  need_container "$1"
+  [[ -n "$(incus config get "$1" user.boxen.egress.container 2>/dev/null)" ]] ||
+    error "$1 has no allowlist (set one with: bxn egress mode $1 enforce)"
+}
+
+cap_line() {
+  local c="$1" mode
+  mode="$(incus config get "$c" user.boxen.egress 2>/dev/null)"; mode="${mode:-enforce}"
+  if [[ "$(incus config get "$c" user.boxen.egress.upload-cap 2>/dev/null)" != on ]]; then
+    echo "Upload cap: off. Going over a limit is logged, not cut (bxn egress upload-cap $c on)."
+  elif [[ "$mode" == enforce ]]; then
+    echo "Upload cap: on. An upload that would go over a limit is cut."
+  else
+    echo "Upload cap: on, but $c is in $mode mode, so going over a limit is only logged."
+  fi
+}
+
+# With only a container, its limits and where each comes from. With a host
+# (or default) and a size, off or clear, sets or clears the container's own.
+cmd_upload_limit() {
+  local c="${1:-}" key="${2:-}" val="${3:-}" list keep limits
+  need_allowlist "$c"
+  if [[ $# -eq 1 ]]; then
+    limits="$(egress_upload_limits "$c")" || exit 1
+    echo "How much $c may send one host in an hour before bxn warns."
+    cap_line "$c"
+    echo ""
+    # The default first, then the hosts.
+    printf '%s\n' "$limits" | awk -F'\t' 'NF { print ($1 == "default" ? 0 : 1) "\t" $0 }' | sort -s -t$'\t' -k1,1n | cut -f2- |
+      awk -F'\t' "$EGRESS_AWK_SIZE"'
+      BEGIN { printf "%-50s %8s  %s\n", "HOST", "LIMIT", "FROM" }
+      NF { printf "%-50s %8s  %s\n", $1, size($2), $3 }'
+    echo ""
+    echo "Set one for $c: bxn egress upload-limit $c <host>|default <size>|off|clear"
+    echo "For every container: $EGRESS_UPLOAD_USER (same format as $EGRESS_UPLOAD_SHIPPED)"
+    return 0
+  fi
+  [[ $# -eq 3 ]] || usage 1
+  if [[ "$key" != default ]]; then
+    key="$(egress_host "$key")" || error "Not a hostname bxn accepts: $2"
+  fi
+  val="$(printf '%s' "$val" | tr 'A-Z' 'a-z')"
+  [[ "$val" == clear || "$val" == off || ( "$val" =~ ^[0-9]+[kmgt]?$ && ! "$val" =~ ^0+[kmgt]?$ ) ]] ||
+    error "Not a size: $3 (such as 500M or 5G, or off, or clear)"
+  list="$(egress_own_upload_limits "$c" | awk -v k="$key" '$1 != k')"
+  [[ "$val" == clear ]] || list="$(printf '%s\n' "$list" "$key $val")"
+  keep="$(printf '%s\n' "$list" | sed '/^$/d' | LC_ALL=C sort | tr '\n' ',' | sed 's/,$//')"
+  boxen_lock
+  incus config set "$c" "user.boxen.egress.upload-limits=$keep" >/dev/null || { boxen_unlock; error "Could not save $c's upload limits"; }
+  converge_uploads "$c" || { boxen_unlock; return 1; }
+  boxen_unlock
+}
+
+cmd_upload_cap() {
+  local c="${1:-}" v="${2:-}"
+  [[ $# -eq 2 ]] || usage 1
+  case "$v" in on | off) ;; *) usage 1 ;; esac
+  need_allowlist "$c"
+  boxen_lock
+  incus config set "$c" "user.boxen.egress.upload-cap=$v" >/dev/null || { boxen_unlock; error "Could not save $c's upload cap"; }
+  converge_uploads "$c" || { boxen_unlock; return 1; }
+  boxen_unlock
+  cap_line "$c"
 }
 
 cmd_refresh() {
@@ -440,5 +590,7 @@ case "$cmd" in
   rm) cmd_allow_rm rm "$@" ;;
   mode) cmd_mode "$@" ;;
   refresh) cmd_refresh "$@" ;;
+  upload-limit) cmd_upload_limit "$@" ;;
+  upload-cap) cmd_upload_cap "$@" ;;
   *) usage 1 ;;
 esac

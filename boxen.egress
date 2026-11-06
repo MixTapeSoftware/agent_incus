@@ -17,6 +17,8 @@ BOXEN_CONFIG_DIR="${BOXEN_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/boxen}"
 EGRESS_APPROVED="$BOXEN_CONFIG_DIR/egress-approved-baseline.txt"
 EGRESS_USER_HOSTS="$BOXEN_CONFIG_DIR/egress-baseline.txt"
 EGRESS_SHIPPED="$SCRIPT_DIR/egress/baseline.txt"
+EGRESS_UPLOAD_SHIPPED="$SCRIPT_DIR/egress/upload-limits.txt"
+EGRESS_UPLOAD_USER="$BOXEN_CONFIG_DIR/egress-upload-limits.txt"
 
 # The egress container for a group: the default one, or boxen-egress-<group>.
 # Usage: egress_name [<group>]
@@ -94,9 +96,10 @@ egress_sha256() {
 # The policy identity: a hash of every input that shapes the proxy,
 # including the proxy build installed in the agent's egress container, so a
 # new build makes a new generation.
-# Usage: egress_policy_id <mode> <egress> < hosts
+# Usage: egress_policy_id <mode> <egress> < spec   (egress_spec's lines)
 # Off allows every public host, so its hosts aren't part of it: changing the
-# list while off makes no new generation.
+# list while off makes no new generation. The upload watch runs in every
+# mode, so its lines always are.
 egress_policy_id() {
   local v=""
   [[ -z "${2:-}" ]] || v="$(egress_installed_version "$2")"
@@ -104,13 +107,95 @@ egress_policy_id() {
     echo "deny $(egress_deny_ranges)"
     # An egress container set up before builds had versions keeps its ids.
     [[ -z "$v" ]] || echo "proxy $v"
-    if [[ "$1" == off ]]; then cat >/dev/null; else cat; fi; } | egress_sha256 | cut -c1-16
+    if [[ "$1" == off ]]; then grep '^upload-' || true; else cat; fi; } | egress_sha256 | cut -c1-16
+}
+
+# What an agent's proxy generation is built from, as egress/boxen-egress-ctl
+# gen reads it: its hosts, then the upload watch's lines. An egress container
+# set up before the watch existed, and not updated since, runs a ctl that
+# doesn't know those lines, so it gets the hosts alone, and its ids stay the
+# same.
+# Usage: egress_spec <agent> <egress>
+egress_spec() {
+  egress_hosts "$1"
+  ! egress_watches_uploads "$2" || egress_upload_spec "$1"
+}
+egress_watches_uploads() { [[ "$(incus config get "$1" user.boxen.egress.upload-watch 2>/dev/null)" == 1 ]]; }
+
+# --- Upload limits -------------------------------------------------------------
+# The proxy counts the bytes a container sends each host over the trailing
+# hour, and logs a host that goes over its limit; with the upload cap on and
+# the mode enforce, it cuts it (egress/boxen-smokescreen/uploads.go). Limits
+# come from the shipped file, then the user's, then the container's own
+# setting; for each host, default or wildcard, the most specific source wins.
+
+# Sizes are a whole number of bytes, or one with K, M, G or T (powers of
+# 1024), or off. "#" starts a comment.
+# An awk function that prints bytes as a size, for awk programs to include.
+EGRESS_AWK_SIZE='function size(b,   n, u) {
+  if (b == "off") return "off"
+  b = b + 0
+  if (b >= 1073741824) { n = b / 1073741824; u = "G" }
+  else if (b >= 1048576) { n = b / 1048576; u = "M" }
+  else if (b >= 1024) { n = b / 1024; u = "K" }
+  else return b "B"
+  return ((n == int(n)) ? sprintf("%d", n) : sprintf("%.1f", n)) u
+}'
+
+# The entries in an upload limits file, as "<host>|default<TAB><bytes>|off",
+# checked. "-" reads stdin; <name> is what an error calls it.
+# Usage: egress_read_upload_limits <file> [<name>]
+egress_read_upload_limits() {
+  local file="$1" name="${2:-$1}" norm bad
+  [[ "$file" == - || -f "$file" ]] || return 0
+  norm="$(awk '{ sub(/#.*/, ""); gsub(/\r/, ""); $0 = tolower($0); if (NF == 0) next
+                 k = $1; sub(/\.$/, "", k); v = $2; m = 1
+                 if (v ~ /[kmgt]$/) { m = 1024 ^ index("kmgt", substr(v, length(v))); v = substr(v, 1, length(v) - 1) }
+                 if (NF != 2 || length(k) > 253) k = "!"
+                 if ($2 == "off") v = "off"
+                 else if (v !~ /^[0-9]+$/ || v * m < 1 || v * m >= 1e18) v = "!"
+                 else v = sprintf("%.0f", v * m)
+                 print NR "\t" k "\t" v }' "$file")"
+  [[ -n "$norm" ]] || return 0
+  bad="$(grep -vE "^[0-9]+	(default|$EGRESS_HOST_RE)	(off|[0-9]+)\$" <<< "$norm" | head -1 || true)"
+  [[ -z "$bad" ]] ||
+    error "$name line ${bad%%	*}: want a hostname or default, then a size such as 500M or 2G, or off"
+  cut -f2,3 <<< "$norm"
+}
+
+# A container's own limits, as "<host> <size>" entries with commas between.
+egress_own_upload_limits() { egress_split "$(incus config get "$1" user.boxen.egress.upload-limits 2>/dev/null)"; }
+
+# Every upload limit for an agent, sorted: host or default, bytes or off, and
+# the source it comes from.
+# Usage: egress_upload_limits <agent>
+egress_upload_limits() {
+  local agent="$1" shipped mine own
+  # Read one at a time, so a bad line anywhere fails the whole list.
+  shipped="$(egress_read_upload_limits "$EGRESS_UPLOAD_SHIPPED")" || return 1
+  mine="$(egress_read_upload_limits "$EGRESS_UPLOAD_USER")" || return 1
+  own="$(egress_own_upload_limits "$agent" | egress_read_upload_limits - "$agent's upload limits")" || return 1
+  {
+    printf '%s\n' "$shipped" | sed '/^$/d; s/$/	shipped/'
+    printf '%s\n' "$mine" | sed '/^$/d; s/$/	your file/'
+    printf '%s\n' "$own" | sed "/^\$/d; s/\$/	$agent/"
+  } | awk -F'\t' '{ v[$1] = $2 "\t" $3 } END { for (k in v) print k "\t" v[k] }' | LC_ALL=C sort
+}
+
+# The upload watch's lines for an agent's proxy, as the ctl's gen reads them.
+egress_upload_spec() {
+  local cap limits
+  cap="$(incus config get "$1" user.boxen.egress.upload-cap 2>/dev/null)"
+  [[ "$cap" == on ]] || cap=off
+  limits="$(egress_upload_limits "$1")" || return 1
+  echo "upload-cap $cap"
+  awk -F'\t' 'NF { print "upload-limit " $1 " " $2 }' <<< "$limits"
 }
 
 # The proxy payload egress_ensure installs in an egress container. Its
 # version is a hash of these files, so an update to bxn that changes any of
 # them is noticed: egress_update rebuilds and records it on the container.
-EGRESS_PAYLOAD="build-smokescreen.sh boxen-smokescreen/main.go boxen-proxy-run boxen-egress-ctl"
+EGRESS_PAYLOAD="build-smokescreen.sh boxen-smokescreen/main.go boxen-smokescreen/uploads.go boxen-proxy-run boxen-egress-ctl"
 egress_proxy_version() {
   local f
   for f in $EGRESS_PAYLOAD; do echo "== $f"; cat "$SCRIPT_DIR/egress/$f"; done | egress_sha256 | cut -c1-16
@@ -224,7 +309,8 @@ egress_ensure() {
   egress_install_payload "$egress" || error "Could not build smokescreen and install the proxy scripts in $egress"
   egress_ctl "$egress" setup "$(egress_resolver)" "$(egress_deny_ranges)" </dev/null ||
     error "Could not set up the proxies in $egress"
-  incus config set "$egress" user.boxen.egress.ready=1 "user.boxen.egress.version=$(egress_proxy_version)"
+  incus config set "$egress" user.boxen.egress.ready=1 "user.boxen.egress.version=$(egress_proxy_version)" \
+    user.boxen.egress.upload-watch=1
 }
 
 # Builds smokescreen and installs the proxy scripts, from a staging
@@ -236,9 +322,10 @@ egress_install_payload() {
   incus exec "$egress" -- rm -rf "$stage" </dev/null &&
     incus file push -p "$SCRIPT_DIR/egress/build-smokescreen.sh" "$egress$stage/build-smokescreen.sh" >/dev/null &&
     incus file push -p "$SCRIPT_DIR/egress/boxen-smokescreen/main.go" "$egress$stage/main.go" >/dev/null &&
+    incus file push -p "$SCRIPT_DIR/egress/boxen-smokescreen/uploads.go" "$egress$stage/uploads.go" >/dev/null &&
     incus file push -p --mode 0755 "$SCRIPT_DIR/egress/boxen-proxy-run" "$egress$stage/boxen-proxy-run" >/dev/null &&
     incus file push -p --mode 0755 "$SCRIPT_DIR/egress/boxen-egress-ctl" "$egress$stage/boxen-egress-ctl" >/dev/null &&
-    incus exec "$egress" -- sh "$stage/build-smokescreen.sh" "$stage/main.go" </dev/null &&
+    incus exec "$egress" -- sh "$stage/build-smokescreen.sh" "$stage/main.go" "$stage/uploads.go" </dev/null &&
     incus exec "$egress" -- sh -c 'set -e; install -d -m 755 "$2"
       mv -f "$1/boxen-proxy-run" "$2/boxen-proxy-run"; mv -f "$1/boxen-egress-ctl" "$3"; rm -rf "$1"' \
       sh "$stage" "$BOXEN_EGRESS_LIB" "$BOXEN_EGRESS_CTL" </dev/null
@@ -260,7 +347,8 @@ egress_update() {
     warn "Could not update the proxy in $egress; its proxies keep serving as before. Retry: bxn egress refresh --all"
     return 1
   fi
-  incus config set "$egress" "user.boxen.egress.version=$want" >/dev/null ||
+  # upload-watch: its ctl reads the upload watch's lines (egress_spec).
+  incus config set "$egress" "user.boxen.egress.version=$want" user.boxen.egress.upload-watch=1 >/dev/null ||
     { warn "Could not record the proxy version on $egress. Retry: bxn egress refresh --all"; return 1; }
   log "Updated the proxy in $egress. Containers move to it when refreshed: bxn egress refresh --all"
 }
@@ -309,14 +397,18 @@ mode_rank() { case "$1" in enforce) echo 0 ;; report) echo 1 ;; off) echo 2 ;; *
 # Prints what it did: unchanged, widened or tightened.
 # Usage: egress_apply <agent> [--force]
 egress_apply() {
-  local agent="$1" force="${2:-}" egress mode hosts id cur cur_mode cur_hosts how gen
+  local agent="$1" force="${2:-}" egress mode hosts spec id cur cur_mode cur_hosts how gen
   egress="$(incus config get "$agent" user.boxen.egress.container 2>/dev/null)"
   [[ -n "$egress" ]] || error "$agent has no egress container"
   mode="$(incus config get "$agent" user.boxen.egress 2>/dev/null)"
   mode="${mode:-enforce}"
   [[ "$(mode_rank "$mode")" -ge 0 ]] || error "$agent has an unknown egress mode: $mode"
   hosts="$(egress_hosts "$agent")"
-  id="$(printf '%s\n' "$hosts" | egress_policy_id "$mode" "$egress")"
+  spec="$hosts"
+  if egress_watches_uploads "$egress"; then
+    spec+=$'\n'"$(egress_upload_spec "$agent")" || return 1
+  fi
+  id="$(printf '%s\n' "$spec" | egress_policy_id "$mode" "$egress")"
   cur="$(egress_ctl "$egress" status "$agent" </dev/null)" || error "Could not read $agent's proxy in $egress"
   if [[ "$(cut -f4 <<< "$cur")" == "$id" && "$(cut -f6 <<< "$cur")" == "yes" ]]; then
     incus config set "$agent" "user.boxen.egress.active=$mode:$id" >/dev/null
@@ -334,7 +426,7 @@ egress_apply() {
       how=widen
     fi
   fi
-  gen="$(printf '%s\n' "$hosts" | egress_ctl "$egress" gen "$agent" "$mode" "$id")" ||
+  gen="$(printf '%s\n' "$spec" | egress_ctl "$egress" gen "$agent" "$mode" "$id")" ||
     error "Could not write $agent's new policy in $egress"
   if [[ "$how" == widen ]]; then
     egress_ctl "$egress" widen "$agent" "$gen" ${force:+"$force"} </dev/null || return 1
@@ -583,7 +675,7 @@ egress_recover() {
   if egress_running "$agent" && egress_nic_is_restricted "$agent" && [[ "$(egress_ip "$agent")" == "$ip" ]]; then
     st="$(egress_ctl "$egress" status "$agent" </dev/null 2>/dev/null)" || st=""
     if [[ "$(cut -f5 <<< "$st")" == "$mode" && "$(cut -f6 <<< "$st")" == "yes" &&
-          "$(cut -f4 <<< "$st")" == "$(egress_hosts "$agent" | egress_policy_id "$mode" "$egress")" ]]; then
+          "$(cut -f4 <<< "$st")" == "$(egress_spec "$agent" "$egress" | egress_policy_id "$mode" "$egress")" ]]; then
       log "$agent is locked and its proxy is verified; finishing"
       egress_commit "$agent"
       return 0
@@ -676,7 +768,7 @@ egress_prepare_unstarted() {
   incus config set "$agent" "user.boxen.egress=$mode" >/dev/null
   egress_nic_restrict "$agent"
   egress_apply "$agent" >/dev/null || error "Could not start $agent's proxy"
-  incus config set "$agent" "user.boxen.egress.active=$mode:$(egress_hosts "$agent" | egress_policy_id "$mode" "$egress")" >/dev/null
+  incus config set "$agent" "user.boxen.egress.active=$mode:$(egress_spec "$agent" "$egress" | egress_policy_id "$mode" "$egress")" >/dev/null
 }
 
 # What the user and the agent see in a locked container: a login banner and a
@@ -708,6 +800,10 @@ They can see what was blocked with: bxn egress log $agent
 
 A connection through the proxy must be used for the host it asked for: one
 whose TLS handshake names a different host is closed and logged.
+
+Very large uploads to one host (hundreds of megabytes within an hour) are
+logged, and may be cut. If a big push or upload fails partway with a closed
+connection, tell the user; they can see it with: bxn egress log $agent
 
 A failure that names DNS (EAI_AGAIN, ENOTFOUND, "Temporary failure in name
 resolution") means the tool skipped the proxy, not that the host is blocked.

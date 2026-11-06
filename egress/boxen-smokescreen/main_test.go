@@ -70,7 +70,11 @@ func tunnel(t *testing.T, enforce bool, method, target string) (net.Conn, <-chan
 	logger.Formatter = &logrus.JSONFormatter{}
 	req := &http.Request{Method: method, Host: target, URL: &url.URL{Host: target}}
 	ctx := context.WithValue(context.Background(), goproxy.ProxyContextKey, &goproxy.ProxyCtx{Req: req})
-	conn, err := nameCheckDialer(enforce, logger)(ctx, "tcp", l.Addr().String(), time.Second)
+	mode := "report"
+	if enforce {
+		mode = "enforce"
+	}
+	conn, err := tunnelDialer(mode, nil, logger)(ctx, "tcp", l.Addr().String(), time.Second)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -253,7 +257,7 @@ func TestThroughSmokescreen(t *testing.T) {
 		t.Fatal(err)
 	}
 	conf.ConnTracker = conntrack.NewTracker(conf.IdleTimeout, metrics.NewNoOpMetricsClient(), conf.Log, atomic.Value{}, nil)
-	conf.ProxyDialTimeout = nameCheckDialer(true, conf.Log)
+	conf.ProxyDialTimeout = tunnelDialer("enforce", nil, conf.Log)
 	proxy := httptest.NewServer(smokescreen.BuildProxy(conf))
 	defer proxy.Close()
 

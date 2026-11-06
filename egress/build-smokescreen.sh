@@ -5,13 +5,16 @@
 # removes the toolchain and source. smokescreen vendors its dependencies, so
 # the build fetches nothing else.
 #
-# Usage: sh build-smokescreen.sh <main.go>
-# The binary is bxn's entry point (egress/boxen-smokescreen/main.go), built as
-# its own package in smokescreen's tree, so it can use only the standard
-# library and what smokescreen vendors. smokescreen itself is unchanged.
+# Usage: sh build-smokescreen.sh <main.go> [<file.go>...]
+# The binary is bxn's entry point (egress/boxen-smokescreen: main.go and the
+# files beside it), built as its own package in smokescreen's tree, so it can
+# use only the standard library and what smokescreen vendors. smokescreen
+# itself is unchanged.
 set -eu
-MAIN_GO="${1:?usage: build-smokescreen.sh <main.go>}"
-[ -s "$MAIN_GO" ] || { echo "build-smokescreen: no $MAIN_GO" >&2; exit 1; }
+[ $# -ge 1 ] || { echo "usage: build-smokescreen.sh <main.go> [<file.go>...]" >&2; exit 1; }
+for f in "$@"; do
+  [ -s "$f" ] || { echo "build-smokescreen: no $f" >&2; exit 1; }
+done
 
 SMOKESCREEN_REPO="https://github.com/stripe/smokescreen.git"
 SMOKESCREEN_COMMIT="609eb8931420453daf5893509be0b25b21bd9edb"   # v0.1.0
@@ -39,14 +42,14 @@ git -C "$work/src" checkout -q FETCH_HEAD
   echo "build-smokescreen: fetched the wrong commit" >&2; exit 1; }
 
 install -d -m 755 "$work/src/cmd/boxen-smokescreen" "$(dirname "$OUT")"
-cp "$MAIN_GO" "$work/src/cmd/boxen-smokescreen/main.go"
+for f in "$@"; do cp "$f" "$work/src/cmd/boxen-smokescreen/$(basename "$f")"; done
 (cd "$work/src" &&
   HOME="$work" GOPATH="$work/gopath" GOCACHE="$work/cache" GOTOOLCHAIN=local \
   GOFLAGS=-mod=vendor CGO_ENABLED=0 GOPROXY=off \
   "$work/go/bin/go" build -trimpath -o "$OUT.new" ./cmd/boxen-smokescreen)
-# What was built: smokescreen's commit, and a hash of bxn's main.go, which
-# changes whenever that file does.
-build="smokescreen $SMOKESCREEN_COMMIT boxen-smokescreen $(sha256sum "$MAIN_GO" | cut -d' ' -f1)"
+# What was built: smokescreen's commit, and a hash of bxn's files, which
+# changes whenever one of them does.
+build="smokescreen $SMOKESCREEN_COMMIT boxen-smokescreen $(cat "$@" | sha256sum | cut -d' ' -f1)"
 mv "$OUT.new" "$OUT"
 echo "$SMOKESCREEN_COMMIT" > "$OUT.commit"
 echo "$build" > "$OUT.build"

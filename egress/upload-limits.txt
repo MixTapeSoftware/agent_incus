@@ -1,0 +1,64 @@
+# egress/upload-limits.txt
+# How much a container may send one host through its proxy in an hour before
+# bxn warns (and, with `bxn egress upload-cap <container> on` under enforce,
+# cuts it). This is an alarm for bulk uploads, such as a whole repository or
+# a database dump, not a guard against leaks: a small secret passes any limit.
+#
+# These numbers are starting guesses, to be tuned from real use; see
+# `bxn egress log <container> --uploads`. They're high on purpose, so normal
+# work never sets them off.
+#
+# One entry per line: a hostname, or a wildcard "*.<domain>" (subdomains only,
+# as in the allowlist), or "default", then a size: bytes, or a number with K,
+# M, G or T (powers of 1024), or off. "#" starts a comment. A host's own entry
+# wins over a wildcard, and the longest wildcard over a shorter one.
+#
+# Unlike egress/baseline.txt, bxn reads this file directly, with no approval
+# step: a change here applies the next time bxn applies a container's policy
+# (`bxn egress ls` notes the change; `bxn egress refresh` applies it). Your
+# own limits go in ~/.config/boxen/egress-upload-limits.txt, in the same
+# format, and a container's in `bxn egress upload-limit <container> <host>
+# <size>`; for a host both name, the container's wins, then yours, then this
+# file's.
+
+default 250M
+
+# --- Coding agents' APIs -----------------------------------------------------
+# An agent sends its whole conversation, files it has read included, with
+# every request, so a long session sends these hosts a lot.
+api.anthropic.com 2G
+*.openai.com 2G
+chatgpt.com 2G
+*.chatgpt.com 2G
+*.githubcopilot.com 2G
+api.x.ai 2G
+*.cursor.sh 2G
+*.factory.ai 2G
+api.perplexity.ai 2G
+generativelanguage.googleapis.com 2G
+
+# --- Code hosts --------------------------------------------------------------
+# A first push of a repository, or a release's assets, can be large.
+github.com 2G
+# The API and uploads.github.com, where release assets go.
+*.github.com 2G
+gitlab.com 2G
+# GitLab's container registry and package hosts.
+*.gitlab.com 2G
+bitbucket.org 2G
+dev.azure.com 2G
+
+# --- Container and package registries ----------------------------------------
+# Pushing an image sends every layer the registry doesn't already have.
+docker.io 2G
+*.docker.io 2G
+ghcr.io 2G
+gcr.io 2G
+*.gcr.io 2G
+quay.io 2G
+public.ecr.aws 2G
+# Publishing a package sends the whole archive.
+registry.npmjs.org 2G
+crates.io 2G
+rubygems.org 2G
+hex.pm 2G
