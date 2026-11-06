@@ -110,8 +110,75 @@ assert_contains "and named" "Not a hostname bxn accepts: not a host" "$OUT"
 run rm box docs.rs
 assert_contains "rm tightens" "narrowed; its open connections through the proxy ended" "$OUT"
 assert_eq "it's off box's list" "" "$(cfg box user.boxen.egress.allow)"
+run rm box nowhere.example
+assert_contains "rm says when a host isn't on the list" "nowhere.example isn't on box's list" "$OUT"
+
+echo "narrowing below the baseline"
 run rm box api.anthropic.com
-assert_contains "rm says when another source still allows it" "still allowed for box by baseline" "$OUT"
+assert_eq "removing a baseline host succeeds" "0" "$RC"
+assert_contains "it says where the host came from" "api.anthropic.com comes from baseline; removed for box only" "$OUT"
+assert_contains "and that it tightened" "narrowed; its open connections through the proxy ended" "$OUT"
+assert_eq "it's recorded as removed for box" "api.anthropic.com" "$(cfg box user.boxen.egress.deny)"
+assert_not_contains "the proxy no longer allows it" "api.anthropic.com" "$(gen_file box hosts)"
+assert_eq "box's own list is untouched" "" "$(cfg box user.boxen.egress.allow)"
+run ls box
+assert_contains "ls lists it as removed" "Removed for box (restore one: bxn egress allow box <host>):
+  api.anthropic.com" "$OUT"
+assert_eq "and not as a host it may reach" "" "$(grep -E '^api\.anthropic\.com ' <<< "$OUT" || true)"
+assert_not_contains "ls --tsv leaves it out" "api.anthropic.com	" "$(eg ls box --tsv)"
+run allow box api.anthropic.com
+assert_contains "allow restores it, naming its source" "api.anthropic.com: restored for box, from baseline" "$OUT"
+assert_contains "restoring widens" "allowed; open connections keep running" "$OUT"
+assert_eq "it's off the removed list" "" "$(cfg box user.boxen.egress.deny)"
+assert_eq "and isn't added to box's own list" "" "$(cfg box user.boxen.egress.allow)"
+assert_contains "the proxy allows it again" "api.anthropic.com" "$(gen_file box hosts)"
+run rm box '*.github.com'
+assert_eq "a baseline wildcard entry can be removed" "*.github.com" "$(cfg box user.boxen.egress.deny)"
+assert_not_contains "the proxy drops it" "*.github.com" "$(gen_file box hosts)"
+assert_contains "the exact names stay" "github.com" "$(gen_file box hosts)"
+run allow box '*.github.com' docs.rs
+assert_eq "a restore and an addition in one go" "" "$(cfg box user.boxen.egress.deny)"
+assert_eq "only the new host joins box's own list" "docs.rs" "$(cfg box user.boxen.egress.allow)"
+run allow box '*.docs.rs'
+run rm box api.docs.rs
+assert_contains "a name a wildcard still covers is called out" "api.docs.rs is still reachable from box through *.docs.rs (box). To block it, remove that entry: bxn egress rm box '*.docs.rs'" "$OUT"
+run rm box '*.docs.rs' docs.rs
+assert_eq "removing the wildcard entry itself works" "" "$(cfg box user.boxen.egress.allow)"
+assert_not_contains "without a warning" "still reachable" "$OUT"
+
+echo "turning the baseline off"
+before_hosts="$(gen_file box hosts)"
+incus config set box user.boxen.egress.plugin-allow=plugin.example
+incus config set box user.boxen.egress.allow=own.example
+run allow --all every.example --yes
+run baseline box off
+assert_eq "it succeeds" "0" "$RC"
+assert_contains "it narrows" "narrowed; its open connections through the proxy ended" "$OUT"
+assert_eq "it's recorded" "off" "$(cfg box user.boxen.egress.baseline)"
+assert_eq "only the plugin hosts and box's own are left" "own.example
+plugin.example" "$(gen_file box hosts)"
+run ls box
+assert_contains "ls shows it's off" "Baseline: off; only its plugin hosts and its own" "$OUT"
+assert_not_contains "ls has no baseline hosts" "api.anthropic.com" "$OUT"
+assert_not_contains "nor your additions" "every.example" "$OUT"
+run ls
+assert_contains "ls of every container notes it" "baseline off" "$OUT"
+run rm box plugin.example
+assert_eq "a plugin host can be removed with the baseline off" "own.example" "$(gen_file box hosts)"
+run baseline box on
+assert_contains "on widens" "allowed; open connections keep running" "$OUT"
+assert_contains "the baseline is back" "api.anthropic.com" "$(gen_file box hosts)"
+assert_contains "so are your additions" "every.example" "$(gen_file box hosts)"
+assert_not_contains "a host removed for box stays removed" "plugin.example" "$(gen_file box hosts)"
+run ls box
+assert_contains "ls shows it's on" "Baseline: on" "$OUT"
+run baseline box sideways
+assert_eq "a value other than on or off is refused" "1" "$RC"
+run allow box plugin.example
+run rm --all every.example --yes
+incus config set box user.boxen.egress.plugin-allow= user.boxen.egress.allow=
+run refresh box
+assert_eq "box is back to the baseline" "$before_hosts" "$(gen_file box hosts)"
 
 echo "modes"
 addr="$(cfg box devices.eth0.ipv4.address)"

@@ -105,6 +105,19 @@ rm -f "$BOXEN_CONFIG_DIR/egress-approved-baseline.txt"
 hosts="$(bash -c 'set -euo pipefail; log() { echo "[+] $1"; }; error() { exit 1; }
   SCRIPT_DIR="$1"; source "$1/boxen.net"; source "$1/boxen.egress"; egress_hosts box' _ "$REPO_ROOT" 2>/dev/null)"
 assert_eq "the first-use notice stays out of the host list" "" "$(grep -v '^[*a-z0-9.-]*$' <<< "$hosts" || true)"
+incus config set box 'user.boxen.egress.deny=api.anthropic.com,*.tailscale.com,docs.rs,*.example'
+narrow="$(eg 'egress_hosts box')"
+assert_eq "removed entries leave the list" "" "$(grep -xE 'api\.anthropic\.com|\*\.tailscale\.com|docs\.rs' <<< "$narrow" || true)"
+assert_contains "matched exactly, not as a pattern" "extra.example" "$narrow"
+assert_contains "the rest stay" "crates.example" "$narrow"
+[[ "$(eg 'egress_hosts box | egress_policy_id enforce')" != "$(printf '%s\n' "$hosts" | eg 'egress_policy_id enforce')" ]] &&
+  { PASS=$((PASS+1)); echo "  ok  a removed entry changes the id"; } || { FAIL=$((FAIL+1)); echo "  FAIL a removed entry changes the id"; }
+incus config set box user.boxen.egress.baseline=off user.boxen.egress.deny=
+assert_eq "baseline off leaves the plugins' and the agent's own" "*.tailscale.com
+crates.example
+docs.rs" "$(eg 'egress_hosts box')"
+incus config set box user.boxen.egress.baseline=on
+assert_eq "baseline on is the whole list" "$hosts" "$(eg 'egress_hosts box')"
 id1="$(eg 'egress_hosts box | egress_policy_id enforce')"
 assert_eq "the policy id is stable" "$id1" "$(eg 'egress_hosts box | egress_policy_id enforce')"
 assert_eq "the policy id is 16 hex digits" "yes" "$([[ "$id1" =~ ^[0-9a-f]{16}$ ]] && echo yes || echo no)"
