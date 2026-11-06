@@ -670,7 +670,9 @@ status_frame_panels() {
 # and nothing is relabelled when that list can't be read. Only a block the list
 # made ("default rule policy used") can become "allowed now": one for a
 # private address stays blocked whatever is listed. A leading "*." matches
-# subdomains only, as in the proxy.
+# subdomains only, as in the proxy. A connection the TLS name check caught
+# (name-mismatch: used for another name than the allowed host it asked for)
+# comes before everything else.
 # Usage: status_tab_rows <name> network|rules [<mode>]
 status_tab_rows() {
   if [[ "$2" == network ]]; then
@@ -688,9 +690,11 @@ status_tab_rows() {
                              if ((d == "blocked" || d == "would-block") && !(k in other) && covered(f[1])) d = "allowed now"
                              else if (d == "allowed" && !covered(f[1])) d = (mode == "report") ? "unlisted now" : "blocked now"
                            }
-                           r = (d ~ /^blocked/) ? 0 : (d ~ /^(would-block|unlisted)/) ? 1 : 2
+                           r = (d == "name-mismatch") ? 0 : (d ~ /^blocked/) ? 1 : (d ~ /^(would-block|unlisted)/) ? 2 : 3
                            h = f[1]; if (length(h) > 60) h = substr(h, 1, 57) "..."
-                           print r "\t" n[k] "\t" f[1] "\t" sprintf("%-12s %5d  %-8s  %s:%s", d, n[k], last[k], h, f[2]) } }' \
+                           # The same columns as "%-12s %5d", with room for name-mismatch.
+                           c = (length(d) < 13) ? d " " : d
+                           print r "\t" n[k] "\t" f[1] "\t" sprintf("%-13s%5d  %-8s  %s:%s", c, n[k], last[k], h, f[2]) } }' \
       <("$SCRIPT_DIR/bxn.egress" ls "$1" --tsv --applied 2>/dev/null | cut -f1) - |
       sort -t$'\t' -k1,1n -k2,2nr | cut -f3-
   else

@@ -706,6 +706,9 @@ the user the exact host and ask them to run, on their own machine:
 
 They can see what was blocked with: bxn egress log $agent
 
+A connection through the proxy must be used for the host it asked for: one
+whose TLS handshake names a different host is closed and logged.
+
 A failure that names DNS (EAI_AGAIN, ENOTFOUND, "Temporary failure in name
 resolution") means the tool skipped the proxy, not that the host is blocked.
 Point the tool's own proxy setting at \$HTTPS_PROXY: npm-style installers read

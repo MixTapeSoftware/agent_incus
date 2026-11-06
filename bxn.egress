@@ -284,7 +284,7 @@ cmd_ls() {
 
 # One line: name, desired mode, active state, proxy and anything to fix.
 status_line() {
-  local c="$1" egress mode active port notes="" st
+  local c="$1" egress mode active port notes="" st n
   egress="$(incus config get "$c" user.boxen.egress.container)"
   mode="$(incus config get "$c" user.boxen.egress 2>/dev/null)"; mode="${mode:-enforce}"
   active="$(incus config get "$c" user.boxen.egress.active 2>/dev/null)"
@@ -299,6 +299,10 @@ status_line() {
   fi
   if [[ "$mode" != off ]] && ! egress_nic_is_restricted "$c"; then notes+="card not locked; "; fi
   if egress_running "$egress"; then
+    # First, since it's the one to look into.
+    n="$(egress_ctl "$egress" log "$c" -1h </dev/null 2>/dev/null | awk -F'\t' '$4 == "name-mismatch"' | wc -l | tr -d ' ')"
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) &&
+      notes="WARNING: $n connection(s) used another name in the last hour: bxn egress log $c; $notes"
     st="$(egress_ctl "$egress" status "$c" </dev/null 2>/dev/null)" || st=""
     [[ "$(cut -f6 <<< "$st")" == "yes" ]] || notes+="no proxy listening; "
     local draining
@@ -342,12 +346,29 @@ cmd_log() {
     egress_ctl "$egress" log "$c" "$since" </dev/null
     return
   fi
+  local rows
+  rows="$(egress_ctl "$egress" log "$c" "$since" </dev/null)" || error "Could not read $c's log in $egress"
+  # Connections used for a different name than the one they were allowed
+  # for come first, above everything else.
+  if awk -F'\t' '$4 == "name-mismatch" { found = 1 } END { exit !found }' <<< "$rows"; then
+    echo "WARNINGS"
+    echo ""
+    echo "  A connection opened for an allowed host was then used for a different"
+    echo "  name. Legitimate tools don't do this: something in $c may be using an"
+    echo "  allowed host to reach one that isn't allowed. Look into what runs there."
+    echo ""
+    awk -F'\t' '$4 == "name-mismatch" { k = $2 "\t" $3 "\t" $5; n[k]++; last[k] = $1 }
+      END { for (k in n) { split(k, f, "\t"); print n[k] "\t" k "\t" last[k] } }' <<< "$rows" |
+      sort -t$'\t' -k1,1nr |
+      awk -F'\t' 'BEGIN { printf "  %-40s %-6s %6s  %-20s  %s\n", "ALLOWED HOST", "PORT", "HITS", "LAST", "WHAT HAPPENED" }
+        { printf "  %-40s %-6s %6s  %-20s  %s\n", $2, $3, $1, $5, $4 }'
+    echo ""
+  fi
   # One row per host, port and decision: hits and the last attempt. Blocked
   # first, so what to allow is at the top.
-  egress_ctl "$egress" log "$c" "$since" </dev/null | awk -F'\t' '
-    { k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = $1 }
+  awk -F'\t' '$4 != "name-mismatch" && NF { k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = $1 }
     END { for (k in n) { split(k, f, "\t"); r = (f[3] == "blocked") ? 0 : (f[3] == "would-block") ? 1 : 2
-                         print r "\t" k "\t" n[k] "\t" last[k] } }' |
+                         print r "\t" k "\t" n[k] "\t" last[k] } }' <<< "$rows" |
     sort -t$'\t' -k1,1n -k5,5nr |
     awk -F'\t' 'BEGIN { printf "%-50s %-6s %-12s %6s  %s\n", "HOST", "PORT", "DECISION", "HITS", "LAST" }
       { printf "%-50s %-6s %-12s %6s  %s\n", $2, $3, $4, $5, $6 }'

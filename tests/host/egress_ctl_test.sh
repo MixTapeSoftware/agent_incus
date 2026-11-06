@@ -7,6 +7,9 @@
 #   bash tests/host/egress_ctl_test.sh /path/to/smokescreen [/path/to/jq]
 #   bash tests/host/egress_ctl_test.sh --cleanup
 #
+# The binary is bxn's build (egress/build-smokescreen.sh), so its TLS name
+# check runs too; the test clients start each tunnel with a ClientHello.
+#
 # It installs the ctl, the wrapper and the binary at their egress-container
 # paths, units named boxen-*, and h1-h9.proto.test in /etc/hosts, then removes
 # them all. The test clients come from tests/host/proxy_swap. The only
@@ -142,6 +145,30 @@ check "nothing from a URL or header reaches the raw journal" "0" \
   "$(sudo journalctl --after-cursor="$jcur" -o json --no-pager | grep -c 'SENTINEL-7f3a')"
 check "the filter keeps the decision records" "1" \
   "$(sudo journalctl -u 'boxen-gen_a@*' --after-cursor="$jcur" -o cat --no-pager | grep CANONICAL-PROXY-DECISION | grep -c '"requested_host":"h1.proto.test:4760"')"
+
+section "the TLS name check"
+jcur="$(sudo journalctl -n 0 --show-cursor -o cat --no-pager | sed -n 's/^-- cursor: //p')"
+check "a ClientHello for the tunnel's host goes through" "ok" "$(python3 -I "$PC" first h1.proto.test h1.proto.test)"
+check "one for another name is closed" "closed" "$(python3 -I "$PC" first h1.proto.test h2.proto.test)"
+check "so is a tunnel that doesn't start with TLS" "closed" "$(python3 -I "$PC" first h1.proto.test -)"
+sleep 1
+log="$(ctl log a)"
+contains "the log names the other name" $'h1.proto.test\t4760\tname-mismatch\tTLS name was h2.proto.test; closed' "$log"
+contains "and the tunnel that wasn't TLS" $'h1.proto.test\t4760\tname-mismatch\tnot TLS; closed' "$log"
+check "no stream bytes reach the journal" "0" \
+  "$(sudo journalctl --after-cursor="$jcur" -o json --no-pager | grep -c 'SENTINEL-tls-7f3a')"
+g="$(newgen report h1.proto.test)"
+ctl widen a "$g" >/dev/null || fail "widen to report"
+check "report lets another name through" "ok" "$(python3 -I "$PC" first h1.proto.test h2.proto.test)"
+sleep 1
+contains "and logs it" "TLS name was h2.proto.test; let through (report)" "$(ctl log a)"
+g="$(newgen off)"
+ctl widen a "$g" >/dev/null || fail "widen to off"
+check "off doesn't check" "ok" "$(python3 -I "$PC" first h1.proto.test -)"
+g="$(newgen enforce $(hosts_upto 4))"
+ctl tighten a "$g" >/dev/null || fail "back to enforce"
+for i in 1 2 3; do python3 -I "$PC" stream "h$i.proto.test" 60 "s$i.status" & done
+sleep 2
 
 section "tightening ends open connections"
 python3 -I "$PC" hammer h1.proto.test 6 > hammer2.out & H=$!

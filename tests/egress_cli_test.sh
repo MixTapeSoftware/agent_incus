@@ -263,6 +263,27 @@ run log box
 assert_contains "log counts hits per host" "docs.rs                                            443    blocked           2  2026-10-30T10:05:00Z" "$OUT"
 assert_eq "blocked hosts come first" "docs.rs" "$(sed -n 2p <<< "$OUT" | awk '{print $1}')"
 assert_contains "log says how to allow" "bxn egress allow box <host>" "$OUT"
+assert_not_contains "no warnings without a name mismatch" "WARNINGS" "$OUT"
+run ls
+assert_not_contains "nor in ls" "another name" "$OUT"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+  2026-10-30T10:06:00Z github.com 443 name-mismatch "TLS name was other.example; closed" 9 \
+  2026-10-30T10:07:00Z github.com 443 name-mismatch "TLS name was other.example; closed" 9 \
+  2026-10-30T10:08:00Z api.anthropic.com 443 name-mismatch "not TLS; closed" 9 >> "$FAKE_INCUS_STATE/ctl/$E/box/log"
+run log box
+assert_eq "a name mismatch puts WARNINGS at the very top" "WARNINGS" "$(head -1 <<< "$OUT")"
+assert_contains "explained for a developer" "A connection opened for an allowed host was then used for a different
+  name. Legitimate tools don't do this" "$OUT"
+assert_contains "with the host, hits and what happened" "github.com                               443         2  2026-10-30T10:07:00Z  TLS name was other.example; closed" "$OUT"
+assert_contains "each kind on its own row" "not TLS; closed" "$OUT"
+warnings="$(sed '/^HOST /,$d' <<< "$OUT")"
+assert_contains "above the blocked hosts" "not TLS" "$warnings"
+assert_not_contains "which don't repeat them" "name-mismatch" "$(sed -n '/^HOST /,$p' <<< "$OUT")"
+assert_contains "the table still counts blocked hosts" "docs.rs                                            443    blocked           2" "$OUT"
+run log box --raw
+assert_contains "--raw keeps every row" "name-mismatch	TLS name was other.example; closed" "$OUT"
+run ls
+assert_contains "ls warns on box's line" "WARNING: 3 connection(s) used another name in the last hour: bxn egress log box" "$(grep '^box ' <<< "$OUT")"
 
 echo "a baseline update"
 echo "new-tool.example" >> "$SANDBOX/repo/egress/baseline.txt"

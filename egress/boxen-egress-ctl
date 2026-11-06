@@ -21,7 +21,8 @@
 #   remove <agent>                   stop, then remove the agent's units
 #   status [<agent>]                 one line per agent
 #   hosts <agent>                    the hosts the current generation allows
-#   log <agent> [<since>]            decisions as TSV: time host port decision reason gen
+#   log <agent> [<since>]            decisions as TSV: time host port decision reason gen;
+#                                    decision name-mismatch is the TLS name check's
 #   boot                             at boot: start each agent's current generation
 set -euo pipefail
 
@@ -417,29 +418,46 @@ cmd_hosts() {
     "$(gen_dir "$1" "$cur")/acl.yaml"
 }
 
-# The decision records, without the probe's. jq picks fields by name, so a
-# hostile hostname can't forge a column, and control characters in it are
-# replaced so it can't reach a terminal as an escape code.
+# The decision records, without the probe's, and the TLS name check's
+# records (egress/boxen-smokescreen) as decision name-mismatch. jq picks
+# fields by name, so a hostile hostname can't forge a column, and control
+# characters in it are replaced so it can't reach a terminal as an escape code.
 cmd_log() {
   local agent="$1" since="${2:--1h}"
   valid_agent "$agent"
   [[ "$since" =~ ^[-+0-9a-zA-Z:\ ]+$ ]] || die "bad --since: $since"
   journalctl -u "boxen-gen_$agent@*.service" --since "$since" -o json --no-pager 2>/dev/null |
     jq -r --arg probe "$PROBE_HOST" '
+      def clean($n): . // "" | tostring | .[0:$n] | gsub("[[:cntrl:]]"; "?");
       (._SYSTEMD_UNIT | capture("@(?<g>[0-9]+)\\.service$").g // "-") as $gen
-      | (.MESSAGE | strings | select(contains("CANONICAL-PROXY-DECISION"))
+      | (.MESSAGE | strings
+         | select(contains("CANONICAL-PROXY-DECISION") or contains("BOXEN-TLS-NAME-CHECK"))
          | (try fromjson catch null)) as $m
       | select($m != null)
-      | ($m.requested_host // "" | tostring | .[0:300] | gsub("[[:cntrl:]]"; "?")) as $hp
-      | select(($hp | split(":")[0]) != $probe)
-      | [ ($m.time // "-"),
-          ($hp | sub(":[0-9]+$"; "")),
-          ($hp | capture(":(?<p>[0-9]+)$").p // "-"),
-          (if $m.allow == false then "blocked"
-           elif $m.enforce_would_deny == true then "would-block"
-           else "allowed" end),
-          ($m.decision_reason // "-" | tostring | .[0:200] | gsub("[[:cntrl:]]"; "?")),
-          $gen ]
+      | if $m.msg == "BOXEN-TLS-NAME-CHECK" then
+          ($m.connect_host | clean(300)) as $h
+          | select($h != $probe)
+          | [ ($m.time // "-"), $h,
+              ($m.connect_port | clean(5) | if test("^[0-9]+$") then . else "-" end),
+              "name-mismatch",
+              ((if $m.reason == "mismatch" then "TLS name was " + ($m.tls_name | clean(253))
+                elif $m.reason == "no_name" then "TLS handshake named no host"
+                elif $m.reason == "not_tls" then "not TLS"
+                else "malformed TLS handshake" end)
+               + (if $m.enforced == true then "; closed" else "; let through (report)" end)),
+              $gen ]
+        else
+          ($m.requested_host | clean(300)) as $hp
+          | select(($hp | split(":")[0]) != $probe)
+          | [ ($m.time // "-"),
+              ($hp | sub(":[0-9]+$"; "")),
+              ($hp | capture(":(?<p>[0-9]+)$").p // "-"),
+              (if $m.allow == false then "blocked"
+               elif $m.enforce_would_deny == true then "would-block"
+               else "allowed" end),
+              ($m.decision_reason // "-" | tostring | .[0:200] | gsub("[[:cntrl:]]"; "?")),
+              $gen ]
+        end
       | @tsv'
 }
 
