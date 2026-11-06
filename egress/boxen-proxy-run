@@ -28,6 +28,13 @@ esac || refuse "default action '$action' doesn't match mode '$mode'"
 # The TLS name check (egress/boxen-smokescreen) follows the mode: enforce
 # closes a tunnel used for another name, report logs it, off skips the check.
 export BOXEN_TLS_NAME_CHECK="$mode"
+# The upload watch counts what each host is sent against the generation's
+# limits, in every mode; the cap cuts only under enforce. A generation written
+# before limits existed has none, so nothing is counted.
+unset BOXEN_UPLOAD_LIMITS
+[[ ! -s "$dir/upload-limits" ]] || export BOXEN_UPLOAD_LIMITS="$dir/upload-limits"
+BOXEN_UPLOAD_CAP="$(cat "$dir/upload-cap" 2>/dev/null || echo off)"
+export BOXEN_UPLOAD_CAP
 
 args=(--config-file "$cfg" --egress-acl-file "$acl")
 if [[ -n "${BOXEN_PROBE_PORT:-}" ]]; then

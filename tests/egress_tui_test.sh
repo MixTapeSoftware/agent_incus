@@ -57,6 +57,10 @@ case "$1" in
     if [[ -f "$STUB/mismatch" ]]; then
       printf '2026-10-30T10:06:00Z\tgithub.com\t443\tname-mismatch\tTLS name was other.example; closed\t3\n'
     fi
+    if [[ -f "$STUB/uploads" ]]; then
+      printf '2026-10-30T10:07:00Z\tup.example\t443\tlarge-upload\t312.4M sent in an hour; limit 250M; let through\t3\n'
+      printf '2026-10-30T10:08:00Z\tdump.example\t443\tupload-cut\t249.9M sent in an hour; limit 250M; cut\t3\n'
+    fi
     if [[ -f "$STUB/private-host" ]]; then
       printf '2026-10-30T10:05:00Z\tinternal.example\t443\tblocked\tresolved to a denied address\t3\n'
     fi
@@ -142,6 +146,14 @@ frame=$(last_frame "$out" | plain)
 assert_contains "a name mismatch is labelled, in the same columns" "name-mismatch    1  10:06:00  github.com:443" "$frame"
 first=$(grep -oE '(name-mismatch|blocked) +[0-9]+  [0-9:]+  [^ ]+' <<<"$frame" | head -1)
 assert_eq "and comes before the blocked hosts" "name-mismatch    1  10:06:00  github.com:443" "$first"
+touch "$S/uploads"
+out=$(keys '\t' l | tui) || true
+rm -f "$S/uploads"
+frame=$(last_frame "$out" | plain)
+assert_contains "a large upload is labelled, in the same columns" "large-upload     1  10:07:00  up.example:443" "$frame"
+assert_contains "and one the cap cut" "upload-cut       1  10:08:00  dump.example:443" "$frame"
+first=$(grep -oE '(large-upload|upload-cut|blocked) +[0-9]+  [0-9:]+  [^ ]+' <<<"$frame" | head -1)
+assert_eq "they come before the blocked hosts" "no" "$([[ "$first" == blocked* ]] && echo yes || echo no)"
 [[ "$out" != *$'\033]0;'* ]] && pass=yes || pass=no
 assert_eq "a hostile hostname can't reach the terminal as an escape" "yes" "$pass"
 out=$(keys '\t' l a | tui) || true

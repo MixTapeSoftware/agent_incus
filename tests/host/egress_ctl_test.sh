@@ -170,6 +170,33 @@ ctl tighten a "$g" >/dev/null || fail "back to enforce"
 for i in 1 2 3; do python3 -I "$PC" stream "h$i.proto.test" 60 "s$i.status" & done
 sleep 2
 
+section "the upload watch"
+g="$(newgen enforce $(hosts_upto 4) "upload-cap on" "upload-limit default 1048576" "upload-limit h2.proto.test off")"
+ctl widen a "$g" >/dev/null || fail "widen to a 1M upload limit with the cap on"
+check "an upload under the limit goes through" "ok" "$(python3 -I "$PC" upload h1.proto.test 524288)"
+check "one that takes the host past it is cut" "closed" "$(python3 -I "$PC" upload h1.proto.test 1048576)"
+check "and so is the next, while the hour's bytes are still there" "closed" "$(python3 -I "$PC" upload h1.proto.test 600000)"
+check "a host with its limit off isn't" "ok" "$(python3 -I "$PC" upload h2.proto.test 2097152)"
+sleep 1
+log="$(ctl log a)"
+contains "the log says it was cut" $'h1.proto.test\t4760\tupload-cut\t' "$log"
+check "once for the hour" "1" "$(grep -c $'\tupload-cut\t' <<< "$log")"
+up="$(ctl uploads a)"
+contains "uploads totals what each host was sent" $'h2.proto.test\t' "$up"
+[[ "$(head -1 <<< "$up" | cut -f1)" == h2.proto.test ]] && pass "largest first" || fail "largest first ($up)"
+g="$(newgen enforce $(hosts_upto 4) "upload-cap off" "upload-limit default 1048576")"
+ctl widen a "$g" >/dev/null || fail "widen to the cap off"
+check "with the cap off, a large upload goes through" "ok" "$(python3 -I "$PC" upload h1.proto.test 2097152)"
+sleep 1
+contains "and is logged" $'h1.proto.test\t4760\tlarge-upload\t' "$(ctl log a)"
+g="$(newgen report $(hosts_upto 4) "upload-cap on" "upload-limit default 1048576")"
+ctl widen a "$g" >/dev/null || fail "widen to report with the cap on"
+check "report mode doesn't cut" "ok" "$(python3 -I "$PC" upload h1.proto.test 2097152)"
+g="$(newgen enforce $(hosts_upto 4))"
+ctl tighten a "$g" >/dev/null || fail "back to enforce"
+for i in 1 2 3; do python3 -I "$PC" stream "h$i.proto.test" 60 "s$i.status" & done
+sleep 2
+
 section "tightening ends open connections"
 python3 -I "$PC" hammer h1.proto.test 6 > hammer2.out & H=$!
 sleep 1
