@@ -61,12 +61,16 @@ rec() { jq -c -n --arg m "$1" --arg u "boxen-gen_api@$2.service" '{MESSAGE: $m, 
   rec '{"msg":"CANONICAL-PROXY-CN-CLOSE","requested_host":"big.example:443","bytes_out":9000,"bytes_in":5}' 4
   rec '{"msg":"CANONICAL-PROXY-CN-CLOSE","requested_host":"boxen-probe.invalid:443","bytes_out":1,"bytes_in":1}' 4
   rec '{"msg":"a CANONICAL-PROXY-CN-CLOSE look-alike","requested_host":"fake.example:443","bytes_out":99999}' 4
+  rec '{"msg":"CANONICAL-PROXY-CN-CLOSE","requested_host":"BOXEN-UPLOAD-LIMIT.example:443","bytes_out":7}' 4
+  rec '{"msg":"CANONICAL-PROXY-DECISION","requested_host":"ok.example:443","allow":true,"decision_reason":"host matched"}' 4
 } > "$SANDBOX/journal.json"
 log="$(bash "$SANDBOX/ctl" log api)"
 [[ "$log" == *$'2026-11-06T10:00:00Z\tup.example\t443\tlarge-upload\t312.4M sent in an hour; limit 250M; let through\t4'* ]]
 [[ "$log" == *$'bad?[31m.example\t443\tupload-cut\t249.8M sent in an hour; limit 250M; cut\t4'* ]]
-echo 'ok: log shows the upload watch lines as large-upload and upload-cut, sanitised'
-[[ "$(bash "$SANDBOX/ctl" uploads api)" == $'big.example\t9000\t1\nup.example\t3500\t2' ]]
+[[ "$log" == *$'ok.example\t443\tallowed\thost matched\t4'* ]]
+[[ "$(wc -l <<< "$log" | tr -d ' ')" == 3 ]]
+echo 'ok: log shows the upload watch lines as large-upload and upload-cut, sanitised; nothing else that names a marker'
+[[ "$(bash "$SANDBOX/ctl" uploads api)" == $'big.example\t9000\t1\nup.example\t3500\t2\nBOXEN-UPLOAD-LIMIT.example\t7\t1' ]]
 echo 'ok: uploads adds bytes_out per host, largest first, without the probe or look-alikes'
 
 # boxen-proxy-run passes the generation's limits and cap to the proxy.

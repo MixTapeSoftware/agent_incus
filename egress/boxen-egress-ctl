@@ -481,7 +481,7 @@ cmd_log() {
             (($m.window_bytes | size) + " sent in an hour; limit " + ($m.limit_bytes | size)
              + (if $m.cut == true then "; cut" else "; let through" end)),
             $gen ]
-        else
+        elif $m.msg == "CANONICAL-PROXY-DECISION" then
           ($m.requested_host | clean(300)) as $hp
           | select(($hp | split(":")[0]) != $probe)
           | [ ($m.time // "-"),
@@ -492,7 +492,9 @@ cmd_log() {
                else "allowed" end),
               ($m.decision_reason // "-" | tostring | .[0:200] | gsub("[[:cntrl:]]"; "?")),
               $gen ]
-        end
+        # Any other record that merely contains a marker, such as a close
+        # record for a host named after one, is no row.
+        else empty end
       | @tsv'
 }
 
