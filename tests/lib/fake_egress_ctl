@@ -48,6 +48,7 @@ case "$1" in
     ;;
   hosts) c="$(cur "$2")"; [[ "$c" == none ]] || cat "$d/$2/gens/$c/hosts" ;;
   # Decision records a test wrote to <agent>/log, as the real ctl prints them.
-  log) cat "$d/$2/log" 2>/dev/null || true ;;
+  # A test makes it fail with <agent>/log-fails.
+  log) [[ ! -e "$d/$2/log-fails" ]] || exit 1; cat "$d/$2/log" 2>/dev/null || true ;;
   *) echo "fake_egress_ctl: unsupported: $*" >&2; exit 1 ;;
 esac

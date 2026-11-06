@@ -47,7 +47,8 @@ Usage: bxn egress <command> [args...]
                                        public web traffic, logging what enforce
                                        would block. off: no allowlist.
   refresh [<container>|--all]          Finish an interrupted change, apply a
-                                       baseline update after you review it
+                                       baseline update after you review it,
+                                       move to a newer proxy build
 
 Hosts are hostnames for ports 80 and 443: lowercase, punycode, a wildcard only
 as a leading "*.". Allowing a host keeps open connections; anything that
@@ -283,20 +284,28 @@ cmd_ls() {
 
 # One line: name, desired mode, active state, proxy and anything to fix.
 status_line() {
-  local c="$1" egress mode active port notes="" st
+  local c="$1" egress mode active port notes="" st n
   egress="$(incus config get "$c" user.boxen.egress.container)"
   mode="$(incus config get "$c" user.boxen.egress 2>/dev/null)"; mode="${mode:-enforce}"
   active="$(incus config get "$c" user.boxen.egress.active 2>/dev/null)"
   port="$(incus config get "$c" user.boxen.egress.port 2>/dev/null)"
   [[ -n "$(egress_transition "$c")" ]] && notes+="change interrupted: bxn egress refresh $c; "
   egress_build_abandoned "$c" && notes+="build abandoned ($(incus config get "$c" user.boxen.egress.build)): rebuild or delete it; "
+  egress_outdated "$egress" && notes+="$egress runs an older proxy build: bxn egress refresh --all; "
   if [[ "${active%%:*}" != "$mode" ]]; then
     notes+="wants $mode: bxn egress refresh $c; "
-  elif [[ "${active#*:}" != "$(egress_hosts "$c" | egress_policy_id "$mode")" ]]; then
-    notes+="hosts changed since applied: bxn egress refresh $c; "
+  elif [[ "${active#*:}" != "$(egress_hosts "$c" | egress_policy_id "$mode" "$egress")" ]]; then
+    notes+="hosts or proxy changed since applied: bxn egress refresh $c; "
   fi
   if [[ "$mode" != off ]] && ! egress_nic_is_restricted "$c"; then notes+="card not locked; "; fi
   if egress_running "$egress"; then
+    # First, since it's the one to look into. A log that can't be read is
+    # a note, not the end of ls: set -e would stop at a failed assignment.
+    local logged=1
+    n="$(egress_ctl "$egress" log "$c" -1h </dev/null 2>/dev/null | awk -F'\t' '$4 == "name-mismatch"' | wc -l | tr -d ' ')" || logged=0
+    [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) &&
+      notes="WARNING: $n connection(s) used another name in the last hour: bxn egress log $c; $notes"
+    [[ "$logged" == 1 ]] || notes+="could not read its log: bxn egress log $c; "
     st="$(egress_ctl "$egress" status "$c" </dev/null 2>/dev/null)" || st=""
     [[ "$(cut -f6 <<< "$st")" == "yes" ]] || notes+="no proxy listening; "
     local draining
@@ -340,12 +349,29 @@ cmd_log() {
     egress_ctl "$egress" log "$c" "$since" </dev/null
     return
   fi
+  local rows
+  rows="$(egress_ctl "$egress" log "$c" "$since" </dev/null)" || error "Could not read $c's log in $egress"
+  # Connections used for a different name than the one they were allowed
+  # for come first, above everything else.
+  if awk -F'\t' '$4 == "name-mismatch" { found = 1 } END { exit !found }' <<< "$rows"; then
+    echo "WARNINGS"
+    echo ""
+    echo "  A connection opened for an allowed host was then used for a different"
+    echo "  name. Legitimate tools don't do this: something in $c may be using an"
+    echo "  allowed host to reach one that isn't allowed. Look into what runs there."
+    echo ""
+    awk -F'\t' '$4 == "name-mismatch" { k = $2 "\t" $3 "\t" $5; n[k]++; last[k] = $1 }
+      END { for (k in n) { split(k, f, "\t"); print n[k] "\t" k "\t" last[k] } }' <<< "$rows" |
+      sort -t$'\t' -k1,1nr |
+      awk -F'\t' 'BEGIN { printf "  %-40s %-6s %6s  %-20s  %s\n", "ALLOWED HOST", "PORT", "HITS", "LAST", "WHAT HAPPENED" }
+        { printf "  %-40s %-6s %6s  %-20s  %s\n", $2, $3, $1, $5, $4 }'
+    echo ""
+  fi
   # One row per host, port and decision: hits and the last attempt. Blocked
   # first, so what to allow is at the top.
-  egress_ctl "$egress" log "$c" "$since" </dev/null | awk -F'\t' '
-    { k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = $1 }
+  awk -F'\t' '$4 != "name-mismatch" && NF { k = $2 "\t" $3 "\t" $4; n[k]++; last[k] = $1 }
     END { for (k in n) { split(k, f, "\t"); r = (f[3] == "blocked") ? 0 : (f[3] == "would-block") ? 1 : 2
-                         print r "\t" k "\t" n[k] "\t" last[k] } }' |
+                         print r "\t" k "\t" n[k] "\t" last[k] } }' <<< "$rows" |
     sort -t$'\t' -k1,1n -k5,5nr |
     awk -F'\t' 'BEGIN { printf "%-50s %-6s %-12s %6s  %s\n", "HOST", "PORT", "DECISION", "HITS", "LAST" }
       { printf "%-50s %-6s %-12s %6s  %s\n", $2, $3, $4, $5, $6 }'
@@ -354,7 +380,7 @@ cmd_log() {
 }
 
 cmd_refresh() {
-  local target="${1:-}" cs c failed=""
+  local target="${1:-}" cs c egress failed="" updated=""
   egress_ensure_approved
   if ! cmp -s <(egress_read_hosts "$EGRESS_SHIPPED") <(egress_read_hosts "$EGRESS_APPROVED"); then
     echo "The shipped egress baseline differs from the one you approved:"
@@ -375,7 +401,8 @@ cmd_refresh() {
   esac
   boxen_lock
   for c in $cs; do
-    [[ -n "$(incus config get "$c" user.boxen.egress.container 2>/dev/null)" ]] || { warn "$c has no allowlist"; continue; }
+    egress="$(incus config get "$c" user.boxen.egress.container 2>/dev/null)"
+    [[ -n "$egress" ]] || { warn "$c has no allowlist"; continue; }
     if egress_build_abandoned "$c"; then
       if egress_running "$c" && ! incus stop "$c" --force >/dev/null 2>&1; then
         warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)), and it couldn't be stopped. Stop it: incus stop --force $c"
@@ -383,6 +410,12 @@ cmd_refresh() {
       fi
       warn "$c's build was abandoned ($(incus config get "$c" user.boxen.egress.build)); it's stopped. Rebuild it, or delete it: bxn rm $c"
       continue
+    fi
+    # A newer proxy build goes in first, once per egress container, so the
+    # converge below moves the container to it.
+    if ! grep -qxF -- "$egress" <<< "$updated" && egress_running "$egress"; then
+      updated+="$egress"$'\n'
+      egress_update "$egress" || failed="$failed $egress"
     fi
     converge_one "$c" || failed="$failed $c"
   done

@@ -24,6 +24,7 @@ Why shell scripts? They introduce no dependencies, are ergonomic enough for simp
   - [Snapshots](#snapshots)
   - [Network Isolation](#network-isolation)
   - [Egress Allowlist](#egress-allowlist)
+  - [Networking: what the proxy sees, and its limits](NETWORKING.md)
 - [Runtime Management](#runtime-management)
 - [Linux Gotchas](#linux-gotchas)
 
@@ -718,7 +719,7 @@ Instances created before this keep the default bridge. What changes for new ones
 
 ### Egress Allowlist
 
-`bxn egress` limits which internet hosts a container on `boxenbr0` can reach. Its traffic goes through its own [smokescreen](https://github.com/stripe/smokescreen) proxy in an egress container (`boxen-egress`), and its network card lets it reach nothing but that proxy. Nothing is decrypted: the proxy sees only the hostname each connection asks for.
+`bxn egress` limits which internet hosts a container on `boxenbr0` can reach. Its traffic goes through its own [smokescreen](https://github.com/stripe/smokescreen) proxy in an egress container (`boxen-egress`), and its network card lets it reach nothing but that proxy. Nothing is decrypted: the proxy sees the hostname each connection asks for and, for HTTPS, the server name in its TLS handshake, which must match it. [NETWORKING.md](NETWORKING.md) covers what that stops and what it doesn't.
 
 ```bash
 bxn egress mode my-project enforce      # only listed hosts (restarts it the first time)
@@ -728,7 +729,7 @@ bxn egress rm my-project docs.rs        # its open connections through the proxy
 bxn egress mode my-project report       # allow all public web traffic, log what enforce would block
 bxn egress mode my-project off          # no allowlist
 bxn egress ls [my-project]              # modes, proxies, and where each host comes from
-bxn egress refresh [my-project|--all]   # finish an interrupted change, review a baseline update
+bxn egress refresh [my-project|--all]   # finish an interrupted change, review a baseline update, update the proxy
 ```
 
 - **Hosts** are hostnames for ports 80 and 443. A leading `*.` matches any subdomain, not the name itself.
@@ -738,9 +739,11 @@ bxn egress refresh [my-project|--all]   # finish an interrupted change, review a
 - **Proxy settings** (`HTTP_PROXY`, `HTTPS_PROXY`, a narrow `NO_PROXY` that also covers Docker's networks, `npm_config_proxy`/`npm_config_https_proxy` for npm, pnpm, yarn and the install scripts they run, `NODE_USE_ENV_PROXY=1`, `ELECTRON_GET_USE_PROXY=1`) go into the Incus environment, `/etc/environment`, every systemd service, and apt. Tools that keep proxy settings in their own files get them from their plugin (`plugin_proxy`; Docker's client config, so builds and containers inside Docker use the proxy). Under `enforce`, a tool that ignores all of these fails with a DNS error rather than getting around the proxy; the note in the agents' instructions says how to point such a tool at the proxy. Node's built-in `fetch` needs Node 22.21 or 24 or later for this.
 - **Without DNS**: an allowlisted container can't look names up itself; the proxy does it.
 - **In the status view** (`bxn`), allowlisted containers show 🔒 (enforce) or 🔓 (report), and their details have **Network** and **Rules** tabs (h/l). Network lists what the container tried to reach, blocked first: `a` allows the selected host for that container, `A` for every container, each after a y/n naming the exact host and scope. Rules lists its hosts and where each comes from; `d` removes one of the container's own. `m` changes the mode. A row shows "allowing…" or "removing…" while its change runs, and both tabs update as soon as it finishes. A host logged as blocked that is now listed reads "allowed now", and one logged as allowed that has been removed reads "blocked now" ("unlisted now" under report).
+- **Tunnels used for another name** (a connection opened for an allowed host whose TLS handshake names a different one) are closed under `enforce` and let through under `report`, and logged either way. `bxn egress log` lists them first, under WARNINGS; `bxn egress ls` and the Network tab flag them too. See [Tunnels used for another name](NETWORKING.md#tunnels-used-for-another-name).
+- **Proxy updates**: when an update to bxn changes the proxy, `bxn egress refresh --all` rebuilds it in each egress container and moves every container to it, keeping open connections. `bxn egress ls` and `bxn doctor` say when one is out of date.
 - **Separate egress containers** (`--egress-container <name>` on `bxn egress mode`, making `boxen-egress-<name>`) keep groups of containers, such as different clients' work, from reaching each other's proxies. Each egress container is one security boundary.
 
-What an allowlist doesn't stop: data sent to an allowed host (a gist, a package upload), and anything reachable through an allowed shared front end such as a CDN. Hosts in the baseline that accept uploads from anyone with an account are marked `upload:` in the file.
+What an allowlist doesn't stop: data sent to an allowed host (a gist, a package upload), and some of what is reachable through an allowed shared front end such as a CDN. Hosts in the baseline that accept uploads from anyone with an account are marked `upload:` in the file. [NETWORKING.md](NETWORKING.md#what-remains) has the details.
 
 ## When a Create Fails: bxn doctor
 
@@ -749,7 +752,7 @@ What an allowlist doesn't stop: data sent to an allowed host (a gist, a package 
 - **Incus**: the server answers, and has the version, nftables firewall and per-container network rules that isolation needs.
 - **The lock** bxn commands share: one with no owner, or whose process ID now belongs to something else (after a reboot, say), makes every command wait 15 minutes and fail.
 - **boxenbr0**: a /16 that no route or other network overlaps (a VPN often does), the host's interface, IPv4 forwarding, the DHCP server, ufw rules, two containers on one address, and containers a failed create left unlabelled.
-- **Egress**: each egress container is running, starts at boot and answers; each allowlisted container has a listening proxy and no unfinished lockdown; proxies and network rule sets left for containers that are gone.
+- **Egress**: each egress container is running, starts at boot, answers and runs the current proxy build; each allowlisted container has a listening proxy and no unfinished lockdown; proxies and network rule sets left for containers that are gone.
 
 The host checks (interface, forwarding, DHCP) run only when the Incus server is on the same machine. Checks that need root, such as the firewall rules themselves, aren't in it yet.
 

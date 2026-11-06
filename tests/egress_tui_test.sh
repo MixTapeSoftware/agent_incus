@@ -54,6 +54,9 @@ case "$1" in
     printf '2026-10-30T10:02:00Z\tdocs.rs\t443\tblocked\tdefault rule policy used\t3\n'
     printf '2026-10-30T10:03:00Z\tdocs.rs\t443\tblocked\tdefault rule policy used\t3\n'
     printf '2026-10-30T10:04:00Z\tevil\033]0;pwned\007.example\t443\tblocked\tdefault rule policy used\t3\n'
+    if [[ -f "$STUB/mismatch" ]]; then
+      printf '2026-10-30T10:06:00Z\tgithub.com\t443\tname-mismatch\tTLS name was other.example; closed\t3\n'
+    fi
     if [[ -f "$STUB/private-host" ]]; then
       printf '2026-10-30T10:05:00Z\tinternal.example\t443\tblocked\tresolved to a denied address\t3\n'
     fi
@@ -132,6 +135,13 @@ out=$(keys '\t' l | tui) || true
 frame=$(last_frame "$out" | plain)
 assert_contains "it lists what was tried" "DECISION      HITS  LAST      HOST" "$frame"
 assert_contains "blocked hosts come first, with hits" "blocked          2  10:03:00  docs.rs:443" "$frame"
+touch "$S/mismatch"
+out=$(keys '\t' l | tui) || true
+rm -f "$S/mismatch"
+frame=$(last_frame "$out" | plain)
+assert_contains "a name mismatch is labelled, in the same columns" "name-mismatch    1  10:06:00  github.com:443" "$frame"
+first=$(grep -oE '(name-mismatch|blocked) +[0-9]+  [0-9:]+  [^ ]+' <<<"$frame" | head -1)
+assert_eq "and comes before the blocked hosts" "name-mismatch    1  10:06:00  github.com:443" "$first"
 [[ "$out" != *$'\033]0;'* ]] && pass=yes || pass=no
 assert_eq "a hostile hostname can't reach the terminal as an escape" "yes" "$pass"
 out=$(keys '\t' l a | tui) || true

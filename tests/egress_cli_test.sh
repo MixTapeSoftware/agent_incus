@@ -263,6 +263,32 @@ run log box
 assert_contains "log counts hits per host" "docs.rs                                            443    blocked           2  2026-10-30T10:05:00Z" "$OUT"
 assert_eq "blocked hosts come first" "docs.rs" "$(sed -n 2p <<< "$OUT" | awk '{print $1}')"
 assert_contains "log says how to allow" "bxn egress allow box <host>" "$OUT"
+assert_not_contains "no warnings without a name mismatch" "WARNINGS" "$OUT"
+run ls
+assert_not_contains "nor in ls" "another name" "$OUT"
+printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+  2026-10-30T10:06:00Z github.com 443 name-mismatch "TLS name was other.example; closed" 9 \
+  2026-10-30T10:07:00Z github.com 443 name-mismatch "TLS name was other.example; closed" 9 \
+  2026-10-30T10:08:00Z api.anthropic.com 443 name-mismatch "not TLS; closed" 9 >> "$FAKE_INCUS_STATE/ctl/$E/box/log"
+run log box
+assert_eq "a name mismatch puts WARNINGS at the very top" "WARNINGS" "$(head -1 <<< "$OUT")"
+assert_contains "explained for a developer" "A connection opened for an allowed host was then used for a different
+  name. Legitimate tools don't do this" "$OUT"
+assert_contains "with the host, hits and what happened" "github.com                               443         2  2026-10-30T10:07:00Z  TLS name was other.example; closed" "$OUT"
+assert_contains "each kind on its own row" "not TLS; closed" "$OUT"
+warnings="$(sed '/^HOST /,$d' <<< "$OUT")"
+assert_contains "above the blocked hosts" "not TLS" "$warnings"
+assert_not_contains "which don't repeat them" "name-mismatch" "$(sed -n '/^HOST /,$p' <<< "$OUT")"
+assert_contains "the table still counts blocked hosts" "docs.rs                                            443    blocked           2" "$OUT"
+run log box --raw
+assert_contains "--raw keeps every row" "name-mismatch	TLS name was other.example; closed" "$OUT"
+run ls
+assert_contains "ls warns on box's line" "WARNING: 3 connection(s) used another name in the last hour: bxn egress log box" "$(grep '^box ' <<< "$OUT")"
+touch "$FAKE_INCUS_STATE/ctl/$E/box/log-fails"
+run ls
+assert_eq "a log that can't be read doesn't stop ls" "0" "$RC"
+assert_contains "it's a note on box's line" "could not read its log: bxn egress log box" "$(grep '^box ' <<< "$OUT")"
+rm -f "$FAKE_INCUS_STATE/ctl/$E/box/log-fails"
 
 echo "a baseline update"
 echo "new-tool.example" >> "$SANDBOX/repo/egress/baseline.txt"
@@ -275,6 +301,35 @@ assert_not_contains "a declined update stays out of box's policy" "new-tool.exam
 run refresh --yes
 assert_contains "--yes approves it" "Approved the new baseline" "$OUT"
 assert_contains "and box's proxy allows it" "new-tool.example" "$(gen_file box hosts)"
+
+echo "a newer proxy build"
+run ls
+assert_not_contains "a current egress container has no note" "older proxy build" "$OUT"
+old="$(cfg $E user.boxen.egress.version)"
+echo "# a newer build" >> "$SANDBOX/repo/egress/boxen-proxy-run"
+run ls
+assert_contains "ls says when the egress container is out of date" "boxen-egress runs an older proxy build: bxn egress refresh --all" "$(grep '^abox ' <<< "$OUT")"
+assert_not_contains "and only that: its proxies still match" "since applied" "$OUT"
+FAKE_INCUS_FAIL_EXEC='build-smokescreen' run refresh --all
+assert_eq "a failed update fails the refresh" "1" "$RC"
+assert_contains "it says the proxies keep serving, and how to retry" "its proxies keep serving as before. Retry: bxn egress refresh --all" "$OUT"
+assert_eq "the old version stays recorded" "$old" "$(cfg $E user.boxen.egress.version)"
+gen="$(gen_of abox)"
+run refresh abox
+assert_eq "refresh updates it" "0" "$RC"
+assert_contains "rebuilding smokescreen" "Updating the proxy in boxen-egress" "$OUT"
+assert_contains "and moves the container to it, keeping open connections" "abox: allowed; open connections keep running" "$OUT"
+assert_eq "through a new generation" "$((gen + 1))" "$(gen_of abox)"
+assert_contains "the new scripts go in" "# a newer build" "$(cat "$FAKE_INCUS_STATE/instances/$E/root/root/boxen-egress-payload/boxen-proxy-run" 2>/dev/null)"
+run ls
+assert_not_contains "the egress container is current" "older proxy build" "$OUT"
+assert_contains "the others wait for their refresh" "hosts or proxy changed since applied: bxn egress refresh zbox" "$(grep '^zbox ' <<< "$OUT")"
+run refresh --all
+assert_eq "refresh --all moves the rest" "0" "$RC"
+assert_contains "widening each" "zbox: allowed; open connections keep running" "$OUT"
+assert_not_contains "without rebuilding again" "Updating the proxy" "$OUT"
+run ls
+assert_not_contains "and then nothing is left to apply" "since applied" "$OUT"
 
 echo "refusals"
 incus launch img legacy -p default >/dev/null
