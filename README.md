@@ -730,6 +730,10 @@ bxn egress mode my-project report       # allow all public web traffic, log what
 bxn egress mode my-project off          # no allowlist
 bxn egress ls [my-project]              # modes, proxies, and where each host comes from
 bxn egress refresh [my-project|--all]   # finish an interrupted change, review a baseline update, update the proxy
+bxn egress upload-limit my-project      # how much it may send a host in an hour before bxn warns
+bxn egress upload-limit my-project github.com 5G   # raise one for this container
+bxn egress upload-cap my-project on     # under enforce, cut an upload past its limit (off: warn only)
+bxn egress log my-project --uploads     # bytes sent to each host, largest first
 ```
 
 - **Hosts** are hostnames for ports 80 and 443. A leading `*.` matches any subdomain, not the name itself.
@@ -740,6 +744,7 @@ bxn egress refresh [my-project|--all]   # finish an interrupted change, review a
 - **Without DNS**: an allowlisted container can't look names up itself; the proxy does it.
 - **In the status view** (`bxn`), allowlisted containers show 🔒 (enforce) or 🔓 (report), and their details have **Network** and **Rules** tabs (h/l). Network lists what the container tried to reach, blocked first: `a` allows the selected host for that container, `A` for every container, each after a y/n naming the exact host and scope. Rules lists its hosts and where each comes from; `d` removes one of the container's own. `m` changes the mode. A row shows "allowing…" or "removing…" while its change runs, and both tabs update as soon as it finishes. A host logged as blocked that is now listed reads "allowed now", and one logged as allowed that has been removed reads "blocked now" ("unlisted now" under report).
 - **Tunnels used for another name** (a connection opened for an allowed host whose TLS handshake names a different one) are closed under `enforce` and let through under `report`, and logged either way. `bxn egress log` lists them first, under WARNINGS; `bxn egress ls` and the Network tab flag them too. See [Tunnels used for another name](NETWORKING.md#tunnels-used-for-another-name).
+- **Large uploads** to one host (by default over 250M in an hour, or 2G for agents' APIs, code hosts and registries) are logged. `bxn egress log` lists them under WARNINGS, with how to raise that host's limit; `bxn egress ls` and the Network tab flag them too. With `bxn egress upload-cap <container> on` under `enforce`, the upload is cut instead. Limits come from [`egress/upload-limits.txt`](egress/upload-limits.txt), then `~/.config/boxen/egress-upload-limits.txt`, then the container's own. This is an alarm for bulk uploads, such as a whole repository, not a guard against leaks: a small secret passes. See [Upload warnings](NETWORKING.md#upload-warnings).
 - **Proxy updates**: when an update to bxn changes the proxy, `bxn egress refresh --all` rebuilds it in each egress container and moves every container to it, keeping open connections. `bxn egress ls` and `bxn doctor` say when one is out of date.
 - **Separate egress containers** (`--egress-container <name>` on `bxn egress mode`, making `boxen-egress-<name>`) keep groups of containers, such as different clients' work, from reaching each other's proxies. Each egress container is one security boundary.
 

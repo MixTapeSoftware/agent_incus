@@ -50,13 +50,36 @@ The check closes one common gap. Others stay open:
 
 A warning means something in the container tried to reach a host it isn't allowed, by going through one it is. Look at what runs in the container and what the agent was asked to do.
 
+Large uploads show up in the same places: see [Upload warnings](#upload-warnings).
+
 ## Getting the check
 
 A new egress container has it. One set up by an earlier bxn keeps its old proxy until `bxn egress refresh --all`, or the next `bxn -c` that uses it, rebuilds it. `bxn egress refresh` then moves each container to the new proxy, and open connections keep running. `bxn egress ls` and `bxn doctor` say when an egress container is out of date. If the rebuild fails, the old proxies keep serving, and the same command retries it.
 
 ## Upload warnings
 
-Warnings for data sent to hosts that accept uploads from anyone are coming in a follow-up.
+The proxy can't see what a connection carries, but it can see how much. A large upload to an allowed host is how copying out a whole repository or a database dump would look, so bxn makes one stand out. This is an alarm for bulk uploads only, not a guard against leaks.
+
+**What is measured.** For each host, the bytes a container sends through HTTPS tunnels (`CONNECT`) to that host, over the last hour, added up across all of its connections. When a host first goes over its limit, the proxy logs it once; it logs that host again only after an hour has passed.
+
+**The defaults** are in [`egress/upload-limits.txt`](egress/upload-limits.txt): 250M for any host, and 2G for hosts whose normal job is taking large uploads (the coding agents' APIs, which get the whole conversation with every request; code hosts; and the container and package registries people push to). Nothing is off by default. The numbers are starting guesses, set high so normal work doesn't set them off; `bxn egress log <container> --uploads` shows what each host was sent, largest first, to tune them by (it counts connections once they close; `--since` for longer than the last hour).
+
+**Changing them.** `bxn egress upload-limit <container>` lists a container's limits and where each comes from. `bxn egress upload-limit <container> <host> 5G` sets one for that container (`default` for any host, `off` for none, `clear` to drop it). For every container, put lines like `github.com 5G` in `~/.config/boxen/egress-upload-limits.txt`. For a host, the container's own setting wins, then your file, then the shipped one. A host's own line wins over a wildcard (`*.example.com`, subdomains only), and the longest wildcard over a shorter one. Unlike the baseline, the shipped file isn't approved first: a change to it in an update applies at the container's next `bxn egress refresh`, and `bxn egress ls` says when one is waiting. A change applies to new connections; open ones keep the old limits until they close.
+
+**Warn or cut.** By default, going over a limit is only logged. `bxn egress upload-cap <container> on` turns the cap on: under `enforce`, a write that would take a host over its limit closes that connection instead, and so does every write to that host until enough of the hour's bytes have aged out. Under `report` or `off` it still only warns. A cut connection gets no message; the tool sees it close. So the warning is how you find out:
+
+- `bxn egress log <container>` lists large uploads under **WARNINGS**: the host, how much it was sent in the hour, its limit, whether it was cut, and how to raise that host's limit if the upload was yours.
+- `bxn egress ls` puts a warning on the container's line, and the Network tab in the status view lists them first, as `large-upload`, or `upload-cut` when the cap cut it.
+- The note in the agents' instructions tells an agent whose big push fails partway to tell you and point you to the log.
+
+**What it doesn't catch.**
+
+- **Small secrets.** A token or a key is a few dozen bytes. It passes any limit.
+- **Slow uploads.** Anything under the limit in every hour passes, so 200M an hour gets out 4.8G a day without a warning.
+- **Spreading it out.** Each host has its own count, and a wildcard gives every name under it its own: sending to many hosts keeps each under its limit.
+- **Plain HTTP.** Only HTTPS tunnels are counted. Plain HTTP requests (`HTTP_PROXY`) aren't.
+- **A new proxy generation starts from zero.** Counts live in the proxy's memory. Any change to the container's policy (a host allowed, a mode or limit changed, a proxy update) starts a new generation with no count; older generations keep counting the connections they still serve, each on its own.
+- **The cap needs `enforce`, and someone to turn it on.** It's off by default, so a warning comes after the data has gone.
 
 ## Limits
 
