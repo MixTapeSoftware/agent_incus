@@ -284,6 +284,11 @@ run log box --raw
 assert_contains "--raw keeps every row" "name-mismatch	TLS name was other.example; closed" "$OUT"
 run ls
 assert_contains "ls warns on box's line" "WARNING: 3 connection(s) used another name in the last hour: bxn egress log box" "$(grep '^box ' <<< "$OUT")"
+touch "$FAKE_INCUS_STATE/ctl/$E/box/log-fails"
+run ls
+assert_eq "a log that can't be read doesn't stop ls" "0" "$RC"
+assert_contains "it's a note on box's line" "could not read its log: bxn egress log box" "$(grep '^box ' <<< "$OUT")"
+rm -f "$FAKE_INCUS_STATE/ctl/$E/box/log-fails"
 
 echo "a baseline update"
 echo "new-tool.example" >> "$SANDBOX/repo/egress/baseline.txt"

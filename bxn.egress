@@ -299,10 +299,13 @@ status_line() {
   fi
   if [[ "$mode" != off ]] && ! egress_nic_is_restricted "$c"; then notes+="card not locked; "; fi
   if egress_running "$egress"; then
-    # First, since it's the one to look into.
-    n="$(egress_ctl "$egress" log "$c" -1h </dev/null 2>/dev/null | awk -F'\t' '$4 == "name-mismatch"' | wc -l | tr -d ' ')"
+    # First, since it's the one to look into. A log that can't be read is
+    # a note, not the end of ls: set -e would stop at a failed assignment.
+    local logged=1
+    n="$(egress_ctl "$egress" log "$c" -1h </dev/null 2>/dev/null | awk -F'\t' '$4 == "name-mismatch"' | wc -l | tr -d ' ')" || logged=0
     [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) &&
       notes="WARNING: $n connection(s) used another name in the last hour: bxn egress log $c; $notes"
+    [[ "$logged" == 1 ]] || notes+="could not read its log: bxn egress log $c; "
     st="$(egress_ctl "$egress" status "$c" </dev/null 2>/dev/null)" || st=""
     [[ "$(cut -f6 <<< "$st")" == "yes" ]] || notes+="no proxy listening; "
     local draining
