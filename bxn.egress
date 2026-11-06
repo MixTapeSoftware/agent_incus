@@ -320,9 +320,10 @@ status_line() {
   fi
   if [[ "$mode" != off ]] && ! egress_nic_is_restricted "$c"; then notes+="card not locked; "; fi
   if egress_running "$egress"; then
-    # First, since they're the ones to look into.
-    local rows w=""
-    rows="$(egress_ctl "$egress" log "$c" -1h </dev/null 2>/dev/null)" || rows=""
+    # First, since they're the ones to look into. A log that can't be read
+    # is a note, not the end of ls.
+    local rows w="" logged=1
+    rows="$(egress_ctl "$egress" log "$c" -1h </dev/null 2>/dev/null)" || { rows=""; logged=0; }
     n="$(awk -F'\t' '$4 == "name-mismatch"' <<< "$rows" | wc -l | tr -d ' ')"
     [[ "$n" =~ ^[0-9]+$ ]] && (( n > 0 )) &&
       w+="WARNING: $n connection(s) used another name in the last hour: bxn egress log $c; "
@@ -330,6 +331,7 @@ status_line() {
                     END { for (x in h) n++; for (x in k) m++; if (n) print n " host(s)" (m ? ", " m " cut" : "") }' <<< "$rows")"
     [[ -z "$n" ]] || w+="WARNING: large uploads to $n in the last hour: bxn egress log $c; "
     notes="$w$notes"
+    [[ "$logged" == 1 ]] || notes+="could not read its log: bxn egress log $c; "
     st="$(egress_ctl "$egress" status "$c" </dev/null 2>/dev/null)" || st=""
     [[ "$(cut -f6 <<< "$st")" == "yes" ]] || notes+="no proxy listening; "
     local draining
