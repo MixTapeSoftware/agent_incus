@@ -1,0 +1,36 @@
+boxen.plugins
+  s_72cef02a544353::t_11cfcaeeb15f5f 1-23,26-27,33-53,55-81,85,89-93,95-96,98,100,103-104,108-113,115,117-126,128-163
+tests/doctor_test.sh
+  s_72cef02a544353::t_4e37a9bd6c0c46 205-230
+bxn.doctor
+  s_72cef02a544353::t_6559d79131659a 35-36,48-49,380-392,394-397,399-402,404-407,409,411-413,424
+README.md
+  s_72cef02a544353::t_e347d6018ef5a9 74,103-105,776
+bxn.plugins
+  s_72cef02a544353::t_2e670a9a74ae0e 1-88,90-92,94-112,115-118,120,122,124,126-152,154-155,157-167
+bxn
+  s_72cef02a544353::t_b64be601b72d9b 90-92,463-467,1371-1373
+  s_72cef02a544353::t_169b24e8eba79d 1374
+tests/plugins_cmd_test.sh
+  s_72cef02a544353::t_5a385aa01a5433 1-61,64-103,105-124,126-151,159-196
+tests/status_test.sh
+  s_72cef02a544353::t_4e37a9bd6c0c46 69-70,300
+boxen.create
+  s_72cef02a544353::t_c174384f189ac4 272-278
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "ea93c19db1f00b118f75e996e4e2d0bb031d3623",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
