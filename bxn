@@ -87,6 +87,9 @@ Commands:
                                  container's Network and Rules tabs
   doctor                         Check what would stop bxn creating or starting
                                  containers, and what was left half done
+  plugins [show|update|set ...]  Where the optional plugins come from: this
+                                 repository's, or a repository or directory of
+                                 your own in their place (bxn plugins -h)
   new-plugin <slug> [opts]       Generate a new plugin file from a template
   -h, help                       Show this help
 
@@ -457,7 +460,11 @@ def info:
       ["Image", ($i.config["image.description"] // "-")],
       ["Profiles", ($i.profiles // [] | if length == 0 then "-" else join(", ") end)],
       ["Created", ($i.created_at | when)],
-      ["Last started", ($i.last_used_at | when)] ] + egressinfo
+      ["Last started", ($i.last_used_at | when)] ]
+    + (if ($i.expanded_config["user.boxen.plugins.source"] // "") == "" then [] else
+        [["Plugins", $i.expanded_config["user.boxen.plugins.source"]
+                     + (($i.expanded_config["user.boxen.plugins.commit"] // "") | if . == "" then "" else " at \(.[0:12])" end)]] end)
+    + egressinfo
   # Values such as the image description come from image metadata. A newline
   # would forge a tagged row, and an escape sequence would reach the terminal.
   | .[] | (.[0] | pad(14)) + (.[1] | tostring | gsub("[[:cntrl:]]"; " "));
@@ -1360,6 +1367,10 @@ case "$1" in
   new-plugin)
     shift
     exec "$SCRIPT_DIR/bxn.new-plugin" "$@"
+    ;;
+  plugins)
+    shift
+    exec "$SCRIPT_DIR/bxn.plugins" "$@"
     ;;
   notify-snippet)
     cmd_notify_snippet

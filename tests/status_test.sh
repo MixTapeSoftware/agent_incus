@@ -66,7 +66,8 @@ run_status() {
 cat > "$stub/sample1.json" <<'EOF'
 [
  {"name":"alpha","status":"Running","type":"container",
-  "expanded_config":{"user.managed-by":"boxen","limits.memory":"4GiB"},
+  "expanded_config":{"user.managed-by":"boxen","limits.memory":"4GiB",
+                     "user.boxen.plugins.source":"acme/boxen-plugins#v2","user.boxen.plugins.commit":"0123456789abcdef0123456789abcdef01234567"},
   "config":{"image.description":"Ubuntu noble amd64"},"profiles":["default","boxen"],
   "created_at":"2026-10-12T14:03:12.5-05:00","last_used_at":"2026-10-26T09:12:00Z",
   "state":{"pid":100,"cpu":{"usage":5000000000},"memory":{"usage":432316416},
@@ -296,6 +297,7 @@ Image         Ubuntu noble amd64
 Profiles      default, boxen
 Created       2026-10-12 14:03
 Last started  2026-10-26 09:12
+Plugins       acme/boxen-plugins#v2 at 0123456789ab
 EOF
 )
   assert_eq "details of the selected instance" "$expected_details" "$(sed -e :a -e '/^\n*$/{$d;N;ba' -e '}' <<<"$details")"

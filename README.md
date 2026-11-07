@@ -71,6 +71,7 @@ bxn my-project claude
 | `boxen.network` | `bxnn` | Manage port proxy devices |
 | `boxen.macos.setup` | — | Bootstrap Colima + Incus on macOS (called automatically by `boxen.create`) |
 | `bxn.new-plugin` | — | Scaffold a new plugin file from a template (also `bxn new-plugin`) |
+| `bxn.plugins` | — | Where the optional plugins come from; show, update, set (also `bxn plugins`) |
 | `install_shortcuts` | — | Symlink helpers and aliases into `~/.local/bin`; optionally install Chadmux on the host |
 | `chadmux.host` | — | Install Chadmux on the host (called by `install_shortcuts`) |
 
@@ -99,6 +100,9 @@ bxn status                            # Live view of all instances; space starts
 bxn status --once                     # Print the status table once
 bxn rm my-project                     # Delete a container
 bxn doctor                            # Check what would stop a create or start
+bxn plugins                           # Where the optional plugins come from, and what the next build offers
+bxn plugins update                    # Fetch a repository of plugins again
+bxn plugins set my-org/boxen-plugins  # Take the optional plugins from there at every build (builtin: this repo's)
 bxn cron install                      # Install 7pm daily update cron
 bxn cron install 3                    # Install 3am daily update cron
 bxn cron status                       # Show current cron schedule
@@ -318,7 +322,7 @@ bxn -c my-project --plugins ~/src/boxen-plugins           # a directory, used as
 bxn -c my-project --plugins builtin                       # this repository's, whatever is configured
 ```
 
-To make it the default, put the same value on one line in `~/.config/boxen/plugins-source`, or set `BOXEN_PLUGINS_SOURCE`; `--plugins` beats the variable, which beats the file. The repository's plugins are its `plugins/*.sh` if it has that directory, else the `*.sh` files at its top level. Each build clones it on the host, into `~/.local/share/boxen/plugin-sources/`, with your own git and credentials, so a private repository works where `git clone` would, and fetches the ref again, so an unpinned source follows its branch; when the fetch fails, the build goes on with the copy from last time and says so. The build and `--dry-run` name the source and the commit, and the container records them in `user.boxen.plugins.source` and `user.boxen.plugins.commit`; a user or token in an `https://` URL is left out of both. Your own `~/.local/share/boxen/plugins/` still layers on top, overriding by `PLUGIN_ID`.
+To make it the default, run `bxn plugins set my-org/boxen-plugins` (it fetches first, so a mistake shows now), or put the same value on one line in `~/.config/boxen/plugins-source`, or set `BOXEN_PLUGINS_SOURCE`; `--plugins` beats the variable, which beats the file. `bxn plugins` (or `bxn plugins show`) says where the optional plugins come from, the commit a repository is at on this host, and what the next build offers; `bxn plugins update` fetches the repository again without building; `bxn plugins set builtin` goes back to this repository's. `bxn status` shows a container's source in its details, and `bxn doctor` checks that the configured source can be read. The repository's plugins are its `plugins/*.sh` if it has that directory, else the `*.sh` files at its top level. Each build clones it on the host, into `~/.local/share/boxen/plugin-sources/`, with your own git and credentials, so a private repository works where `git clone` would, and fetches the ref again, so an unpinned source follows its branch; when the fetch fails, the build goes on with the copy from last time and says so. The build and `--dry-run` name the source and the commit, and the container records them in `user.boxen.plugins.source` and `user.boxen.plugins.commit`; a user or token in an `https://` URL is left out of both. Your own `~/.local/share/boxen/plugins/` still layers on top, overriding by `PLUGIN_ID`.
 
 A plugin runs on your host as you, with root in the container, so a source is as trusted as this repository: pin a commit (`owner/repo#<sha>`) when that's a concern.
 
@@ -769,6 +773,7 @@ What an allowlist doesn't stop: data sent to an allowed host (a gist, a package 
 - **The lock** bxn commands share: one with no owner, or whose process ID now belongs to something else (after a reboot, say), makes every command wait 15 minutes and fail.
 - **boxenbr0**: a /16 that no route or other network overlaps (a VPN often does), the host's interface, IPv4 forwarding, the DHCP server, ufw rules, two containers on one address, and containers a failed create left unlabelled.
 - **Egress**: each egress container is running, starts at boot and answers; each allowlisted container has a listening proxy and no unfinished lockdown; proxies and network rule sets left for containers that are gone.
+- **Plugins**: the configured [plugin source](#plugins-from-a-repository), if any, is a directory or a fetched repository with plugins in it; one not fetched yet is a warning, since the first create has to reach it.
 
 The host checks (interface, forwarding, DHCP) run only when the Incus server is on the same machine. Checks that need root, such as the firewall rules themselves, aren't in it yet.
 

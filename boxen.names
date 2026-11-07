@@ -139,7 +139,7 @@ names_resolve() {
 names_is_command() {
   case "$1" in
     help|shell|create|init|net|egress|serve|env|handle|rm|delete|kill|kill-all|\
-    update|update-all|status|cron|doctor|new-plugin|notify-snippet) return 0 ;;
+    update|update-all|status|cron|doctor|new-plugin|plugins|notify-snippet) return 0 ;;
   esac
   return 1
 }
