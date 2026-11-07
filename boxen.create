@@ -68,6 +68,9 @@ Options:
                             instances or the host (also BOXEN_INSECURE_NETWORK=1)
   --egress MODE             Internet allowlist: enforce (default), report or off
   --egress-container NAME   Run this container's proxy in boxen-egress-NAME
+  --plugins SOURCE          Take the optional plugins from a GitHub repository
+                            (owner/repo[#ref]), a git URL, or a directory, in
+                            place of ours; the agents stay. "builtin" is ours
   --dry-run                 Show what would be done without doing it
   -h, --help                Show this help
 
@@ -268,6 +271,100 @@ EGRESS_GROUP=""
 SCRIPT_DIR="$(cd "$(dirname "$(realpath "${BASH_SOURCE[0]}")")" && pwd)"
 BUILTIN_PLUGINS_DIR="$SCRIPT_DIR/plugins"
 USER_PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/boxen/plugins"
+PLUGIN_SOURCES_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/boxen/plugin-sources"
+BOXEN_CONFIG_DIR="${BOXEN_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/boxen}"
+PLUGINS_SOURCE_FILE="$BOXEN_CONFIG_DIR/plugins-source"
+
+# The plugin source: where the optional plugins come from, in place of the
+# ones in plugins/. The agents stay: a container always gets its pick of
+# them, whatever the source holds. From --plugins, else BOXEN_PLUGINS_SOURCE,
+# else the one line of ~/.config/boxen/plugins-source; "builtin" is ours.
+#   owner/repo[#ref]   a GitHub repository, its plugins/ directory if it has
+#                      one, else its top level; ref is a branch, tag or commit
+#   <url>[#ref]        any git URL (https://, ssh://, git@host:, file://)
+#   <path>             a directory on this host, used as it is
+# A repository is cloned on the host, into plugin-sources/, and brought up
+# to date on every build; when that fails the clone from last time is used.
+# Its plugins run on this host as you, like ours, so it has to be trusted.
+PLUGINS_SOURCE="${BOXEN_PLUGINS_SOURCE:-}"
+PLUGINS_SOURCE_FROM="BOXEN_PLUGINS_SOURCE"
+_prev=""
+for _a in "$@"; do
+  [[ "$_prev" == "--plugins" ]] && { PLUGINS_SOURCE="$_a"; PLUGINS_SOURCE_FROM="--plugins"; }
+  case "$_a" in --plugins=*) PLUGINS_SOURCE="${_a#--plugins=}"; PLUGINS_SOURCE_FROM="--plugins" ;; esac
+  _prev="$_a"
+done
+if [[ -z "$PLUGINS_SOURCE" && -f "$PLUGINS_SOURCE_FILE" ]]; then
+  PLUGINS_SOURCE="$(grep -v '^[[:space:]]*#' "$PLUGINS_SOURCE_FILE" | grep -m1 . | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')" || PLUGINS_SOURCE=""
+  PLUGINS_SOURCE_FROM="$PLUGINS_SOURCE_FILE"
+fi
+unset _prev _a
+[[ "$PLUGINS_SOURCE" == builtin ]] && PLUGINS_SOURCE=""
+
+# The directory the source's plugins are in, and the commit they're at.
+SOURCE_PLUGINS_DIR=""
+PLUGINS_SOURCE_COMMIT=""
+
+# Filter: drops the user and password or token from each http(s) URL, so
+# what's logged and recorded in the container holds no credential.
+_redact_urls() { sed 's#\(https\{0,1\}://\)[^/@[:space:]]*@#\1#g'; }
+PLUGINS_SOURCE_SHOWN="$(printf '%s\n' "$PLUGINS_SOURCE" | _redact_urls)"
+
+# Usage: _plugins_source_url <spec-without-ref>; prints the git URL, or
+# fails for a directory on this host.
+_plugins_source_url() {
+  [[ -d "${1/#\~/$HOME}" ]] && return 1
+  case "$1" in
+    *://*|git@*:*) printf '%s\n' "$1" ;;
+    /*|~*|.*) return 1 ;;
+    */*) printf 'https://github.com/%s.git\n' "${1%.git}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Usage: plugins_source_fetch <spec>; sets SOURCE_PLUGINS_DIR and
+# PLUGINS_SOURCE_COMMIT, or fails with the reason.
+plugins_source_fetch() {
+  local spec="$1" ref="" url dir slug shown
+  case "$spec" in *#*) ref="${spec##*#}"; spec="${spec%#*}" ;; esac
+  [[ -n "$spec" ]] || error "The plugin source is empty ($PLUGINS_SOURCE_FROM)"
+  shown="$(printf '%s\n' "$spec" | _redact_urls)"
+  if url="$(_plugins_source_url "$spec")"; then
+    command -v git >/dev/null 2>&1 || error "git is needed to fetch plugins from $shown"
+    # One clone per URL, named for it and kept apart by a checksum of the
+    # whole URL, since two URLs can read the same once made a name.
+    slug="$(printf '%s' "$url" | _redact_urls | sed 's#^[a-z]*://##; s#\.git$##' | tr -c 'A-Za-z0-9._-' '_')"
+    slug="$slug-$(printf '%s' "$url" | cksum | cut -d' ' -f1)"
+    dir="$PLUGIN_SOURCES_DIR/$slug"
+    # The ref is what's checked out in the clone. Fetching one commit works
+    # for a branch, a tag, or a commit a public host serves.
+    if [[ ! -d "$dir/.git" ]]; then
+      mkdir -p "$dir" && git -C "$dir" init -q && git -C "$dir" remote add origin "$url" ||
+        error "Could not set up $dir for the plugins from $shown"
+    elif [[ "$(git -C "$dir" config --get remote.origin.url)" != "$url" ]]; then
+      error "$dir is a clone of another repository, not $shown: remove it and build again"
+    fi
+    local err="$dir/.git/boxen-fetch.err"
+    if git -C "$dir" fetch -q --depth 1 origin "${ref:-HEAD}" </dev/null 2>"$err" &&
+       git -C "$dir" checkout -q --detach FETCH_HEAD 2>>"$err"; then
+      rm -f "$err"
+    elif git -C "$dir" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+      warn "Could not fetch the plugins from $shown; using the copy from last time ($(head -3 "$err" | tr '\n' ' ' | _redact_urls))"
+    else
+      error "Could not fetch the plugins from $shown${ref:+ at $ref}: $(head -3 "$err" | tr '\n' ' ' | _redact_urls)"
+    fi
+    PLUGINS_SOURCE_COMMIT="$(git -C "$dir" rev-parse HEAD)"
+  else
+    [[ -z "$ref" ]] || error "A directory of plugins has no ref to pick: $1"
+    dir="${spec/#\~/$HOME}"
+    [[ -d "$dir" ]] || error "The plugin source isn't a directory or a repository: $spec ($PLUGINS_SOURCE_FROM)"
+    dir="$(cd "$dir" && pwd -P)"
+  fi
+  if [[ -d "$dir/plugins" ]]; then SOURCE_PLUGINS_DIR="$dir/plugins"; else SOURCE_PLUGINS_DIR="$dir"; fi
+  ls "$SOURCE_PLUGINS_DIR"/*.sh >/dev/null 2>&1 ||
+    error "No plugins (*.sh) in $shown${ref:+ at $ref}: looked in $SOURCE_PLUGINS_DIR"
+}
+if [[ -n "$PLUGINS_SOURCE" ]]; then plugins_source_fetch "$PLUGINS_SOURCE"; fi
 
 # Parallel arrays (bash 3.2 compatible — macOS /bin/bash has no associative arrays)
 _P_ID=() _P_NAME=() _P_DESC=() _P_FILE=() _P_SELECTED=() _P_AGENT_COMMAND=()
@@ -382,11 +479,12 @@ print_plugin_logins() {
   done
 }
 
-# Discover built-in plugins first, then user plugins. On PLUGIN_ID collision
-# the user plugin overrides (logged). Final order is sorted A-Z by PLUGIN_NAME
+# Discover built-in plugins first, then the plugin source's, then user plugins.
+# With a source, only the built-in agents are kept. On PLUGIN_ID collision the
+# later plugin overrides (logged). Final order is sorted A-Z by PLUGIN_NAME
 # below — drives both TUI display and install order.
-for _dir in "$BUILTIN_PLUGINS_DIR" "$USER_PLUGINS_DIR"; do
-  [[ -d "$_dir" ]] || continue
+for _dir in "$BUILTIN_PLUGINS_DIR" "$SOURCE_PLUGINS_DIR" "$USER_PLUGINS_DIR"; do
+  [[ -n "$_dir" && -d "$_dir" ]] || continue
   for _f in "$_dir"/*.sh; do
     [[ -f "$_f" ]] || continue
     _meta=$(bash -c '
@@ -411,6 +509,8 @@ for _dir in "$BUILTIN_PLUGINS_DIR" "$USER_PLUGINS_DIR"; do
       IFS= read -r _pagent || true
     } <<< "$_meta"
     [[ -z "$_pid" ]] && continue
+    # The source replaces our optional plugins, not the agents.
+    [[ -n "$SOURCE_PLUGINS_DIR" && "$_dir" == "$BUILTIN_PLUGINS_DIR" && -z "$_pagent" ]] && continue
 
     if _existing=$(_plugin_slot "$_pid"); then
       echo "[!] Plugin '$_pid' from $_f overrides ${_P_FILE[$_existing]}" >&2
@@ -1216,6 +1316,8 @@ while [[ $# -gt 0 ]]; do
     --insecure-network) INSECURE_NETWORK=1; shift ;;
     --egress)        [[ $# -lt 2 ]] && error "$1 requires an argument"; EGRESS_MODE="$2"; shift 2 ;;
     --egress-container) [[ $# -lt 2 ]] && error "$1 requires an argument"; EGRESS_GROUP="$2"; shift 2 ;;
+    --plugins)       [[ $# -lt 2 ]] && error "$1 requires an argument"; shift 2 ;;  # read before discovery
+    --plugins=*)     shift ;;
     --dry-run)       DRY_RUN=1; shift ;;
     -h|--help)       usage ;;
     -*)
@@ -1365,6 +1467,9 @@ fi
 # ---------------------------------------------------------------------------
 # TUI plugin selector
 # ---------------------------------------------------------------------------
+if [[ -n "$SOURCE_PLUGINS_DIR" ]]; then
+  log "Optional plugins from $PLUGINS_SOURCE_SHOWN${PLUGINS_SOURCE_COMMIT:+ at ${PLUGINS_SOURCE_COMMIT:0:12}} ($PLUGINS_SOURCE_FROM)"
+fi
 # The agent: from --agent or its flag, else picked now, after every other
 # check; --no-tui takes the default agent if a plugin marks one, else a shell.
 if [[ -z "$AGENT_SLOT" ]]; then
@@ -1463,6 +1568,11 @@ if [[ "$DRY_RUN" == "1" ]]; then
   else
     echo "Egress:      off (no allowlist)"
   fi
+  if [[ -n "$SOURCE_PLUGINS_DIR" ]]; then
+    echo "Plugins:     $PLUGINS_SOURCE_SHOWN${PLUGINS_SOURCE_COMMIT:+ at ${PLUGINS_SOURCE_COMMIT:0:12}} (from $PLUGINS_SOURCE_FROM), plus the agents"
+  else
+    echo "Plugins:     built in"
+  fi
   if [[ "$SAVE_TEMPLATE" == "1" ]]; then
     echo "Workspace:   empty (template base)"
   elif [[ -n "$REPO_URL" ]]; then
@@ -1541,6 +1651,10 @@ if [[ "$INSECURE_NETWORK" == "1" ]]; then
   TAG_ARGS+=(-c user.boxen.net=open)
 else
   TAG_ARGS+=(-c user.boxen.net=isolated)
+fi
+if [[ -n "$SOURCE_PLUGINS_DIR" ]]; then
+  TAG_ARGS+=(-c "user.boxen.plugins.source=$PLUGINS_SOURCE_SHOWN")
+  [[ -z "$PLUGINS_SOURCE_COMMIT" ]] || TAG_ARGS+=(-c "user.boxen.plugins.commit=$PLUGINS_SOURCE_COMMIT")
 fi
 
 create_instance() {

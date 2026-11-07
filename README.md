@@ -144,6 +144,9 @@ Options:
   --insecure-network        Use the default bridge: no isolation from other instances or the host
   --egress MODE             Internet allowlist: enforce (default), report or off
   --egress-container NAME   Run the container's proxy in boxen-egress-NAME
+  --plugins SOURCE          Take the optional plugins from a GitHub repository
+                            (owner/repo[#ref]), a git URL, or a directory, in
+                            place of ours; the agents stay. "builtin" is ours
   --memory SIZE             Memory limit, e.g. 8GiB (default: the boxen profile's
                             6GB for a container, 4GiB for a VM; a selected plugin
                             can raise it). Refused when the host can't back it
@@ -258,7 +261,7 @@ native discovery. `CLAUDE.md` imports the same shared instructions.
 
 The TUI lets you pick from optional plugins during container creation. Plugins are standalone scripts that the TUI discovers automatically from two locations:
 
-- **Built-in:** `plugins/` (in this repo)
+- **Built-in:** `plugins/` (in this repo), or a [plugin source](#plugins-from-a-repository) of your own in its place
 - **User:** `~/.local/share/boxen/plugins/` (or `$XDG_DATA_HOME/boxen/plugins/`)
 
 Both directories are merged; on a `PLUGIN_ID` collision, the user plugin overrides the built-in. The TUI and install order are sorted A-Z by plugin name.
@@ -302,6 +305,22 @@ VibeWise is a third-party plugin (by Noah Kim) that Anthropic's plugin directory
 MixTape Skills is opt-in too (`--mixtape-skills`). It clones the repository's `main` branch into `~/.local/share/mixtape-skills` and links each skill into `~/.agents/skills` (Codex and Grok) and `~/.claude/skills` (Claude Code), so `/botfight` is available in every project. A skill of the same name that is already there and isn't from this checkout is left alone. To get newer skills, run `git -C ~/.local/share/mixtape-skills pull --ff-only`; new skills need a link of their own, or rebuild the container.
 
 Obsidian Headless is opt-in: tick it in the menu or pass `--obsidian`. It installs Obsidian's `ob` CLI for the instance user on a Node 22 of its own, since `ob` needs 22 or later and the container's Node is 18. Nothing is logged in at build, which ends by saying how to: `bxn my-project ob login` from the host, or `ob login` in a shell in the container. It asks for the account's email, password and 2FA code; type them, since it doesn't take a pasted line that ends in a newline. Then `ob sync-setup --vault "My Vault"` and `ob sync` in the vault's folder (`ob sync --continuous` keeps it in step). Every `ob` command runs from the host the same way, in the workspace: `bxn my-project ob sync --path notes`. Under the [egress allowlist](#egress-allowlist) `ob` reaches `*.obsidian.md`: Obsidian's API, Publish, and the Sync server a vault is assigned to, which is where that vault's notes go. The shipped baseline lists those hosts and `obsidian.md`, marked `upload:`: once you approve that update with `bxn egress refresh`, every allowlisted container can reach them, so anything in one can send data to an Obsidian account. Until then only a container built with the plugin can, since the plugin adds `*.obsidian.md` to its own container.
+
+### Plugins from a Repository
+
+The optional plugins can come from a repository of your own instead of this one's `plugins/`: a team's set of tools, in the same format, kept where the team keeps things. The coding agents are not optional and stay whatever the source holds, so every container still gets its pick of Claude Code, Codex and Grok.
+
+```bash
+bxn -c my-project --plugins my-org/boxen-plugins          # a GitHub repository
+bxn -c my-project --plugins my-org/boxen-plugins#v2       # at a branch, tag or commit
+bxn -c my-project --plugins git@gitlab.example.com:tools/plugins.git
+bxn -c my-project --plugins ~/src/boxen-plugins           # a directory, used as it is
+bxn -c my-project --plugins builtin                       # this repository's, whatever is configured
+```
+
+To make it the default, put the same value on one line in `~/.config/boxen/plugins-source`, or set `BOXEN_PLUGINS_SOURCE`; `--plugins` beats the variable, which beats the file. The repository's plugins are its `plugins/*.sh` if it has that directory, else the `*.sh` files at its top level. Each build clones it on the host, into `~/.local/share/boxen/plugin-sources/`, with your own git and credentials, so a private repository works where `git clone` would, and fetches the ref again, so an unpinned source follows its branch; when the fetch fails, the build goes on with the copy from last time and says so. The build and `--dry-run` name the source and the commit, and the container records them in `user.boxen.plugins.source` and `user.boxen.plugins.commit`; a user or token in an `https://` URL is left out of both. Your own `~/.local/share/boxen/plugins/` still layers on top, overriding by `PLUGIN_ID`.
+
+A plugin runs on your host as you, with root in the container, so a source is as trusted as this repository: pin a commit (`owner/repo#<sha>`) when that's a concern.
 
 ### Adding Custom Plugins
 
@@ -348,7 +367,7 @@ Optional extras:
 
 #### How discovery works
 
-Plugin files are sourced in a **separate bash process** to safely extract metadata without executing install logic. The metadata (ID, name, description, default, CLI flags) is stashed into parallel arrays that the TUI and arg parser use. Both `plugins/` and `~/.local/share/boxen/plugins/` are scanned; entries are then sorted A-Z by `PLUGIN_NAME` (case-insensitive), which drives both TUI display order and install order. During install, each plugin file is sourced into the main process so its functions have access to globals like `$CONTAINER_NAME` and `$HOST_USER`.
+Plugin files are sourced in a **separate bash process** to safely extract metadata without executing install logic. The metadata (ID, name, description, default, CLI flags) is stashed into parallel arrays that the TUI and arg parser use. `plugins/` (or, with a plugin source, its agents and the source's plugins) and `~/.local/share/boxen/plugins/` are scanned; entries are then sorted A-Z by `PLUGIN_NAME` (case-insensitive), which drives both TUI display order and install order. During install, each plugin file is sourced into the main process so its functions have access to globals like `$CONTAINER_NAME` and `$HOST_USER`.
 
 ## The Development Workflow
 
