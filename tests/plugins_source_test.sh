@@ -36,10 +36,13 @@ REAL_GIT="$(command -v git)"
 cat > "$SANDBOX/bin/git" <<EOF
 #!/bin/sh
 case "\$1:\$2" in
-  -C:$SANDBOX/home/.local/share/boxen/plugin-sources/*|-C:$SANDBOX/src*) exec "$REAL_GIT" "\$@" ;;
+  -C:$SANDBOX/home/.local/share/boxen/plugin-sources/*|-C:$SANDBOX/src*|-C:/) exec "$REAL_GIT" "\$@" ;;
 esac
 exit 0
 EOF
+# A git identity, so a build on a terminal doesn't stop to ask for one.
+printf '[user]\n\tname = Test\n\temail = test@example.com\n' > "$SANDBOX/gitconfig"
+export GIT_CONFIG_GLOBAL="$SANDBOX/gitconfig"
 chmod +x "$SANDBOX/bin/"*
 cp "$REPO_ROOT"/boxen.* "$SANDBOX/repo/"
 cp -R "$REPO_ROOT/egress" "$SANDBOX/repo/egress"
@@ -52,6 +55,7 @@ plugin_install() { echo "agent" >> "$SANDBOX/ran"; }
 EOF
 cat > "$SANDBOX/repo/plugins/50-ours.sh" <<EOF
 PLUGIN_ID="ours"; PLUGIN_NAME="Ours"; PLUGIN_DESC="a built-in plugin"; PLUGIN_DEFAULT=1
+PLUGIN_CLI_FLAGS="--ours"
 plugin_install() { echo "ours" >> "$SANDBOX/ran"; }
 EOF
 
@@ -103,6 +107,7 @@ assert_eq "it builds" "0" "$RC"
 [[ "$RC" == 0 ]] || tail -20 "$SANDBOX/out"
 assert_eq "ours run" "agent ours" "$(ran)"
 assert_eq "no source is recorded" "" "$(cfg box user.boxen.plugins.source)"
+assert_eq "nothing is asked or written without a terminal" "no" "$([[ -f "$BOXEN_CONFIG_DIR/plugins-source" ]] && echo yes || echo no)"
 assert_eq "the dry run says so" "Plugins:     built in" "$(bash "$SANDBOX/repo/boxen.create" --name dry --agent agent --no-tui --egress off -p "$SANDBOX/ws" --dry-run 2>/dev/null | grep '^Plugins:')"
 
 echo "a repository"
@@ -223,6 +228,53 @@ printf '%s\n' "$SANDBOX/dir" > "$BOXEN_CONFIG_DIR/plugins-source"
 BOXEN_PLUGINS_SOURCE="$REPO_URL#v1" init wbox --plugins builtin
 assert_eq "--plugins builtin beats both" "agent ours" "$(ran)"
 assert_eq "and records nothing" "" "$(cfg wbox user.boxen.plugins.source)"
+
+echo "the first create on a terminal asks"
+if command -v script >/dev/null 2>&1 && script -qec true /dev/null >/dev/null 2>&1; then
+  # Runs boxen.create in a pseudo-terminal, typing the keys piped in; the
+  # agent is given, so the first picker is the plugin source and the second
+  # the plugin checklist (Enter takes it).
+  tui() { local n="$1"; shift; timeout 90 script -qec "bash '$SANDBOX/repo/boxen.create' --name '$n' $* --agent agent --egress off -p '$SANDBOX/ws'" /dev/null > "$SANDBOX/tui.out" 2>&1 || true; }
+  plain() { sed $'s/\033\\[[0-9;?]*[A-Za-z]//g; s/\r//g' "$SANDBOX/tui.out"; }
+  fresh
+  { sleep 1; printf '\n'; sleep 0.5; printf '\n'; sleep 12; } | tui abox
+  assert_contains "it asks where the plugins come from" "Where do the optional plugins come from?" "$(plain)"
+  assert_contains "and says it's asked once" "Asked once; the coding agents come with Boxen either way." "$(plain)"
+  assert_eq "built in is saved" "builtin" "$(grep -v '^#' "$BOXEN_CONFIG_DIR/plugins-source")"
+  assert_contains "and said so" "Optional plugins: Boxen's own; change it with: bxn plugins set <source>" "$(plain)"
+  assert_eq "ours run" "agent ours" "$(ran)"
+  rm -f "$SANDBOX/ran"
+  { sleep 1; printf '\n'; sleep 12; } | tui bbox
+  assert_eq "the next create doesn't ask" "0" "$(plain | grep -c 'Where do the optional plugins' || true)"
+  assert_eq "and builds with ours" "agent ours" "$(ran)"
+
+  fresh
+  { sleep 1; printf 'j'; sleep 0.3; printf '\n'; sleep 0.5; printf '%s\n' "file://$SANDBOX/nowhere"; sleep 2; printf '%s\n' "$REPO_URL#v1"; sleep 2; printf '\n'; sleep 12; } | tui cbox --ours
+  assert_contains "a repository is asked for" "Repository: " "$(plain)"
+  assert_contains "one that can't be fetched is refused, and asked again" "Could not fetch the plugins from file://$SANDBOX/nowhere" "$(plain)"
+  assert_eq "the one that fetched is saved" "$REPO_URL#v1" "$(grep -v '^#' "$BOXEN_CONFIG_DIR/plugins-source")"
+  assert_contains "and said so" "Optional plugins from $REPO_URL#v1 at every build; change it with: bxn plugins set <source>" "$(plain)"
+  assert_contains "a flag for one of ours that the repository lacks is called out" "No plugin 'ours' in $REPO_URL#v1, so its flag has no effect here" "$(plain)"
+  assert_eq "its plugins run, and the agent stays" "agent theirs" "$(ran)"
+  assert_eq "the container records it" "$REPO_URL#v1" "$(cfg cbox user.boxen.plugins.source)"
+
+  fresh
+  # Down, Enter: a repository; Enter on nothing: back to the picker; q: quit.
+  { sleep 1; printf 'j'; sleep 0.3; printf '\n'; sleep 0.8; printf '\n'; sleep 0.8; printf 'q'; sleep 3; } | tui dbox
+  assert_contains "an empty repository goes back to the picker" "Where do the optional plugins come from?" "$(plain | sed -n '/^Repository: /,$p')"
+  assert_contains "where q quits" "Aborted." "$(plain)"
+  assert_eq "with nothing saved" "no" "$([[ -f "$BOXEN_CONFIG_DIR/plugins-source" ]] && echo yes || echo no)"
+
+  fresh
+  { sleep 1; printf '\n'; sleep 12; } | tui ebox --plugins "$SANDBOX/dir"
+  assert_eq "--plugins skips the question" "0" "$(plain | grep -c 'Where do the optional plugins' || true)"
+  assert_eq "and saves nothing" "no" "$([[ -f "$BOXEN_CONFIG_DIR/plugins-source" ]] && echo yes || echo no)"
+  { sleep 1; printf '\n'; sleep 3; } | tui fbox --dry-run
+  assert_eq "the dry run doesn't ask either" "0" "$(plain | grep -c 'Where do the optional plugins' || true)"
+  assert_contains "and says the plugins are built in" "Plugins:     built in" "$(plain)"
+else
+  echo "  skip  no script(1) for a pseudo-terminal"
+fi
 
 echo "a GitHub name"
 fresh
