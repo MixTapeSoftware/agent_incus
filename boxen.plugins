@@ -1,0 +1,163 @@
+# boxen.plugins — the plugin source: where the optional plugins come from.
+# Sourced by boxen.create and bxn.plugins; needs log, warn and error, and
+# SCRIPT_DIR. Bash 3.2 compatible.
+#
+# The optional plugins come from plugins/ in this repository, or from a
+# source of the user's in its place. The agents stay: a container always
+# gets its pick of them, whatever the source holds. The source is --plugins,
+# else BOXEN_PLUGINS_SOURCE, else the one line of
+# ~/.config/boxen/plugins-source; "builtin" is ours.
+#   owner/repo[#ref]   a GitHub repository, its plugins/ directory if it has
+#                      one, else its top level; ref is a branch, tag or commit
+#   <url>[#ref]        any git URL (https://, ssh://, git@host:, file://)
+#   <path>             a directory on this host, used as it is
+# A repository is cloned on the host, into plugin-sources/, and brought up
+# to date on every build; when that fails the clone from last time is used.
+# Its plugins run on this host as you, like ours, so it has to be trusted.
+
+BUILTIN_PLUGINS_DIR="$SCRIPT_DIR/plugins"
+USER_PLUGINS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/boxen/plugins"
+PLUGIN_SOURCES_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/boxen/plugin-sources"
+BOXEN_CONFIG_DIR="${BOXEN_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/boxen}"
+PLUGINS_SOURCE_FILE="$BOXEN_CONFIG_DIR/plugins-source"
+
+# Set by plugins_source_resolve: the source, where it was set, and the
+# source as it's shown and recorded: without a user or token.
+PLUGINS_SOURCE=""
+PLUGINS_SOURCE_FROM=""
+PLUGINS_SOURCE_SHOWN=""
+
+# Filter: drops the user and password or token from each http(s) URL, so
+# what's logged and recorded in the container holds no credential.
+_redact_urls() { sed 's#\(https\{0,1\}://\)[^/@[:space:]]*@#\1#g'; }
+# Set by plugins_source_fetch: the directory its plugins are in, and the
+# commit they're at (empty for a directory).
+SOURCE_PLUGINS_DIR=""
+PLUGINS_SOURCE_COMMIT=""
+
+# Usage: plugins_source_resolve "$@"; takes --plugins from the arguments,
+# else the variable, else the file. Leaves PLUGINS_SOURCE empty for ours.
+plugins_source_resolve() {
+  local prev="" a
+  PLUGINS_SOURCE="${BOXEN_PLUGINS_SOURCE:-}"
+  PLUGINS_SOURCE_FROM="BOXEN_PLUGINS_SOURCE"
+  for a in "$@"; do
+    [[ "$prev" == "--plugins" ]] && { PLUGINS_SOURCE="$a"; PLUGINS_SOURCE_FROM="--plugins"; }
+    case "$a" in --plugins=*) PLUGINS_SOURCE="${a#--plugins=}"; PLUGINS_SOURCE_FROM="--plugins" ;; esac
+    prev="$a"
+  done
+  if [[ -z "$PLUGINS_SOURCE" ]]; then
+    PLUGINS_SOURCE="$(plugins_source_read_file)"
+    PLUGINS_SOURCE_FROM="$PLUGINS_SOURCE_FILE"
+  fi
+  [[ "$PLUGINS_SOURCE" == builtin ]] && PLUGINS_SOURCE=""
+  PLUGINS_SOURCE_SHOWN="$(printf '%s\n' "$PLUGINS_SOURCE" | _redact_urls)"
+  return 0
+}
+
+# Prints the source the file holds: its first line that isn't a comment.
+plugins_source_read_file() {
+  [[ -f "$PLUGINS_SOURCE_FILE" ]] || return 0
+  grep -v '^[[:space:]]*#' "$PLUGINS_SOURCE_FILE" | grep -m1 . | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' || true
+}
+
+# Usage: plugins_source_write_file <source>; "builtin" is written as such.
+plugins_source_write_file() {
+  mkdir -p "$BOXEN_CONFIG_DIR" || return 1
+  printf '# Where the optional plugins come from: owner/repo[#ref], a git URL, a\n# directory, or builtin for the ones in the boxen repository (bxn plugins -h).\n%s\n' "$1" > "$PLUGINS_SOURCE_FILE"
+}
+
+# Usage: _plugins_source_url <spec-without-ref>; prints the git URL, or
+# fails for a directory on this host.
+_plugins_source_url() {
+  [[ -d "${1/#\~/$HOME}" ]] && return 1
+  case "$1" in
+    *://*|git@*:*) printf '%s\n' "$1" ;;
+    /*|~*|.*) return 1 ;;
+    */*) printf 'https://github.com/%s.git\n' "${1%.git}" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Usage: _plugins_source_clone_dir <url>; where that repository is cloned:
+# one clone per URL, named for it and kept apart by a checksum of the whole
+# URL, since two URLs can read the same once made a name.
+_plugins_source_clone_dir() {
+  local slug
+  slug="$(printf '%s' "$1" | _redact_urls | sed 's#^[a-z]*://##; s#\.git$##' | tr -c 'A-Za-z0-9._-' '_')"
+  printf '%s/%s-%s\n' "$PLUGIN_SOURCES_DIR" "$slug" "$(printf '%s' "$1" | cksum | cut -d' ' -f1)"
+}
+
+# Usage: plugins_source_fetch <spec>; sets SOURCE_PLUGINS_DIR and
+# PLUGINS_SOURCE_COMMIT, or fails with the reason. Fetches a repository.
+plugins_source_fetch() {
+  local spec="$1" ref="" url dir err shown
+  case "$spec" in *#*) ref="${spec##*#}"; spec="${spec%#*}" ;; esac
+  [[ -n "$spec" ]] || error "The plugin source is empty ($PLUGINS_SOURCE_FROM)"
+  shown="$(printf '%s\n' "$spec" | _redact_urls)"
+  if url="$(_plugins_source_url "$spec")"; then
+    command -v git >/dev/null 2>&1 || error "git is needed to fetch plugins from $shown"
+    dir="$(_plugins_source_clone_dir "$url")"
+    # The ref is what's checked out in the clone. Fetching one commit works
+    # for a branch, a tag, or a commit a public host serves.
+    if [[ ! -d "$dir/.git" ]]; then
+      mkdir -p "$dir" && git -C "$dir" init -q && git -C "$dir" remote add origin "$url" ||
+        error "Could not set up $dir for the plugins from $shown"
+    elif [[ "$(git -C "$dir" config --get remote.origin.url)" != "$url" ]]; then
+      error "$dir is a clone of another repository, not $shown: remove it and build again"
+    fi
+    err="$dir/.git/boxen-fetch.err"
+    if git -C "$dir" fetch -q --depth 1 origin "${ref:-HEAD}" </dev/null 2>"$err" &&
+       git -C "$dir" checkout -q --detach FETCH_HEAD 2>>"$err"; then
+      rm -f "$err"
+    elif git -C "$dir" rev-parse -q --verify HEAD >/dev/null 2>&1; then
+      warn "Could not fetch the plugins from $shown; using the copy from last time ($(head -3 "$err" | tr '\n' ' ' | _redact_urls))"
+    else
+      error "Could not fetch the plugins from $shown${ref:+ at $ref}: $(head -3 "$err" | tr '\n' ' ' | _redact_urls)"
+    fi
+    PLUGINS_SOURCE_COMMIT="$(git -C "$dir" rev-parse HEAD)"
+  else
+    [[ -z "$ref" ]] || error "A directory of plugins has no ref to pick: $1"
+    dir="${spec/#\~/$HOME}"
+    [[ -d "$dir" ]] || error "The plugin source isn't a directory or a repository: $spec ($PLUGINS_SOURCE_FROM)"
+    dir="$(cd "$dir" && pwd -P)"
+  fi
+  if [[ -d "$dir/plugins" ]]; then SOURCE_PLUGINS_DIR="$dir/plugins"; else SOURCE_PLUGINS_DIR="$dir"; fi
+  ls "$SOURCE_PLUGINS_DIR"/*.sh >/dev/null 2>&1 ||
+    error "No plugins (*.sh) in $shown${ref:+ at $ref}: looked in $SOURCE_PLUGINS_DIR"
+}
+
+# Usage: plugins_source_peek <spec>; like plugins_source_fetch, without
+# fetching: what's on this host now. Sets SOURCE_PLUGINS_DIR (empty when a
+# repository was never fetched) and PLUGINS_SOURCE_COMMIT; fails for a spec
+# that is neither a repository nor a directory.
+plugins_source_peek() {
+  local spec="$1" ref="" url dir
+  SOURCE_PLUGINS_DIR="" PLUGINS_SOURCE_COMMIT=""
+  case "$spec" in *#*) ref="${spec##*#}"; spec="${spec%#*}" ;; esac
+  [[ -n "$spec" ]] || return 1
+  if url="$(_plugins_source_url "$spec")"; then
+    dir="$(_plugins_source_clone_dir "$url")"
+    PLUGINS_SOURCE_COMMIT="$(git -C "$dir" rev-parse HEAD 2>/dev/null)" || return 0
+  else
+    [[ -z "$ref" ]] && dir="${spec/#\~/$HOME}" && [[ -d "$dir" ]] || return 1
+    dir="$(cd "$dir" && pwd -P)"
+  fi
+  if [[ -d "$dir/plugins" ]]; then SOURCE_PLUGINS_DIR="$dir/plugins"; else SOURCE_PLUGINS_DIR="$dir"; fi
+}
+
+# Usage: plugins_source_list <dir>; one line per plugin there: id, a tab,
+# name, a tab, description, a tab, then "agent" for an agent. Each file is
+# read in a bash of its own, as discovery does, so nothing in it runs here.
+plugins_source_list() {
+  local f
+  for f in "$1"/*.sh; do
+    [[ -f "$f" ]] || continue
+    bash -c '
+      PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_AGENT_COMMAND=""
+      source "$1" 2>/dev/null
+      [ -n "$PLUGIN_ID" ] || exit 0
+      printf "%s\t%s\t%s\t%s\n" "$PLUGIN_ID" "$PLUGIN_NAME" "$PLUGIN_DESC" "${PLUGIN_AGENT_COMMAND:+agent}"
+    ' _ "$f"
+  done | sort -f -t$'\t' -k2,2
+}

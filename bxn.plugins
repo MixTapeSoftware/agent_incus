@@ -1,0 +1,167 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# bxn.plugins
+# `bxn plugins`: where the optional plugins come from (boxen.plugins), what
+# the next build would offer, and bringing a repository source up to date
+# without building. The agents are not optional and always come from the
+# boxen repository; this is about the rest.
+
+_boxen_resolve() {
+  if command -v realpath >/dev/null 2>&1; then realpath "$1"; return; fi
+  local p="$1" link
+  while [[ -L "$p" ]]; do
+    link="$(readlink "$p")"
+    case "$link" in /*) p="$link" ;; *) p="$(dirname "$p")/$link" ;; esac
+  done
+  echo "$p"
+}
+SCRIPT_DIR="$(cd "$(dirname "$(_boxen_resolve "${BASH_SOURCE[0]}")")" && pwd)"
+
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+if [[ ! -t 2 || -n "${NO_COLOR:-}" ]]; then RED="" GREEN="" YELLOW="" NC=""; fi
+log()  { echo -e "${GREEN}[+]${NC} $1" >&2; }
+warn() { echo -e "${YELLOW}[!]${NC} $1" >&2; }
+error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
+
+# shellcheck source=boxen.plugins
+source "$SCRIPT_DIR/boxen.plugins"
+
+usage() {
+  cat <<'EOF'
+Usage: bxn plugins [show]
+       bxn plugins update [<source>]
+       bxn plugins set <source>|builtin
+
+Where the optional plugins come from, and what the next build would offer.
+
+  show               The source, where it is set, the commit a repository is
+                     at on this host, and the plugins it holds (the default)
+  update [<source>]  Fetch the repository the source names again, so the next
+                     build has what it holds now; a build does this too. With
+                     a source, fetch that one. A directory needs no update
+  set <source>       Write ~/.config/boxen/plugins-source: every build takes
+                     its optional plugins from there (bxn create --plugins
+                     beats it for one build). Fetched first, so a mistake
+                     shows now. "builtin" goes back to the boxen repository's
+
+A source is a GitHub repository (owner/repo, with #branch, #tag or #commit),
+any git URL, or a directory on this host; its plugins are its plugins/*.sh if
+it has that directory, else its *.sh. BOXEN_PLUGINS_SOURCE, when set, beats
+the file. A plugin runs on this host as you, so a source has to be trusted;
+pin a commit when that matters.
+EOF
+  exit "${1:-0}"
+}
+
+# Prints the plugins in a directory as a table, agents marked.
+print_plugins() {
+  local id name desc agent n=0
+  while IFS=$'\t' read -r id name desc agent; do
+    [[ -n "$id" ]] || continue
+    n=$((n + 1))
+    printf '  %-18s %s%s\n' "$id" "$name" "${agent:+ (agent)}"
+  done < <(plugins_source_list "$1")
+  [[ "$n" -gt 0 ]] || echo "  (none)"
+}
+
+cmd_show() {
+  local file_source
+  plugins_source_resolve
+  file_source="$(plugins_source_read_file)"
+  if [[ -z "$PLUGINS_SOURCE" ]]; then
+    if [[ -n "${BOXEN_PLUGINS_SOURCE:-}" ]]; then
+      echo "Optional plugins: built in (BOXEN_PLUGINS_SOURCE=builtin)"
+    elif [[ -n "$file_source" ]]; then
+      echo "Optional plugins: built in ($PLUGINS_SOURCE_FILE says builtin)"
+    else
+      echo "Optional plugins: built in (nothing configured; bxn plugins set <source> changes that)"
+    fi
+    [[ -n "${BOXEN_PLUGINS_SOURCE:-}" && -n "$file_source" && "$file_source" != builtin ]] &&
+      echo "  $PLUGINS_SOURCE_FILE says $file_source, which the variable overrides"
+    echo "Agents and plugins, from $BUILTIN_PLUGINS_DIR:"
+    print_plugins "$BUILTIN_PLUGINS_DIR"
+    return 0
+  fi
+  echo "Optional plugins: $PLUGINS_SOURCE_SHOWN (from $PLUGINS_SOURCE_FROM)"
+  [[ "$PLUGINS_SOURCE_FROM" != BOXEN_PLUGINS_SOURCE || -z "$file_source" || "$file_source" == "$PLUGINS_SOURCE" ]] ||
+    echo "  $PLUGINS_SOURCE_FILE says $file_source, which the variable overrides"
+  plugins_source_peek "$PLUGINS_SOURCE" ||
+    error "$PLUGINS_SOURCE_SHOWN isn't a repository or a directory on this host; bxn plugins set <source> picks another"
+  if [[ -n "$PLUGINS_SOURCE_COMMIT" ]]; then
+    echo "  at commit ${PLUGINS_SOURCE_COMMIT:0:12}, fetched $(git -C "$SOURCE_PLUGINS_DIR" log -1 --format=%cd --date=short 2>/dev/null || echo '?'); bxn plugins update fetches it again"
+  elif [[ -z "$SOURCE_PLUGINS_DIR" ]]; then
+    echo "  not fetched yet: the first build does, or bxn plugins update"
+  fi
+  echo "Agents, from $BUILTIN_PLUGINS_DIR:"
+  plugins_source_list "$BUILTIN_PLUGINS_DIR" | awk -F'\t' '$4 == "agent" {printf "  %-18s %s\n", $1, $2}'
+  if [[ -n "$SOURCE_PLUGINS_DIR" ]]; then
+    echo "Plugins, from $SOURCE_PLUGINS_DIR:"
+    print_plugins "$SOURCE_PLUGINS_DIR"
+  fi
+  if [[ -d "$USER_PLUGINS_DIR" ]] && ls "$USER_PLUGINS_DIR"/*.sh >/dev/null 2>&1; then
+    echo "Your own, from $USER_PLUGINS_DIR (these override by id):"
+    print_plugins "$USER_PLUGINS_DIR"
+  fi
+}
+
+# Usage: fetch_and_report <source> <from>; fetches, then says what it got.
+fetch_and_report() {
+  local before="" spec="$1" shown
+  shown="$(printf '%s\n' "$spec" | _redact_urls)"
+  PLUGINS_SOURCE_FROM="$2"
+  plugins_source_peek "$spec" 2>/dev/null && before="$PLUGINS_SOURCE_COMMIT"
+  plugins_source_fetch "$spec"
+  if [[ -z "$PLUGINS_SOURCE_COMMIT" ]]; then
+    log "$shown is a directory, read as it is at each build; nothing to fetch"
+  elif [[ "$before" == "$PLUGINS_SOURCE_COMMIT" ]]; then
+    log "$shown is still at ${PLUGINS_SOURCE_COMMIT:0:12}"
+  elif [[ -n "$before" ]]; then
+    log "$shown moved from ${before:0:12} to ${PLUGINS_SOURCE_COMMIT:0:12}"
+  else
+    log "$shown fetched, at ${PLUGINS_SOURCE_COMMIT:0:12}"
+  fi
+  echo "Plugins, from $SOURCE_PLUGINS_DIR:"
+  print_plugins "$SOURCE_PLUGINS_DIR"
+}
+
+cmd_update() {
+  local spec="${1:-}"
+  if [[ -n "$spec" ]]; then
+    [[ "$spec" != builtin ]] || error "The built-in plugins come with the boxen repository; bxn update-all or git pull brings them up to date"
+    fetch_and_report "$spec" "the command line"
+    return 0
+  fi
+  plugins_source_resolve
+  [[ -n "$PLUGINS_SOURCE" ]] ||
+    error "The optional plugins are the built-in ones; nothing to fetch. bxn plugins update <source> fetches a source without making it the default"
+  fetch_and_report "$PLUGINS_SOURCE" "$PLUGINS_SOURCE_FROM"
+}
+
+cmd_set() {
+  local spec="${1:-}"
+  [[ -n "$spec" ]] || usage 1
+  if [[ "$spec" == builtin ]]; then
+    plugins_source_write_file builtin || error "Could not write $PLUGINS_SOURCE_FILE"
+    log "Optional plugins: built in ($PLUGINS_SOURCE_FILE)"
+  else
+    fetch_and_report "$spec" "the command line"
+    plugins_source_write_file "$spec" || error "Could not write $PLUGINS_SOURCE_FILE"
+    log "Every build now takes its optional plugins from $(printf '%s\n' "$spec" | _redact_urls) ($PLUGINS_SOURCE_FILE)"
+  fi
+  [[ -z "${BOXEN_PLUGINS_SOURCE:-}" ]] ||
+    warn "BOXEN_PLUGINS_SOURCE=$(printf '%s\n' "$BOXEN_PLUGINS_SOURCE" | _redact_urls) is set in this shell and beats the file"
+}
+
+cmd="${1:-show}"
+[[ $# -eq 0 ]] || shift
+case "$cmd" in
+  show) [[ $# -eq 0 ]] || usage 1; cmd_show ;;
+  update) [[ $# -le 1 ]] || usage 1; cmd_update "$@" ;;
+  set) [[ $# -eq 1 ]] || usage 1; cmd_set "$@" ;;
+  -h|--help|help) usage 0 ;;
+  *) usage 1 ;;
+esac

@@ -32,6 +32,8 @@ error(){ echo -e "${RED}[ERROR]${NC} $1" >&2; exit 1; }
 source "$SCRIPT_DIR/boxen.net"
 # shellcheck source=boxen.egress
 source "$SCRIPT_DIR/boxen.egress"
+# shellcheck source=boxen.plugins
+source "$SCRIPT_DIR/boxen.plugins"
 
 # Where the host's network state is read. Tests point these at fixtures.
 DOCTOR_SYS_NET="${BOXEN_DOCTOR_SYS_NET:-/sys/class/net}"
@@ -43,8 +45,8 @@ Usage: bxn doctor
 
 Checks what would stop bxn creating or starting containers: Incus and its
 firewall support, the boxenbr0 bridge, the lock bxn commands share, the
-egress containers and their proxies, and containers left half made. It
-changes nothing. Exits 1 when something is broken.
+egress containers and their proxies, containers left half made, and the
+plugin source. It changes nothing. Exits 1 when something is broken.
 EOF
   exit "${1:-0}"
 }
@@ -375,6 +377,40 @@ check_egress() {
   done
 }
 
+# --- Plugins -----------------------------------------------------------------
+
+# The plugin source a create would use, as it is on this host now: nothing is
+# fetched here. A source that can't be read stops every create.
+check_plugins() {
+  local n
+  section "Plugins"
+  plugins_source_resolve
+  if [[ -z "$PLUGINS_SOURCE" ]]; then
+    ok "Optional plugins are the built-in ones"
+    return 0
+  fi
+  if ! plugins_source_peek "$PLUGINS_SOURCE"; then
+    bad "The plugin source $PLUGINS_SOURCE_SHOWN ($PLUGINS_SOURCE_FROM) isn't a repository or a directory on this host, so no container can be created" \
+      "bxn plugins set <source>, or bxn plugins set builtin"
+    return 0
+  fi
+  if [[ -z "$SOURCE_PLUGINS_DIR" ]]; then
+    note "The plugins from $PLUGINS_SOURCE_SHOWN haven't been fetched yet; the first create needs to reach it" "bxn plugins update"
+    return 0
+  fi
+  n="$(plugins_source_list "$SOURCE_PLUGINS_DIR" | wc -l | tr -d ' ')"
+  if [[ "$n" == 0 ]]; then
+    bad "The plugin source $PLUGINS_SOURCE_SHOWN ($PLUGINS_SOURCE_FROM) has no plugins in $SOURCE_PLUGINS_DIR, so no container can be created" \
+      "bxn plugins update, or bxn plugins set builtin"
+    return 0
+  fi
+  if [[ -n "$PLUGINS_SOURCE_COMMIT" ]]; then
+    ok "Optional plugins from $PLUGINS_SOURCE_SHOWN ($PLUGINS_SOURCE_FROM): $n at ${PLUGINS_SOURCE_COMMIT:0:12}, fetched again at each create"
+  else
+    ok "Optional plugins from $PLUGINS_SOURCE_SHOWN ($PLUGINS_SOURCE_FROM): $n"
+  fi
+}
+
 [[ $# -eq 0 ]] || case "$1" in -h | --help) usage 0 ;; *) usage 1 ;; esac
 
 echo "bxn doctor: checking what would stop bxn creating or starting containers"
@@ -385,6 +421,7 @@ if check_incus; then
     check_egress
   fi
 fi
+check_plugins
 
 echo ""
 if (( FAILS > 0 )); then
