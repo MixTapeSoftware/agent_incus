@@ -391,111 +391,120 @@ print_plugin_logins() {
   done
 }
 
-# Discover built-in plugins first, then the plugin source's, then user plugins.
-# With a source, only the built-in agents are kept. On PLUGIN_ID collision the
-# later plugin overrides (logged). Final order is sorted A-Z by PLUGIN_NAME
-# below — drives both TUI display and install order.
-for _dir in "$BUILTIN_PLUGINS_DIR" "$SOURCE_PLUGINS_DIR" "$USER_PLUGINS_DIR"; do
-  [[ -n "$_dir" && -d "$_dir" ]] || continue
-  for _f in "$_dir"/*.sh; do
-    [[ -f "$_f" ]] || continue
-    _meta=$(bash -c '
-      PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
-      PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
-      PLUGIN_AGENT_COMMAND=""
-      source "$1" 2>/dev/null
-      printf "%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n" \
-        "$PLUGIN_ID" "$PLUGIN_NAME" "$PLUGIN_DESC" "$PLUGIN_DEFAULT" \
-        "$PLUGIN_CLI_FLAGS" "$PLUGIN_NEEDS_PROMPT" "$PLUGIN_RUN_ON_LAUNCH" "$PLUGIN_AGENT_COMMAND"
-    ' _ "$_f")
+# Discovery runs as the script loads, so plugin flags can be parsed; it runs
+# again when the first create picks a plugin source (ask_plugins_source).
+discover_plugins() {
+  _P_ID=() _P_NAME=() _P_DESC=() _P_FILE=() _P_SELECTED=() _P_AGENT_COMMAND=()
+  _P_CLI_FLAGS=() _P_FLAGS=() _P_FLAG_IDS=()
+  PLUGIN_COUNT=0
+  AGENT_DEFAULT_SLOT=-1
+  # Discover built-in plugins first, then the plugin source's, then user plugins.
+  # With a source, only the built-in agents are kept. On PLUGIN_ID collision the
+  # later plugin overrides (logged). Final order is sorted A-Z by PLUGIN_NAME
+  # below — drives both TUI display and install order.
+  for _dir in "$BUILTIN_PLUGINS_DIR" "$SOURCE_PLUGINS_DIR" "$USER_PLUGINS_DIR"; do
+    [[ -n "$_dir" && -d "$_dir" ]] || continue
+    for _f in "$_dir"/*.sh; do
+      [[ -f "$_f" ]] || continue
+      _meta=$(bash -c '
+        PLUGIN_ID="" PLUGIN_NAME="" PLUGIN_DESC="" PLUGIN_DEFAULT=0
+        PLUGIN_CLI_FLAGS="" PLUGIN_NEEDS_PROMPT=0 PLUGIN_RUN_ON_LAUNCH=0
+        PLUGIN_AGENT_COMMAND=""
+        source "$1" 2>/dev/null
+        printf "%s\n%s\n%s\n%s\n%s\n%s\n%s\n%s\n" \
+          "$PLUGIN_ID" "$PLUGIN_NAME" "$PLUGIN_DESC" "$PLUGIN_DEFAULT" \
+          "$PLUGIN_CLI_FLAGS" "$PLUGIN_NEEDS_PROMPT" "$PLUGIN_RUN_ON_LAUNCH" "$PLUGIN_AGENT_COMMAND"
+      ' _ "$_f")
 
-    # Read one field per line so empty optional values keep their position.
-    {
-      IFS= read -r _pid
-      IFS= read -r _pname
-      IFS= read -r _pdesc
-      IFS= read -r _pdefault
-      IFS= read -r _pcli
-      IFS= read -r _pprompt
-      IFS= read -r _plaunch
-      IFS= read -r _pagent || true
-    } <<< "$_meta"
-    [[ -z "$_pid" ]] && continue
-    # The source replaces our optional plugins, not the agents.
-    [[ -n "$SOURCE_PLUGINS_DIR" && "$_dir" == "$BUILTIN_PLUGINS_DIR" && -z "$_pagent" ]] && continue
+      # Read one field per line so empty optional values keep their position.
+      {
+        IFS= read -r _pid
+        IFS= read -r _pname
+        IFS= read -r _pdesc
+        IFS= read -r _pdefault
+        IFS= read -r _pcli
+        IFS= read -r _pprompt
+        IFS= read -r _plaunch
+        IFS= read -r _pagent || true
+      } <<< "$_meta"
+      [[ -z "$_pid" ]] && continue
+      # The source replaces our optional plugins, not the agents.
+      [[ -n "$SOURCE_PLUGINS_DIR" && "$_dir" == "$BUILTIN_PLUGINS_DIR" && -z "$_pagent" ]] && continue
 
-    if _existing=$(_plugin_slot "$_pid"); then
-      echo "[!] Plugin '$_pid' from $_f overrides ${_P_FILE[$_existing]}" >&2
-      _P_NAME[$_existing]="$_pname"
-      _P_DESC[$_existing]="$_pdesc"
-      _P_FILE[$_existing]="$_f"
-      _P_SELECTED[$_existing]="${_pdefault:-0}"
-      _P_AGENT_COMMAND[$_existing]="$_pagent"
-      _P_CLI_FLAGS[$_existing]="$_pcli"
-      continue
-    fi
+      if _existing=$(_plugin_slot "$_pid"); then
+        echo "[!] Plugin '$_pid' from $_f overrides ${_P_FILE[$_existing]}" >&2
+        _P_NAME[$_existing]="$_pname"
+        _P_DESC[$_existing]="$_pdesc"
+        _P_FILE[$_existing]="$_f"
+        _P_SELECTED[$_existing]="${_pdefault:-0}"
+        _P_AGENT_COMMAND[$_existing]="$_pagent"
+        _P_CLI_FLAGS[$_existing]="$_pcli"
+        continue
+      fi
 
-    _i=$PLUGIN_COUNT
-    _P_ID[$_i]="$_pid"
-    _P_NAME[$_i]="$_pname"
-    _P_DESC[$_i]="$_pdesc"
-    _P_FILE[$_i]="$_f"
-    _P_SELECTED[$_i]="${_pdefault:-0}"
-    _P_AGENT_COMMAND[$_i]="$_pagent"
-    _P_CLI_FLAGS[$_i]="$_pcli"
+      _i=$PLUGIN_COUNT
+      _P_ID[$_i]="$_pid"
+      _P_NAME[$_i]="$_pname"
+      _P_DESC[$_i]="$_pdesc"
+      _P_FILE[$_i]="$_f"
+      _P_SELECTED[$_i]="${_pdefault:-0}"
+      _P_AGENT_COMMAND[$_i]="$_pagent"
+      _P_CLI_FLAGS[$_i]="$_pcli"
 
-    PLUGIN_COUNT=$((_i + 1))
+      PLUGIN_COUNT=$((_i + 1))
+    done
   done
-done
-# Build aliases only from the final plugin definitions. Replaced definitions
-# must not leave their flags attached to a user plugin that did not declare them.
-for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
-  for _flag in ${_P_CLI_FLAGS[$_i]}; do
-    _P_FLAGS+=("$_flag")
-    _P_FLAG_IDS+=("${_P_ID[$_i]}")
-  done
-done
-unset _P_CLI_FLAGS
-unset _dir _f _meta _i _pid _pname _pdesc _pdefault _pcli _pprompt _plaunch _pagent _flag _existing
-
-# Sort plugins by PLUGIN_NAME, case-insensitive A-Z (stable).
-if (( PLUGIN_COUNT > 1 )); then
-  _sort_lines=""
+  # Build aliases only from the final plugin definitions. Replaced definitions
+  # must not leave their flags attached to a user plugin that did not declare them.
   for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
-    _sort_lines+="${_P_NAME[$_i]}"$'\t'"$_i"$'\n'
+    for _flag in ${_P_CLI_FLAGS[$_i]}; do
+      _P_FLAGS+=("$_flag")
+      _P_FLAG_IDS+=("${_P_ID[$_i]}")
+    done
   done
-  _new_ID=() _new_NAME=() _new_DESC=() _new_FILE=() _new_SELECTED=() _new_AGENT_COMMAND=()
-  while IFS=$'\t' read -r _name _slot; do
-    _new_ID+=("${_P_ID[$_slot]}")
-    _new_NAME+=("${_P_NAME[$_slot]}")
-    _new_DESC+=("${_P_DESC[$_slot]}")
-    _new_FILE+=("${_P_FILE[$_slot]}")
-    _new_SELECTED+=("${_P_SELECTED[$_slot]}")
-    _new_AGENT_COMMAND+=("${_P_AGENT_COMMAND[$_slot]}")
-  done < <(printf '%s' "$_sort_lines" | sort -f -s -t$'\t' -k1,1)
-  _P_ID=("${_new_ID[@]}")
-  _P_NAME=("${_new_NAME[@]}")
-  _P_DESC=("${_new_DESC[@]}")
-  _P_FILE=("${_new_FILE[@]}")
-  _P_SELECTED=("${_new_SELECTED[@]}")
-  _P_AGENT_COMMAND=("${_new_AGENT_COMMAND[@]}")
-  unset _new_ID _new_NAME _new_DESC _new_FILE _new_SELECTED _new_AGENT_COMMAND _sort_lines _name _slot _i
-fi
+  unset _P_CLI_FLAGS
+  unset _dir _f _meta _i _pid _pname _pdesc _pdefault _pcli _pprompt _plaunch _pagent _flag _existing
 
-# Agents aren't preselected like plugins: one marked default only places the
-# picker's cursor, and becomes the choice under --no-tui.
-for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
-  [[ -n "${_P_AGENT_COMMAND[$_i]}" ]] || continue
-  if [[ "${_P_SELECTED[$_i]}" == "1" && "$AGENT_DEFAULT_SLOT" == "-1" ]]; then AGENT_DEFAULT_SLOT=$_i; fi
-  _P_SELECTED[$_i]=0
-done
+  # Sort plugins by PLUGIN_NAME, case-insensitive A-Z (stable).
+  if (( PLUGIN_COUNT > 1 )); then
+    _sort_lines=""
+    for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+      _sort_lines+="${_P_NAME[$_i]}"$'\t'"$_i"$'\n'
+    done
+    _new_ID=() _new_NAME=() _new_DESC=() _new_FILE=() _new_SELECTED=() _new_AGENT_COMMAND=()
+    while IFS=$'\t' read -r _name _slot; do
+      _new_ID+=("${_P_ID[$_slot]}")
+      _new_NAME+=("${_P_NAME[$_slot]}")
+      _new_DESC+=("${_P_DESC[$_slot]}")
+      _new_FILE+=("${_P_FILE[$_slot]}")
+      _new_SELECTED+=("${_P_SELECTED[$_slot]}")
+      _new_AGENT_COMMAND+=("${_P_AGENT_COMMAND[$_slot]}")
+    done < <(printf '%s' "$_sort_lines" | sort -f -s -t$'\t' -k1,1)
+    _P_ID=("${_new_ID[@]}")
+    _P_NAME=("${_new_NAME[@]}")
+    _P_DESC=("${_new_DESC[@]}")
+    _P_FILE=("${_new_FILE[@]}")
+    _P_SELECTED=("${_new_SELECTED[@]}")
+    _P_AGENT_COMMAND=("${_new_AGENT_COMMAND[@]}")
+    unset _new_ID _new_NAME _new_DESC _new_FILE _new_SELECTED _new_AGENT_COMMAND _sort_lines _name _slot _i
+  fi
 
-# Build the PLUGINS array the TUI expects (id:name:desc:default)
-PLUGINS=()
-for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
-  PLUGINS+=("${_P_ID[$_i]}:${_P_NAME[$_i]}:${_P_DESC[$_i]}:${_P_SELECTED[$_i]}")
-done
-unset _i
+  # Agents aren't preselected like plugins: one marked default only places the
+  # picker's cursor, and becomes the choice under --no-tui.
+  for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+    [[ -n "${_P_AGENT_COMMAND[$_i]}" ]] || continue
+    if [[ "${_P_SELECTED[$_i]}" == "1" && "$AGENT_DEFAULT_SLOT" == "-1" ]]; then AGENT_DEFAULT_SLOT=$_i; fi
+    _P_SELECTED[$_i]=0
+  done
+
+  # Build the PLUGINS array the TUI expects (id:name:desc:default)
+  PLUGINS=()
+  for ((_i=0; _i<PLUGIN_COUNT; _i++)); do
+    PLUGINS+=("${_P_ID[$_i]}:${_P_NAME[$_i]}:${_P_DESC[$_i]}:${_P_SELECTED[$_i]}")
+  done
+  unset _i
+}
+discover_plugins
 
 # ---------------------------------------------------------------------------
 # TUI plugin selector
@@ -551,6 +560,98 @@ show_agent_tui() {
   tput cnorm 2>/dev/null || true
   printf '\033[2J\033[H'
   set_agent_slot "${rows[$cursor]}"
+}
+
+# The first create on a terminal, with no plugin source configured anywhere,
+# asks where the optional plugins come from, and saves the answer so it's
+# asked once: "builtin" is written as such. --plugins, BOXEN_PLUGINS_SOURCE,
+# --no-tui, --dry-run and a pipe all take what's configured, else ours.
+# Sets PLUGINS_SOURCE_CHOICE: builtin, or a source that fetched.
+PLUGINS_SOURCE_CHOICE=""
+show_plugins_source_tui() {
+  local rows=("Boxen's built-in plugins" "A repository of my own") cursor=0 i key seq src out
+  tput civis 2>/dev/null || true
+  trap 'tput cnorm 2>/dev/null || true' RETURN
+  while true; do
+    printf '\033[2J\033[H'
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
+    echo -e "${GREEN}|${NC}  Where do the optional plugins come from?            ${GREEN}|${NC}"
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
+    echo -e "${GREEN}|${NC}  Up/Down or j/k: navigate   Enter: choose   q: quit ${GREEN}|${NC}"
+    echo -e "${GREEN}+------------------------------------------------------+${NC}"
+    echo ""
+    for ((i=0; i<${#rows[@]}; i++)); do
+      if [[ $i -eq $cursor ]]; then printf "  \033[7m %-26s \033[0m\n" "${rows[$i]}"
+      else printf "   %-26s\n" "${rows[$i]}"; fi
+    done
+    echo ""
+    echo "  Asked once; the coding agents come with Boxen either way."
+    echo "  Change it later with: bxn plugins set <source>"
+    IFS= read -rsn1 key
+    case "$key" in
+      $'\x1b')
+        IFS= read -rsn2 -t 1 seq || continue
+        case "$seq" in
+          '[A') cursor=$(( (cursor - 1 + ${#rows[@]}) % ${#rows[@]} )) ;;
+          '[B') cursor=$(( (cursor + 1) % ${#rows[@]} )) ;;
+        esac
+        ;;
+      'k') cursor=$(( (cursor - 1 + ${#rows[@]}) % ${#rows[@]} )) ;;
+      'j') cursor=$(( (cursor + 1) % ${#rows[@]} )) ;;
+      'q') tput cnorm 2>/dev/null || true; echo "Aborted."; exit 1 ;;
+      ''|$'\n')
+        if [[ $cursor -eq 0 ]]; then tput cnorm 2>/dev/null || true; printf '\033[2J\033[H'; PLUGINS_SOURCE_CHOICE=builtin; return 0; fi
+        tput cnorm 2>/dev/null || true
+        printf '\033[2J\033[H'
+        echo "A GitHub repository as owner/repo, with #branch, #tag or #commit to pin"
+        echo "it, or any git URL. Its plugins are its plugins/*.sh, else its *.sh, in"
+        echo "the format of Boxen's own. They run on this host as you, so trust it."
+        echo "Leave it empty to go back."
+        echo ""
+        while true; do
+          read_value src "Repository: "
+          [[ -n "$src" ]] || break
+          # Fetched in a subshell first, so a failure comes back here instead of ending the build.
+          if out="$(plugins_source_fetch "$src" 2>&1)"; then PLUGINS_SOURCE_CHOICE="$src"; return 0; fi
+          echo "$out" | sed 's/^/  /'
+          echo ""
+        done
+        tput civis 2>/dev/null || true
+        ;;
+    esac
+  done
+}
+
+# Asks, when there's something to ask, and takes the answer: the file is
+# written, and a repository's plugins replace ours, with the flags already
+# parsed applied again to the new set.
+ask_plugins_source() {
+  local choice i id kept=() agent_id="" sel
+  [[ "$NO_TUI" == "0" && "$DRY_RUN" == "0" && -t 0 && -t 2 ]] || return 0
+  [[ -z "$PLUGINS_SOURCE" && -z "${BOXEN_PLUGINS_SOURCE:-}" && "$PLUGINS_SOURCE_FROM" != "--plugins" && ! -f "$PLUGINS_SOURCE_FILE" ]] || return 0
+  show_plugins_source_tui
+  choice="$PLUGINS_SOURCE_CHOICE"
+  plugins_source_write_file "$choice" || warn "Could not write $PLUGINS_SOURCE_FILE; this will be asked again"
+  if [[ "$choice" == builtin ]]; then
+    log "Optional plugins: Boxen's own; change it with: bxn plugins set <source>"
+    return 0
+  fi
+  PLUGINS_SOURCE="$choice"
+  PLUGINS_SOURCE_FROM="$PLUGINS_SOURCE_FILE"
+  PLUGINS_SOURCE_SHOWN="$(printf '%s\n' "$choice" | _redact_urls)"
+  log "Optional plugins from $PLUGINS_SOURCE_SHOWN at every build; change it with: bxn plugins set <source>"
+  plugins_source_fetch "$choice"
+  # What the flags chose, by id: the slots change with the set.
+  [[ "$AGENT_SLOT" == "" || "$AGENT_SLOT" == "-1" ]] || agent_id="${_P_ID[$AGENT_SLOT]}"
+  for ((i=0; i<PLUGIN_COUNT; i++)); do
+    [[ "${_P_SELECTED[$i]}" == "1" && -z "${_P_AGENT_COMMAND[$i]}" ]] && kept+=("${_P_ID[$i]}")
+  done
+  discover_plugins
+  AGENT_SLOT=""
+  [[ -z "$agent_id" ]] || select_agent "$agent_id"
+  for id in ${kept[@]+"${kept[@]}"}; do
+    selected_set "$id" 1 || warn "No plugin '$id' in $PLUGINS_SOURCE_SHOWN, so its flag has no effect here"
+  done
 }
 
 # The plugin picker. Agents have their own picker, so they aren't listed.
@@ -1379,6 +1480,7 @@ fi
 # ---------------------------------------------------------------------------
 # TUI plugin selector
 # ---------------------------------------------------------------------------
+ask_plugins_source
 if [[ -n "$SOURCE_PLUGINS_DIR" ]]; then
   log "Optional plugins from $PLUGINS_SOURCE_SHOWN${PLUGINS_SOURCE_COMMIT:+ at ${PLUGINS_SOURCE_COMMIT:0:12}} ($PLUGINS_SOURCE_FROM)"
 fi
