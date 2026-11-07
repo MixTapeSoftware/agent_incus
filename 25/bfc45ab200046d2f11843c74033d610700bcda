@@ -1,0 +1,56 @@
+egress/boxen-smokescreen/uploads.go
+  s_72cef02a544353::t_5d5ef683ec50e4 1-218
+egress/boxen-smokescreen/uploads_test.go
+  s_72cef02a544353::t_b6a97c181209ec 1-349
+  s_72cef02a544353::t_0a9c2104e5a37f 350-353
+egress/upload-limits.txt
+  s_72cef02a544353::t_88228f7dfde6a9 1-15,23-64
+  s_72cef02a544353::t_37c163a9d3d5df 19-22
+  s_72cef02a544353::t_8b996a1c5db4eb 16-18
+boxen.egress
+  s_72cef02a544353::t_ef121a603e7023 20-21,99,101-102,110-192,198,312-313,325,328,350-351,400,407-411,429,678,771,804-807
+bxn
+  s_72cef02a544353::t_9c49e67b18c73d 675-676,694
+bxn.egress
+  s_72cef02a544353::t_49631e4b5804d3 39-42,54-60,65-66,148-158,318-319,323-326,328-332,358,364,372-375,384-385,388-389,401-420,423,433-528,593-594
+egress/boxen-egress-ctl
+  s_72cef02a544353::t_2ba1166c526cdb 15-18,27-30,198,204-217,249-253,442-447,455-458,461-462,477-483,499-516,542
+egress/boxen-proxy-run
+  s_72cef02a544353::t_07fb99762f65b6 31-37
+egress/boxen-smokescreen/main.go
+  s_72cef02a544353::t_1eeef1d95e9270 16-18,67-70,82-83,85,89-91,93,106-113
+egress/boxen-smokescreen/main_test.go
+  s_72cef02a544353::t_05fee5de1b92b5 73-77,260
+egress/build-smokescreen.sh
+  s_72cef02a544353::t_ac931e8238eeaa 8-12,14-17,45,50-52
+tests/egress_cli_test.sh
+  s_72cef02a544353::t_9f68c6be1331b6 288-370,404
+tests/egress_test.sh
+  s_72cef02a544353::t_5100f1fcda687f 117-119,130-166,170,178,197,199-200,262-272
+tests/egress_tui_test.sh
+  s_72cef02a544353::t_e07dee9ae3879d 60-63,149-156
+tests/egress_units_test.sh
+  s_72cef02a544353::t_1f84eca4c4c728 31-83
+tests/host/egress_ctl_test.sh
+  s_72cef02a544353::t_740cf194de0f1a 173-199
+tests/host/proxy_swap/pc.py
+  s_72cef02a544353::t_b1e6ea01661fb4 92-109,125
+tests/lib/fake_egress_ctl
+  s_72cef02a544353::t_8d7cdd1bae75bb 10,27-34,58-59
+---
+{
+  "schema_version": "authorship/3.0.0",
+  "git_ai_version": "1.7.5",
+  "base_commit_sha": "25bfc45ab200046d2f11843c74033d610700bcda",
+  "prompts": {},
+  "sessions": {
+    "s_72cef02a544353": {
+      "agent_id": {
+        "tool": "claude",
+        "id": "74099837-e11e-492a-9bea-7d4d99e6718d",
+        "model": "claude-fable-5-1"
+      },
+      "human_author": "Chad Fennell <chadfennell@users.noreply.github.com>"
+    }
+  }
+}
