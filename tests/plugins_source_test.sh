@@ -152,6 +152,32 @@ assert_eq "a repository never fetched refuses" "1" "$RC"
 assert_contains "and says why" "Could not fetch the plugins from file://$SANDBOX/nowhere" "$(cat "$SANDBOX/out")"
 mv "$SANDBOX/src.away" "$SANDBOX/src"
 
+echo "two URLs that read the same as a name"
+make_repo() {
+  mkdir -p "$1/plugins"
+  plugin_file "$2" "$2" "from $1" > "$1/plugins/50-$2.sh"
+  git -C "$1" init -q -b main
+  git -C "$1" -c user.name=t -c user.email=t@example.com add -A
+  git -C "$1" -c user.name=t -c user.email=t@example.com commit -q -m one
+}
+make_repo "$SANDBOX/src2/x" slash
+make_repo "$SANDBOX/src2_x" under
+fresh
+init xbox --plugins "file://$SANDBOX/src2/x"
+assert_eq "the first builds with its plugins" "agent slash" "$(ran)"
+fresh
+init ybox --plugins "file://$SANDBOX/src2_x"
+assert_eq "the second builds" "0" "$RC"
+[[ "$RC" == 0 ]] || tail -20 "$SANDBOX/out"
+assert_eq "with its own plugins, not the first's" "agent under" "$(ran)"
+assert_eq "from a clone of its own" "2" "$(ls -d "$CACHE"/*src2* | wc -l | tr -d ' ')"
+for _x in "$CACHE"/*src2*; do git -C "$_x" remote set-url origin "file://$SANDBOX/elsewhere"; done
+fresh
+init zbox --plugins "file://$SANDBOX/src2/x"
+assert_eq "a clone of another URL is refused" "1" "$RC"
+assert_contains "and says so" "is a clone of another repository, not file://$SANDBOX/src2/x" "$(cat "$SANDBOX/out")"
+rm -rf "$CACHE"/*src2*
+
 echo "a directory"
 fresh
 init dbox --plugins "$SANDBOX/dir"
@@ -205,8 +231,18 @@ fresh
 GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.file://$SANDBOX/nowhere/.insteadOf" GIT_CONFIG_VALUE_0="https://github.com/" \
   init gbox --plugins "someone/plugins"
 assert_eq "it refuses when it can't fetch" "1" "$RC"
-assert_eq "the clone is named for github.com" "github.com_someone_plugins" "$(ls "$CACHE" | grep github)"
-assert_eq "with GitHub's URL" "https://github.com/someone/plugins.git" "$(git -C "$CACHE/github.com_someone_plugins" config remote.origin.url)"
+_g="$(ls "$CACHE" | grep github)"
+assert_eq "the clone is named for github.com" "github.com_someone_plugins" "${_g%-*}"
+assert_eq "with GitHub's URL" "https://github.com/someone/plugins.git" "$(git -C "$CACHE/$_g" config remote.origin.url)"
+
+echo "a URL with a token in it"
+fresh
+GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0="url.file://$SANDBOX/nowhere/.insteadOf" GIT_CONFIG_VALUE_0="https://someone:s3cret@example.com/" \
+  init kbox --plugins "https://someone:s3cret@example.com/plugins.git"
+assert_eq "it refuses when it can't fetch" "1" "$RC"
+assert_contains "and names the URL" "Could not fetch the plugins from https://example.com/plugins.git" "$(cat "$SANDBOX/out")"
+assert_eq "without the token" "" "$(grep s3cret "$SANDBOX/out" || true)"
+assert_eq "nor in the clone's name" "" "$(ls "$CACHE" | grep s3cret || true)"
 
 echo ""
 echo "passed: $PASS  failed: $FAIL"
